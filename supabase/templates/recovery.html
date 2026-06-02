@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Reset your password</title>
+  </head>
+  <body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#111827;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f3f4f6;padding:32px 16px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;">
+            <tr>
+              <td style="padding:28px 32px 16px 32px;">
+                <h1 style="margin:0;font-size:24px;line-height:32px;color:#111827;">Reset your password</h1>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:0 32px 20px 32px;font-size:16px;line-height:24px;color:#374151;">
+                <p style="margin:0 0 16px 0;">An administrator requested a password reset for your account.</p>
+                <p style="margin:0 0 24px 0;">Click the button below to set a new password.</p>
+                <p style="margin:0 0 24px 0;">
+                  <a href="{{ .ConfirmationURL }}" style="display:inline-block;background:#111827;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:8px;">
+                    Set new password
+                  </a>
+                </p>
+                <p style="margin:0 0 12px 0;font-size:14px;line-height:20px;color:#6b7280;">If the button does not work, copy and paste this link into your browser:</p>
+                <p style="margin:0;word-break:break-all;font-size:14px;line-height:20px;color:#2563eb;">
+                  <a href="{{ .ConfirmationURL }}" style="color:#2563eb;">{{ .ConfirmationURL }}</a>
+                </p>
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px 28px 32px;font-size:13px;line-height:20px;color:#6b7280;border-top:1px solid #e5e7eb;">
+                If you did not expect this email, you can ignore it.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

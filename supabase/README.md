@@ -6,8 +6,18 @@ This Supabase project is configured for a multi-tenant SaaS running inside GHL A
 
 - `config.toml` enables local Supabase Auth with email/password and email OTP magic-link support.
 - `migrations/20260529004900_initial_multi_tenant_ghl.sql` creates the schema, helper functions, RLS policies, grants, and the `user_accessible_locations` view.
+- `migrations/20260529191000_add_ghl_notification_events.sql` creates the tenant-scoped event table used for live GHL notifications.
+- `migrations/20260601013000_add_user_deactivation.sql` adds profile deactivation state and tightens tenant access for inactive users.
+- `migrations/20260601132500_add_ghl_staff_user_accounts.sql` maps Supabase users to their provisioned GHL staff/user accounts.
+- `migrations/20260601140500_add_agency_ghl_company_id.sql` stores the GHL company/agency ID needed for staff/user creation.
+- `migrations/20260601142500_restrict_profile_roles_to_admin_user.sql` normalizes app roles to `admin` and `user`.
+- `migrations/20260601143500_add_profile_phone.sql` adds phone storage to `profiles` and auth profile creation.
+- `migrations/20260601165500_add_business_profiles.sql` adds business profile settings for each GHL location.
 - `seed.sql` adds one sample agency and two sample locations. Set `sample_user_id` to an existing `auth.users.id` to create a sample mapping.
 - `functions/ghl-backend-handoff/index.ts` is an optional Edge Function placeholder that validates a user's Supabase JWT and location access before forwarding non-secret context to a trusted backend service.
+- `functions/ghl-webhook-events/index.ts` receives GHL webhook events, resolves the GHL location, and inserts live notification rows for Supabase Realtime.
+- `functions/admin-users/index.ts` lets an active admin create, deactivate, or reactivate users without exposing the service role key.
+- `functions/admin-settings/index.ts` lets an active admin save business profile settings and GHL location IDs.
 
 ## Security Notes
 
@@ -15,6 +25,8 @@ This Supabase project is configured for a multi-tenant SaaS running inside GHL A
 - `encrypted_api_key` is only granted to `service_role`; never ship the service role key to GHL AI Studio or a frontend.
 - Tenant isolation is enforced through `user_locations`; users only see agencies and locations reachable through their own mappings.
 - Profile `role` values are not user-editable from the client. Role assignment should be done from trusted backend tooling with the service role key.
+- `ghl_notification_events` is append-only from the frontend. Authenticated users can only read events for locations they are assigned to.
+- User creation/deactivation must go through `admin-users`. The frontend should never call Supabase Auth Admin APIs directly or receive the service role key.
 
 ## Edge Function Environment
 
@@ -26,3 +38,269 @@ supabase secrets set \
   GHL_BACKEND_SHARED_SECRET="replace-me" \
   ALLOWED_ORIGIN="https://your-ghl-app-origin.example"
 ```
+
+`ghl-webhook-events` supports either `GHL_WEBHOOK_SHARED_SECRET` or `GHL_WEBHOOK_SHARED_SECRET_SHA256`. The current deployed fallback validates the generated secret by SHA-256 hash, so `supabase secrets set` is optional for this function while local CLI secret writes are unavailable.
+
+```sh
+supabase secrets set \
+  GHL_WEBHOOK_SHARED_SECRET_SHA256="replace-with-sha256-of-secret"
+```
+
+Deploy the webhook function without Supabase JWT verification. GHL will not send a Supabase user token; the function validates the shared webhook secret instead.
+
+```sh
+supabase functions deploy ghl-webhook-events --no-verify-jwt
+```
+
+Use this URL in GHL workflow custom webhooks or app webhook settings:
+
+```text
+https://<project-ref>.functions.supabase.co/ghl-webhook-events
+```
+
+For workflow custom webhooks, send a `POST` JSON payload and include either of these using the raw shared secret:
+
+- Header: `x-lawbric-webhook-secret: <raw-webhook-secret>`
+- Query string: `?secret=<raw-webhook-secret>`
+
+The JSON payload must include a known GHL location ID using one of these fields:
+
+```json
+{
+  "locationId": "sample-ghl-location-001",
+  "event": "contact.created",
+  "title": "New contact",
+  "message": "A new contact was created"
+}
+```
+
+## Live Notification Feed
+
+The AI Studio frontend should:
+
+1. Sign in with Supabase Auth.
+2. Load assigned locations from `user_accessible_locations`.
+3. Read recent events from `ghl_notification_events`.
+4. Subscribe to inserts on `ghl_notification_events` with Supabase Realtime.
+
+Example client subscription:
+
+```ts
+const channel = supabase
+  .channel("ghl-notifications")
+  .on(
+    "postgres_changes",
+    {
+      event: "INSERT",
+      schema: "public",
+      table: "ghl_notification_events",
+    },
+    (payload) => {
+      console.log("New GHL notification:", payload.new);
+    },
+  )
+  .subscribe();
+```
+
+RLS still controls which rows an authenticated user can read. For production, configure official GHL webhook signature verification when using Marketplace/App webhooks; the shared-secret header is intended for GHL workflow custom webhooks.
+
+## User Management
+
+Deploy the admin user function:
+
+```sh
+supabase functions deploy admin-users --no-verify-jwt --use-api --project-ref <project-ref>
+```
+
+Subaccount app users are Supabase users, not native GHL staff users. The admin enters the subaccount Private Integration API Key and GHL Location ID once in Account Activation. Do not ask the admin for a Supabase Agency ID or GHL Company ID in the frontend while there is only one agency; `admin-settings` will use the single configured agency internally. `admin-users` creates the Supabase user and assigns that user to the saved configured location. GHL data access uses the saved subaccount integration key and GHL Location ID through backend calls.
+
+Optional overrides:
+
+```sh
+GHL_API_BASE_URL="https://services.leadconnectorhq.com"
+GHL_API_VERSION="2021-07-28"
+PASSWORD_RESET_REDIRECT_TO="https://your-app.example.com/reset-password"
+```
+
+The saved subaccount Private Integration API Key should include the scopes needed for the GHL data your app reads or writes, such as contacts, calendars, opportunities, and conversations.
+
+The frontend should call the function with the logged-in admin's Supabase access token.
+
+Create a Supabase subaccount user:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-users", {
+  body: {
+    action: "create",
+    email: "jane@example.com",
+    fullName: "Jane Smith",
+    phone: "+15555550100",
+    role: "user",
+    locationIds: ["supabase-location-uuid"], // optional when one Account Activation location exists
+  },
+});
+```
+
+After the user is created, `admin-users` sends a Supabase password reset email so the user can set their own password. Configure `PASSWORD_RESET_REDIRECT_TO` if the reset link should return users to a specific app route. If Supabase rate-limits the reset email, the user is still created and the response includes `passwordResetSent: false` with a skipped reason.
+
+`locationIds` may be omitted when exactly one saved `business_profiles.location_id` exists from Account Activation. In that case, `admin-users` uses that saved configured location. If no Location ID was entered and saved during Account Activation, user creation fails; the backend does not invent, hardcode, or fallback to any Location ID.
+
+Create returns a Supabase app user assigned to the selected location:
+
+```json
+{
+  "ok": true,
+  "action": "create",
+  "userId": "...",
+  "locationIds": ["..."],
+  "passwordResetSent": true,
+  "passwordResetSkippedReason": "only present when passwordResetSent is false",
+  "ghlCreated": false,
+  "ghlSkippedReason": "This app now creates Supabase app users only. GHL data access uses the saved subaccount integration key and location ID."
+}
+```
+
+User Management should read names and phone numbers from `profiles`:
+
+```text
+full_name
+phone
+```
+
+Admins can view all profiles through RLS. Users can update their own `full_name` and `phone`.
+
+Update a user's profile fields from User Management:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-users", {
+  body: {
+    action: "update",
+    userId: "target-user-uuid",
+    email: "jane@example.com",
+    fullName: "Jane Smith",
+    phone: "+15555550100",
+    role: "user",
+    ghlRole: "user",
+  },
+});
+```
+
+Deactivate:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-users", {
+  body: {
+    action: "deactivate",
+    userId: "target-user-uuid",
+    reason: "No longer needs access",
+  },
+});
+```
+
+Reactivate:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-users", {
+  body: {
+    action: "reactivate",
+    userId: "target-user-uuid",
+  },
+});
+```
+
+Send password reset email:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-users", {
+  body: {
+    action: "sendPasswordReset",
+    userId: "target-user-uuid",
+  },
+});
+```
+
+The function verifies the caller's JWT and requires `profiles.role = 'admin'` and `profiles.is_active = true`. User Management roles are limited to `admin` and `user`; display them as Admin and User in the frontend if desired. Create provisions Supabase Auth with an internal temporary password, sends a Supabase password reset email, creates `profiles`, and creates `user_locations`. It does not create native GHL staff users. `sendPasswordReset` sends a Supabase reset email for an active target user. Update modifies `auth.users`, `profiles.email`, `profiles.full_name`, `profiles.phone`, `profiles.role`, mirrors name/phone into Supabase Auth metadata, and updates the mapped GHL staff/user through `PUT /users/:userId` only when a legacy `ghl_user_accounts` mapping exists. Supabase Auth's top-level phone field is only updated when the phone can be normalized to E.164, for example `+19042103388` or `9042103388`. If there is no `ghl_user_accounts` row for the user, the response includes `ghlUpdated: false` and a skipped reason. Deactivation prevents self-deactivation and prevents deactivating the last active admin. Deactivation bans the Supabase Auth user for `876000h` and marks `profiles.is_active = false`; reactivation clears the ban with `ban_duration = 'none'`.
+
+## Business Profile Settings
+
+Deploy the admin settings function:
+
+```sh
+supabase functions deploy admin-settings --no-verify-jwt --use-api --project-ref <project-ref>
+```
+
+Read existing settings from `business_profiles`, `agencies`, and `ghl_locations`. Admins can read all of these through RLS.
+
+Save an existing location's business profile:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-settings", {
+  body: {
+    action: "upsertBusinessProfile",
+    locationId: "supabase-location-uuid",
+    businessName: "Lawbric",
+    address: "123 Main St, Jacksonville, FL 32202",
+    websiteUrl: "https://example.com",
+    phone: "+19042103388",
+    ghlLocationId: "real-ghl-location-id",
+    privateIntegrationApiKey: "subaccount-private-integration-api-key",
+  },
+});
+```
+
+Create a new location and business profile. `ghlLocationId` is required. `agencyId` is optional when exactly one agency exists:
+
+```ts
+const { data, error } = await supabase.functions.invoke("admin-settings", {
+  body: {
+    action: "upsertBusinessProfile",
+    businessName: "Lawbric",
+    address: "123 Main St, Jacksonville, FL 32202",
+    websiteUrl: "https://example.com",
+    phone: "+19042103388",
+    ghlLocationId: "real-ghl-location-id",
+    privateIntegrationApiKey: "subaccount-private-integration-api-key",
+  },
+});
+```
+
+The function updates `ghl_locations.name`, requires and updates `ghl_locations.ghl_location_id`, saves the subaccount private integration key, and upserts `business_profiles`. Use `business_profiles.location_id` / `ghl_locations.id` as the value for future user creation `locationIds`. The frontend Account Activation form should collect business profile fields, `ghlLocationId`, and `privateIntegrationApiKey`; it should not show a Supabase Agency ID or GHL Company ID field for the current single-agency app-user setup and must not substitute a Location ID when the admin leaves it blank. `privateIntegrationApiKey` is required when creating a location, and it is required when updating an existing location that does not already have one saved.
+
+## App Location Context
+
+Deploy the app location context function:
+
+```sh
+supabase functions deploy app-location-context --no-verify-jwt --use-api --project-ref <project-ref>
+```
+
+Frontend login/app startup should call this function after the user is authenticated:
+
+```ts
+const { data, error } = await supabase.functions.invoke("app-location-context", {
+  body: {},
+});
+```
+
+The response returns safe active-location metadata:
+
+```json
+{
+  "ok": true,
+  "configured": true,
+  "location": {
+    "id": "supabase-location-uuid",
+    "name": "Lawbric",
+    "ghlLocationId": "real-ghl-location-id",
+    "hasPrivateIntegrationKey": true,
+    "businessProfile": {
+      "businessName": "Lawbric",
+      "address": "...",
+      "websiteUrl": "...",
+      "phone": "..."
+    }
+  }
+}
+```
+
+This function never returns the private integration API key. If `configured = true`, the frontend should not ask the user for API key or Location ID. GHL data requests should go through backend functions that load the saved key server-side.

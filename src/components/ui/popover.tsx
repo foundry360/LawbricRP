@@ -1,0 +1,71 @@
+import { cloneElement, createContext, isValidElement, ReactElement, ReactNode, useContext, useState } from "react";
+import { cn } from "@/lib/utils";
+
+type PopoverContextValue = {
+  open: boolean;
+  setOpen: (open: boolean) => void;
+};
+
+const PopoverContext = createContext<PopoverContextValue | null>(null);
+
+function usePopover() {
+  const value = useContext(PopoverContext);
+  if (!value) throw new Error("Popover components must be used inside Popover");
+  return value;
+}
+
+export function Popover({
+  children,
+  open: controlledOpen,
+  onOpenChange,
+}: {
+  children: ReactNode;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = controlledOpen ?? internalOpen;
+  const setOpen = (nextOpen: boolean) => {
+    setInternalOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  };
+
+  return (
+    <PopoverContext.Provider value={{ open, setOpen }}>
+      <div className="relative">{children}</div>
+    </PopoverContext.Provider>
+  );
+}
+
+export function PopoverTrigger({ children, asChild }: { children: ReactNode; asChild?: boolean }) {
+  const { open, setOpen } = usePopover();
+
+  if (asChild && isValidElement(children)) {
+    const child = children as ReactElement<{ onClick?: () => void }>;
+    return cloneElement(child, {
+      onClick: () => {
+        child.props.onClick?.();
+        setOpen(!open);
+      },
+    });
+  }
+
+  return <button onClick={() => setOpen(!open)}>{children}</button>;
+}
+
+export function PopoverContent({
+  className,
+  children,
+}: {
+  className?: string;
+  align?: "start" | "center" | "end";
+  children: ReactNode;
+}) {
+  const { open } = usePopover();
+  if (!open) return null;
+  return (
+    <div className={cn("absolute z-[140] mt-1 rounded-md border border-border bg-background shadow-lg", className)}>
+      {children}
+    </div>
+  );
+}
