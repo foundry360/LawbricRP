@@ -46,6 +46,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { apiClient, getActiveGhlLocationId } from "@/lib/api";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPhoneNumber } from "@/lib/phone";
 import { cn } from "@/lib/utils";
 
 const CALENDAR_ID = "oU7nwKUfwAL5rhpTmgbV";
@@ -229,7 +231,7 @@ export function CalendarPage() {
 
       setBookedEvents(allEvents);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to fetch events";
+      const message = getUserFriendlyErrorMessage(error, "Could not load calendar events. Please refresh and try again.");
       toast({ title: "Sync Error", description: message, variant: "destructive" });
     }
   };
@@ -385,11 +387,11 @@ export function CalendarPage() {
     event.preventDefault();
 
     if (!selectedSlot) {
-      toast({ title: "Error", description: "Please select a time slot.", variant: "destructive" });
+      toast({ title: "Time Slot Required", description: "Please select a time slot.", variant: "destructive" });
       return;
     }
     if (!selectedContactId) {
-      toast({ title: "Error", description: "Please select a contact.", variant: "destructive" });
+      toast({ title: "Contact Required", description: "Please select a contact.", variant: "destructive" });
       return;
     }
 
@@ -406,7 +408,7 @@ export function CalendarPage() {
           firstName: contact?.firstName || "",
           lastName: contact?.lastName || "",
           email: contact?.email || "",
-          phone: contact?.phone || "",
+          phone: formatPhoneNumber(contact?.phone, ""),
           notes: formData.notes,
           selectedSlot,
           selectedTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
@@ -429,7 +431,7 @@ export function CalendarPage() {
           rawEvent: {
             contactId: data.contactId || selectedContactId,
             contactEmail: contact?.email,
-            contactPhone: contact?.phone,
+            contactPhone: formatPhoneNumber(contact?.phone, ""),
             assignedUserId: selectedUserId || undefined,
             notes: formData.notes,
           },
@@ -442,8 +444,8 @@ export function CalendarPage() {
       setSelectedUserId("");
       window.setTimeout(fetchSlots, 2000);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An error occurred while booking.";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      const message = getUserFriendlyErrorMessage(error, "Could not book the appointment. Please try again.");
+      toast({ title: "Appointment Not Booked", description: message, variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
@@ -461,8 +463,8 @@ export function CalendarPage() {
       setBookedEvents((previous) => previous.filter((event) => event.id !== selectedEvent.id));
       window.setTimeout(fetchSlots, 3000);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to delete appointment";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      const message = getUserFriendlyErrorMessage(error, "Could not delete the appointment. Please try again.");
+      toast({ title: "Appointment Not Deleted", description: message, variant: "destructive" });
     } finally {
       setIsDeletingEvent(false);
     }
@@ -471,7 +473,7 @@ export function CalendarPage() {
   const handleEditEvent = async () => {
     if (!selectedEvent) return;
     if (!editFormData.slot) {
-      toast({ title: "Error", description: "Please select a time slot.", variant: "destructive" });
+      toast({ title: "Time Slot Required", description: "Please select a time slot.", variant: "destructive" });
       return;
     }
 
@@ -530,8 +532,8 @@ export function CalendarPage() {
         fetchEvents();
       }, 3000);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to update appointment";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      const message = getUserFriendlyErrorMessage(error, "Could not update the appointment. Please try again.");
+      toast({ title: "Appointment Not Updated", description: message, variant: "destructive" });
     } finally {
       setSavingEvent(false);
     }
@@ -1128,7 +1130,11 @@ function EventDetails({ selectedEvent, users }: { selectedEvent: CalendarEvent; 
         {selectedEvent.calendarName || "Main Calendar"}
       </DetailRow>
       {selectedEvent.rawEvent?.contactEmail && <DetailRow icon={Mail} label="Email">{selectedEvent.rawEvent.contactEmail}</DetailRow>}
-      {selectedEvent.rawEvent?.contactPhone && <DetailRow icon={Phone} label="Phone">{selectedEvent.rawEvent.contactPhone}</DetailRow>}
+      {selectedEvent.rawEvent?.contactPhone && (
+        <DetailRow icon={Phone} label="Phone">
+          {formatPhoneNumber(selectedEvent.rawEvent.contactPhone)}
+        </DetailRow>
+      )}
       <DetailRow icon={UserCheck} label="Appointment Owner">
         {selectedEvent.rawEvent?.assignedUserId
           ? getDisplayName(users.find((user) => user.id === selectedEvent.rawEvent?.assignedUserId) || { id: selectedEvent.rawEvent.assignedUserId })

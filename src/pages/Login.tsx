@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase";
 
 export function Login() {
@@ -27,7 +28,7 @@ export function Login() {
     if (error) {
       toast({
         title: "Login Failed",
-        description: error.message,
+        description: getUserFriendlyErrorMessage(error, "Email or password is incorrect. Please try again."),
         variant: "destructive",
       });
       return;
@@ -47,7 +48,7 @@ export function Login() {
     if (error) {
       toast({
         title: "Reset Failed",
-        description: error.message,
+        description: getUserFriendlyErrorMessage(error, "We could not send a reset email. Please try again."),
         variant: "destructive",
       });
       return;

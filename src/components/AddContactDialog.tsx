@@ -23,6 +23,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import {
   Sheet,
   SheetContent,
@@ -51,6 +52,9 @@ export type ContactFormValues = z.infer<typeof contactSchema>;
 type SystemUser = {
   id: string;
   name?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -61,7 +65,6 @@ type AddContactDialogProps = {
   onOpenChange: (open: boolean) => void;
   onAddContact: (contact: ContactFormValues) => Promise<void> | void;
   locationId: string;
-  attorneyOptions?: string[];
   accountTypeOptions?: string[];
   practiceAreaOptions?: string[];
   languageOptions?: string[];
@@ -69,7 +72,17 @@ type AddContactDialogProps = {
 };
 
 function getUserName(user: SystemUser) {
-  return user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || user.id;
+  return (
+    user.name ||
+    user.full_name ||
+    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim() ||
+    user.email ||
+    user.id
+  );
+}
+
+function getUserByFormValue(users: SystemUser[], value: string) {
+  return users.find((user) => user.id === value || getUserName(user) === value);
 }
 
 export function AddContactDialog({
@@ -92,7 +105,7 @@ export function AddContactDialog({
       type: "Client",
       status: "Consultation",
       caseType: "",
-      attorneyAssigned: "",
+      attorneyAssigned: "Unassigned",
       dob: "",
       gender: "",
       language: "",
@@ -110,11 +123,10 @@ export function AddContactDialog({
         first_name: data.name.split(" ")[0] || data.name,
         last_name: data.name.split(" ").slice(1).join(" "),
         email: data.email,
-        phone: data.phone,
+        phone: formatPhoneNumber(data.phone, ""),
         "contact.contact_type": data.type,
         "contact.status": data.status,
         "contact.case_type": data.caseType,
-        "contact.assigned_attorney": data.attorneyAssigned,
       },
       formLabels: {
         first_name: "First Name",
@@ -124,7 +136,6 @@ export function AddContactDialog({
         "contact.contact_type": "Contact Type",
         "contact.status": "Status",
         "contact.case_type": "Case Type",
-        "contact.assigned_attorney": "Assigned Attorney",
       },
       url: window.location.href,
       title: document.title,
@@ -205,7 +216,11 @@ export function AddContactDialog({
                   <FormItem>
                     <FormLabel>Phone</FormLabel>
                     <FormControl>
-                      <Input placeholder="(555) 000-0000" {...field} />
+                      <Input
+                        placeholder="(555) 000-0000"
+                        {...field}
+                        onChange={(event) => field.onChange(formatPhoneInput(event.target.value))}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -303,22 +318,20 @@ export function AddContactDialog({
               control={form.control}
               name="attorneyAssigned"
               render={({ field }) => {
-                const selectedUser = systemUsers.find(
-                  (user) => user.id === field.value || getUserName(user) === field.value,
-                );
+                const selectedUser = getUserByFormValue(systemUsers, field.value);
                 const attorneyLabel =
                   field.value && field.value !== "Unassigned"
                     ? selectedUser
                       ? getUserName(selectedUser)
-                      : field.value
+                      : "Select attorney"
                     : "Select attorney";
 
                 return (
                   <FormItem className="flex flex-col">
                     <FormLabel>Assigned Attorney</FormLabel>
                     <Popover open={isAttorneyPopoverOpen} onOpenChange={setIsAttorneyPopoverOpen}>
-                      <PopoverTrigger asChild>
-                        <FormControl>
+                      <FormControl>
+                        <PopoverTrigger asChild>
                           <Button
                             type="button"
                             variant="outline"
@@ -331,8 +344,8 @@ export function AddContactDialog({
                             {attorneyLabel}
                             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                           </Button>
-                        </FormControl>
-                      </PopoverTrigger>
+                        </PopoverTrigger>
+                      </FormControl>
                       <PopoverContent className="w-[300px] p-0">
                         <Command>
                           <CommandInput placeholder="Search users..." />
@@ -349,9 +362,7 @@ export function AddContactDialog({
                                 <Check
                                   className={cn(
                                     "mr-2 h-4 w-4",
-                                    field.value === "Unassigned" || !field.value
-                                      ? "opacity-100"
-                                      : "opacity-0",
+                                    field.value === "Unassigned" || !field.value ? "opacity-100" : "opacity-0",
                                   )}
                                 />
                                 Unassigned
@@ -360,17 +371,17 @@ export function AddContactDialog({
                                 const userName = getUserName(user);
                                 return (
                                   <CommandItem
-                                    value={userName}
+                                    value={`${userName} ${user.id}`}
                                     key={user.id}
                                     onSelect={() => {
-                                      form.setValue("attorneyAssigned", userName);
+                                      form.setValue("attorneyAssigned", user.id);
                                       setIsAttorneyPopoverOpen(false);
                                     }}
                                   >
                                     <Check
                                       className={cn(
                                         "mr-2 h-4 w-4",
-                                        field.value === userName ? "opacity-100" : "opacity-0",
+                                        field.value === user.id ? "opacity-100" : "opacity-0",
                                       )}
                                     />
                                     {userName}

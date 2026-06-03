@@ -119,7 +119,7 @@ Optional overrides:
 ```sh
 GHL_API_BASE_URL="https://services.leadconnectorhq.com"
 GHL_API_VERSION="2021-07-28"
-PASSWORD_RESET_REDIRECT_TO="https://your-app.example.com/reset-password"
+PASSWORD_RESET_REDIRECT_TO="https://lawbric-rp.vercel.app/reset-password"
 ```
 
 The saved subaccount Private Integration API Key should include the scopes needed for the GHL data your app reads or writes, such as contacts, calendars, opportunities, and conversations.

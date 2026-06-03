@@ -3,6 +3,8 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
 import { useToast } from "@/hooks/use-toast";
 
@@ -97,7 +99,7 @@ export function AccountActivationSettings() {
           businessName: profile.business_name ?? "",
           address: profile.address ?? "",
           websiteUrl: profile.website_url ?? "",
-          phone: profile.phone ?? "",
+          phone: formatPhoneNumber(profile.phone, ""),
           ghlLocationId: location?.ghl_location_id ?? "",
           agencyId: profile.agency_id ?? "",
           locationId: profile.location_id ?? "",
@@ -123,7 +125,10 @@ export function AccountActivationSettings() {
         }));
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An unknown error occurred";
+      const message = getUserFriendlyErrorMessage(
+        error,
+        "Could not load Account Activation settings. Please refresh and try again.",
+      );
       console.error("Error fetching account activation data:", error);
       toast({
         title: "Error loading Account Activation",
@@ -171,7 +176,7 @@ export function AccountActivationSettings() {
         businessName: formData.businessName,
         address: formData.address,
         websiteUrl: formData.websiteUrl,
-        phone: formData.phone,
+        phone: formatPhoneNumber(formData.phone, ""),
         ghlLocationId: formData.ghlLocationId,
         privateIntegrationApiKey: formData.subAccountApiKey || undefined,
       };
@@ -195,7 +200,10 @@ export function AccountActivationSettings() {
       toast({ title: "Account Activation settings saved successfully" });
       await fetchData();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "An unknown error occurred";
+      const message = getUserFriendlyErrorMessage(
+        error,
+        "Could not save Account Activation settings. Please check the fields and try again.",
+      );
       console.error("Error saving account activation:", error);
       toast({
         title: "Failed to save Account Activation",
@@ -299,8 +307,8 @@ export function AccountActivationSettings() {
         <Input
           id="phone"
           value={formData.phone}
-          onChange={(event) => setFormData((prev) => ({ ...prev, phone: event.target.value }))}
-          placeholder="Enter phone number"
+          onChange={(event) => setFormData((prev) => ({ ...prev, phone: formatPhoneInput(event.target.value) }))}
+          placeholder="(555) 000-0000"
         />
       </div>
 

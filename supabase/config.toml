@@ -8,12 +8,13 @@ max_rows = 1000
 
 [auth]
 enabled = true
-site_url = "https://preview-1780031277244837711.vibepreview.com"
+site_url = "https://lawbric-rp.vercel.app"
 additional_redirect_urls = [
   "http://localhost:3000",
-  "https://law-firm-contacts.vibepreview.com",
-  "https://preview-1780031277244837711.vibepreview.com",
-  "https://preview-1780031277244837711.vibepreview.com/reset-password",
+  "http://localhost:5173",
+  "http://localhost:5173/reset-password",
+  "https://lawbric-rp.vercel.app",
+  "https://lawbric-rp.vercel.app/reset-password",
 ]
 jwt_expiry = 3600
 enable_signup = true
@@ -48,6 +49,9 @@ verify_enabled = false
 verify_jwt = false
 
 [functions.admin-users]
+verify_jwt = false
+
+[functions.assignable-users]
 verify_jwt = false
 
 [functions.admin-settings]

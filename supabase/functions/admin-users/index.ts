@@ -1,7 +1,13 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-type AdminUserAction = "create" | "update" | "deactivate" | "reactivate" | "sendPasswordReset";
+type AdminUserAction =
+  | "create"
+  | "update"
+  | "deactivate"
+  | "reactivate"
+  | "sendPasswordReset"
+  | "listAssignableUsers";
 
 type ProfileRole = "admin" | "user";
 
@@ -178,8 +184,12 @@ serve(async (req) => {
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const ghlApiBaseUrl = Deno.env.get("GHL_API_BASE_URL") ?? "https://services.leadconnectorhq.com";
   const ghlApiVersion = Deno.env.get("GHL_API_VERSION") ?? "2021-07-28";
-  const passwordResetRedirectTo = Deno.env.get("PASSWORD_RESET_REDIRECT_TO") ??
-    "https://preview-1780031277244837711.vibepreview.com/reset-password";
+  const configuredPasswordResetRedirectTo = Deno.env.get("PASSWORD_RESET_REDIRECT_TO");
+  const passwordResetRedirectTo =
+    configuredPasswordResetRedirectTo &&
+      !configuredPasswordResetRedirectTo.includes("vibepreview.com")
+      ? configuredPasswordResetRedirectTo
+      : "https://lawbric-rp.vercel.app/reset-password";
 
   if (!supabaseUrl || !serviceRoleKey) {
     return jsonResponse({ error: "Server configuration is incomplete" }, 500);
@@ -235,10 +245,11 @@ serve(async (req) => {
     body.action !== "update" &&
     body.action !== "deactivate" &&
     body.action !== "reactivate" &&
-    body.action !== "sendPasswordReset"
+    body.action !== "sendPasswordReset" &&
+    body.action !== "listAssignableUsers"
   ) {
     return jsonResponse({
-      error: "action must be create, update, deactivate, reactivate, or sendPasswordReset",
+      error: "action must be create, update, deactivate, reactivate, sendPasswordReset, or listAssignableUsers",
     }, 400);
   }
 
@@ -262,6 +273,35 @@ serve(async (req) => {
       isActive: callerProfile?.is_active ?? null,
     });
     return jsonResponse({ error: "Admin access required" }, 403);
+  }
+
+  if (body.action === "listAssignableUsers") {
+    const { data: profiles, error: profilesError } = await supabase
+      .from("profiles")
+      .select("id, email, full_name, role, is_active")
+      .eq("is_active", true)
+      .order("full_name", { ascending: true });
+
+    if (profilesError) {
+      await writeCreateDiagnostic(supabase, "assignable users lookup failed", {
+        errorCode: profilesError.code,
+        errorMessage: profilesError.message,
+      });
+      return jsonResponse({ error: "Could not load assignable users" }, 500);
+    }
+
+    return jsonResponse({
+      ok: true,
+      action: body.action,
+      users: (profiles ?? []).map((profile) => ({
+        id: profile.id,
+        email: profile.email,
+        full_name: profile.full_name,
+        name: profile.full_name || profile.email || profile.id,
+        role: profile.role,
+        is_active: profile.is_active,
+      })),
+    });
   }
 
   if (body.action === "sendPasswordReset") {
@@ -326,7 +366,7 @@ serve(async (req) => {
           status: passwordResetError.status,
           code: passwordResetError.code,
         },
-      }, passwordResetError.status === 429 ? 429 : 500);
+      });
     }
 
     return jsonResponse({

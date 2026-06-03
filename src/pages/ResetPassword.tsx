@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase";
 import { Scale } from "lucide-react";
 
@@ -41,7 +42,7 @@ export function ResetPassword() {
 
     if (password.length < 8) {
       toast({
-        title: "Error",
+        title: "Password Too Short",
         description: "Password must be at least 8 characters long.",
         variant: "destructive",
       });
@@ -50,7 +51,7 @@ export function ResetPassword() {
 
     if (password !== confirmPassword) {
       toast({
-        title: "Error",
+        title: "Passwords Do Not Match",
         description: "Passwords do not match.",
         variant: "destructive",
       });
@@ -72,9 +73,9 @@ export function ResetPassword() {
       await supabase.auth.signOut();
       navigate("/login");
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to reset password.";
+      const message = getUserFriendlyErrorMessage(error, "Failed to reset password. Please request a new reset link.");
       toast({
-        title: "Error",
+        title: "Password Not Updated",
         description: message,
         variant: "destructive",
       });

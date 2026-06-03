@@ -22,6 +22,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
 
 const formSchema = z.object({
@@ -54,7 +56,7 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
     if (user && open) {
       form.reset({
         fullName: user.full_name || user.fullName || user.name || "",
-        phone: user.phone || "",
+        phone: formatPhoneNumber(user.phone, ""),
         role: user.role || "user",
       });
     }
@@ -69,7 +71,7 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
           userId: user?.id,
           email: user?.email,
           fullName: values.fullName,
-          phone: values.phone,
+          phone: formatPhoneNumber(values.phone, ""),
           role: values.role,
           ghlRole: "user",
         },
@@ -81,7 +83,10 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
       if (data?.ghlUpdated === false) {
         toast({
           title: "User updated locally",
-          description: `Failed to update in CRM: ${data.ghlUpdateSkippedReason || "Unknown reason"}`,
+          description: getUserFriendlyErrorMessage(
+            data.ghlUpdateSkippedReason,
+            "The user was saved in the app, but the CRM could not be updated.",
+          ),
           variant: "destructive",
         });
       } else {
@@ -91,11 +96,11 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
       onSuccess();
       onOpenChange(false);
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to update user";
+      const message = getUserFriendlyErrorMessage(error, "Failed to update user. Please try again.");
       console.error("Failed to update user:", error);
       toast({
         variant: "destructive",
-        title: "Error",
+        title: "User Not Updated",
         description: message,
       });
     } finally {
@@ -135,7 +140,11 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
                   <FormItem>
                     <FormLabel>Phone Number (Optional)</FormLabel>
                     <FormControl>
-                      <Input placeholder="+15555550100" {...field} />
+                      <Input
+                        placeholder="(555) 000-0000"
+                        {...field}
+                        onChange={(event) => field.onChange(formatPhoneInput(event.target.value))}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

@@ -1,4 +1,4 @@
-import { ImgHTMLAttributes, ReactNode } from "react";
+import { ImgHTMLAttributes, ReactNode, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export function Avatar({ className, children }: { className?: string; children: ReactNode }) {
@@ -9,8 +9,26 @@ export function Avatar({ className, children }: { className?: string; children: 
   );
 }
 
-export function AvatarImage(props: ImgHTMLAttributes<HTMLImageElement>) {
-  return <img className="aspect-square h-full w-full object-cover" {...props} />;
+export function AvatarImage({ className, onError, src, ...props }: ImgHTMLAttributes<HTMLImageElement>) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
+
+  if (!src || hasError) return null;
+
+  return (
+    <img
+      className={cn("absolute inset-0 aspect-square h-full w-full object-cover", className)}
+      src={src}
+      onError={(event) => {
+        setHasError(true);
+        onError?.(event);
+      }}
+      {...props}
+    />
+  );
 }
 
 export function AvatarFallback({

@@ -30,6 +30,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { cn } from "@/lib/utils";
 
 const contactSchema = z.object({
@@ -50,6 +51,9 @@ export type ContactFormValues = z.infer<typeof contactSchema>;
 type SystemUser = {
   id: string;
   name?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
   firstName?: string;
   lastName?: string;
   email?: string;
@@ -60,7 +64,6 @@ type EditContactDialogProps = {
   onOpenChange: (open: boolean) => void;
   onEditContact: (contact: ContactFormValues) => Promise<void> | void;
   contact: any | null;
-  attorneyOptions?: string[];
   accountTypeOptions?: string[];
   practiceAreaOptions?: string[];
   languageOptions?: string[];
@@ -68,7 +71,17 @@ type EditContactDialogProps = {
 };
 
 function getUserName(user: SystemUser) {
-  return user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || user.id;
+  return (
+    user.name ||
+    user.full_name ||
+    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim() ||
+    user.email ||
+    user.id
+  );
+}
+
+function getUserByFormValue(users: SystemUser[], value: string) {
+  return users.find((user) => user.id === value || getUserName(user) === value);
 }
 
 function trimValue(value: unknown) {
@@ -102,7 +115,7 @@ export function EditContactDialog({
       type: "Client",
       status: "Consultation",
       caseType: "",
-      attorneyAssigned: "",
+      attorneyAssigned: "Unassigned",
       dob: "",
       gender: "",
       language: "",
@@ -116,20 +129,25 @@ export function EditContactDialog({
           String(trimValue(contact.gender)).slice(1).toLowerCase()
         : "";
 
+      const assignedUser = getUserByFormValue(
+        systemUsers,
+        contact.attorneyAssignedId || contact.assignedAttorneyId || contact.attorneyAssigned || contact.assignedAttorney || "",
+      );
+
       form.reset({
         name: String(trimValue(contact.name) || ""),
         email: contact.email === "N/A" ? "" : String(trimValue(contact.email) || ""),
-        phone: contact.phone === "N/A" ? "" : String(trimValue(contact.phone) || ""),
+        phone: contact.phone === "N/A" ? "" : formatPhoneNumber(String(trimValue(contact.phone) || ""), ""),
         type: String(findMatchingOption(contact.type, accountTypeOptions) || "Client"),
         status: String(trimValue(contact.status) || "Consultation"),
         caseType: String(findMatchingOption(contact.caseType, practiceAreaOptions) || ""),
-        attorneyAssigned: contact.attorneyAssigned || contact.assignedAttorney || "Unassigned",
+        attorneyAssigned: assignedUser?.id || "Unassigned",
         dob: contact.dob === "N/A" ? "" : String(trimValue(contact.dob) || ""),
         gender: contact.gender === "N/A" ? "" : normalizedGender,
         language: String(findMatchingOption(contact.language, languageOptions) || ""),
       });
     }
-  }, [contact, open, form, accountTypeOptions, practiceAreaOptions, languageOptions]);
+  }, [contact, open, form, accountTypeOptions, practiceAreaOptions, languageOptions, systemUsers]);
 
   const onSubmit = async (data: ContactFormValues) => {
     await onEditContact(data);
@@ -190,7 +208,11 @@ export function EditContactDialog({
                   <FormItem>
                     <FormLabel>Phone</FormLabel>
                     <FormControl>
-                      <Input placeholder="(555) 000-0000" {...field} />
+                      <Input
+                        placeholder="(555) 000-0000"
+                        {...field}
+                        onChange={(event) => field.onChange(formatPhoneInput(event.target.value))}
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -294,22 +316,20 @@ export function EditContactDialog({
               control={form.control}
               name="attorneyAssigned"
               render={({ field }) => {
-                const selectedUser = systemUsers.find(
-                  (user) => user.id === field.value || getUserName(user) === field.value,
-                );
+                const selectedUser = getUserByFormValue(systemUsers, field.value);
                 const selectedLabel =
                   field.value && field.value !== "Unassigned"
                     ? selectedUser
                       ? getUserName(selectedUser)
-                      : field.value
+                      : "Select attorney"
                     : "Select attorney";
 
                 return (
                   <FormItem className="flex flex-col">
                     <FormLabel>Assigned Attorney</FormLabel>
                     <Popover open={isAttorneyPopoverOpen} onOpenChange={setIsAttorneyPopoverOpen}>
-                      <PopoverTrigger asChild>
-                        <FormControl>
+                      <FormControl>
+                        <PopoverTrigger asChild>
                           <Button
                             type="button"
                             variant="outline"
@@ -322,8 +342,8 @@ export function EditContactDialog({
                             {selectedLabel}
                             <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                           </Button>
-                        </FormControl>
-                      </PopoverTrigger>
+                        </PopoverTrigger>
+                      </FormControl>
                       <PopoverContent className="w-[300px] p-0">
                         <Command>
                           <CommandInput placeholder="Search users..." />
@@ -355,17 +375,17 @@ export function EditContactDialog({
                                 const userName = getUserName(user);
                                 return (
                                   <CommandItem
-                                    value={userName}
+                                    value={`${userName} ${user.id}`}
                                     key={user.id}
                                     onSelect={() => {
-                                      form.setValue("attorneyAssigned", userName);
+                                      form.setValue("attorneyAssigned", user.id);
                                       setIsAttorneyPopoverOpen(false);
                                     }}
                                   >
                                     <Check
                                       className={cn(
                                         "mr-2 h-4 w-4",
-                                        field.value === userName ? "opacity-100" : "opacity-0",
+                                        field.value === user.id ? "opacity-100" : "opacity-0",
                                       )}
                                     />
                                     {userName}

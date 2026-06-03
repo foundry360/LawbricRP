@@ -6,6 +6,8 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { getAvatarInitials } from "@/lib/avatar";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase";
 import { Key, Loader2, Upload, User } from "lucide-react";
 
@@ -74,12 +76,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         toast({ title: "Success", description: "Image uploaded successfully." });
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Upload failed";
+      const message = getUserFriendlyErrorMessage(error, "The image could not be uploaded. Please try again.");
       toast({
         title: "Upload failed",
         description: message.includes("Bucket not found")
           ? "Please create a public 'avatars' bucket in your storage settings."
-          : `Error: ${message}`,
+          : message,
         variant: "destructive",
       });
     } finally {
@@ -108,7 +110,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const handleSaveProfile = async () => {
     if (avatarUrl.startsWith("data:")) {
       toast({
-        title: "Error",
+        title: "Image Still Uploading",
         description: "Image is still uploading or failed to upload. Please try uploading again.",
         variant: "destructive",
       });
@@ -126,11 +128,21 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     setIsLoading(false);
 
     if (error) {
-      toast({ title: "Error", description: error.message, variant: "destructive" });
+      toast({
+        title: "Profile Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Profile could not be saved. Please try again."),
+        variant: "destructive",
+      });
     } else {
       toast({ title: "Success", description: "Profile saved successfully." });
     }
   };
+
+  const userInitials = getAvatarInitials({
+    firstName,
+    lastName,
+    email,
+  });
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -180,10 +192,9 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                     <Label>Avatar Image</Label>
                     <div className="flex items-center gap-6">
                       <Avatar className="h-20 w-20">
-                        <AvatarImage src={avatarUrl} />
-                        <AvatarFallback>
-                          {(firstName?.[0] || email?.[0] || "L").toUpperCase()}
-                          {(lastName?.[0] || "B").toUpperCase()}
+                        {avatarUrl ? <AvatarImage src={avatarUrl} alt={`${userInitials} avatar`} /> : null}
+                        <AvatarFallback className="bg-primary/10 text-xl font-semibold text-primary">
+                          {userInitials}
                         </AvatarFallback>
                       </Avatar>
                       <div

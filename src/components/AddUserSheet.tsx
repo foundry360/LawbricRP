@@ -7,6 +7,9 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { getPasswordResetSkippedMessage } from "@/lib/password-reset";
+import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
 
 type LocationRow = {
@@ -53,7 +56,7 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
     if (error) {
       toast({
         title: "Could not load locations",
-        description: error.message,
+        description: getUserFriendlyErrorMessage(error, "Please complete Account Activation before adding users."),
         variant: "destructive",
       });
     }
@@ -102,7 +105,7 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
           action: "create",
           email: formData.email,
           fullName: `${formData.firstName} ${formData.lastName}`.trim(),
-          phone: formData.phone,
+          phone: formatPhoneNumber(formData.phone, ""),
           role: formData.role,
           ghlRole: "user",
           locationIds: selectedLocations,
@@ -116,10 +119,13 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
 
       if (data?.error) throw new Error(data.error);
 
+      const resetSkippedReason =
+        typeof data?.passwordResetSkippedReason === "string" ? data.passwordResetSkippedReason : undefined;
+
       toast({
         title: "User created",
         description: data?.passwordResetSent === false
-          ? "The user was created, but the password reset email was not sent."
+          ? `The user was created. ${getPasswordResetSkippedMessage(resetSkippedReason)}`
           : "The user has been successfully created.",
       });
 
@@ -128,11 +134,11 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
       setFormData({ firstName: "", lastName: "", email: "", phone: "", role: "user" });
       onSuccess();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to create user.";
+      const message = getUserFriendlyErrorMessage(error, "Failed to create user. Please try again.");
       console.error("Error creating user:", error);
       toast({
         variant: "destructive",
-        title: "Error",
+        title: "User Not Created",
         description: message,
       });
     } finally {
@@ -144,7 +150,12 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
     <Sheet open={isOpen} onOpenChange={handleOpenChange}>
       <SheetTrigger asChild>
         {children || (
-          <Button className="h-10 w-10 shrink-0 rounded-full p-0 shadow-sm">
+          <Button
+            size="icon"
+            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+            aria-label="Add user"
+            title="Add user"
+          >
             <Plus className="h-5 w-5" />
           </Button>
         )}
@@ -193,7 +204,8 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
               id="phone"
               type="tel"
               value={formData.phone}
-              onChange={(event) => setFormData({ ...formData, phone: event.target.value })}
+              onChange={(event) => setFormData({ ...formData, phone: formatPhoneInput(event.target.value) })}
+              placeholder="(555) 000-0000"
             />
           </div>
 

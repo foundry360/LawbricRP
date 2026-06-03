@@ -60,7 +60,11 @@ import {
   getCustomFields,
   updateContact,
 } from "@/lib/api";
+import { getAvatarInitials } from "@/lib/avatar";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
+import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
 type ContactStatus = "Active" | "Pending" | "Closed" | "Consultation";
@@ -75,6 +79,7 @@ type Contact = {
   status: ContactStatus;
   caseType: string;
   attorneyAssigned: string;
+  attorneyAssignedId?: string;
   lastContact: string;
   avatarUrl?: string;
   dob?: string;
@@ -126,10 +131,6 @@ function getFieldOptions(field: any) {
   );
 }
 
-function getUserName(user: any) {
-  return user.name || `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || user.id;
-}
-
 function getArrayFromResponse(response: any, key: string) {
   if (Array.isArray(response)) return response;
   if (Array.isArray(response?.[key])) return response[key];
@@ -148,7 +149,6 @@ function buildContactCustomFields(customFields: any[], data: ContactFormValues) 
     ["account type", data.type],
     ["language", data.language],
     ["gender", data.gender],
-    ["assigned attorney", data.attorneyAssigned === "Unassigned" ? "" : data.attorneyAssigned],
   ]
     .map(([name, value]) => {
       const id = getCustomFieldId(customFields, String(name));
@@ -198,7 +198,7 @@ export function ContactDirectory() {
   const [sortColumn, setSortColumn] = useState<keyof Contact>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [locationId, setLocationId] = useState("");
-  const [attorneyOptions, setAttorneyOptions] = useState<string[]>([]);
+  const [locationRecordId, setLocationRecordId] = useState("");
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
@@ -232,13 +232,42 @@ export function ContactDirectory() {
     });
   };
 
+  const saveContactAssignment = async (ghlContactId: string, assignedUserId: string) => {
+    if (!locationRecordId || !ghlContactId) return;
+
+    if (!assignedUserId || assignedUserId === "Unassigned") {
+      const { error } = await supabase
+        .from("contact_assignments")
+        .delete()
+        .eq("location_id", locationRecordId)
+        .eq("ghl_contact_id", ghlContactId);
+
+      if (error) throw new Error(error.message);
+      return;
+    }
+
+    const { error } = await supabase.from("contact_assignments").upsert(
+      {
+        location_id: locationRecordId,
+        ghl_contact_id: ghlContactId,
+        assigned_user_id: assignedUserId,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "location_id,ghl_contact_id" },
+    );
+
+    if (error) throw new Error(error.message);
+  };
+
   useEffect(() => {
     const fetchCRMContacts = async () => {
       setIsLoading(true);
       try {
         const context = await getAppLocationContext();
         const locId = context.location?.ghlLocationId || "";
+        const locRecordId = context.location?.id || "";
         setLocationId(locId);
+        setLocationRecordId(locRecordId);
 
         if (!context.configured) {
           setContacts([]);
@@ -259,11 +288,10 @@ export function ContactDirectory() {
 
         let fetchedUsers: any[] = [];
         try {
-          const usersResponse: any = await apiClient(`/users/?locationId=${locId}`);
-          fetchedUsers = usersResponse?.users || usersResponse?.data || (Array.isArray(usersResponse) ? usersResponse : []);
+          fetchedUsers = await getAssignableUsers();
           setSystemUsers(fetchedUsers);
         } catch (error) {
-          console.error("Failed to fetch system users", error);
+          console.error("Failed to fetch app users", error);
         }
 
         const response: any = await getContacts(locId);
@@ -286,20 +314,35 @@ export function ContactDirectory() {
           });
         };
 
-        const attorneyField = findField("assigned attorney", ["attorney", "lawyer", "assigned"]);
         const accountTypeField = findField("account type");
         const practiceAreaField = findField("practice area");
         const languageField = findField("language");
 
-        const attOptions = getFieldOptions(attorneyField);
         const accOptions = getFieldOptions(accountTypeField);
         const paOptions = getFieldOptions(practiceAreaField);
         const langOptions = getFieldOptions(languageField);
 
-        if (attOptions.length > 0) setAttorneyOptions(attOptions);
         if (accOptions.length > 0) setAccountTypeOptions(accOptions);
         if (paOptions.length > 0) setPracticeAreaOptions(paOptions);
         if (langOptions.length > 0) setLanguageOptions(langOptions);
+
+        const assignmentMap = new Map<string, string>();
+        if (locRecordId) {
+          const { data: assignments, error: assignmentsError } = await supabase
+            .from("contact_assignments")
+            .select("ghl_contact_id, assigned_user_id")
+            .eq("location_id", locRecordId);
+
+          if (assignmentsError) {
+            console.error("Failed to fetch contact assignments", assignmentsError);
+          } else {
+            (assignments ?? []).forEach((assignment) => {
+              if (assignment.ghl_contact_id && assignment.assigned_user_id) {
+                assignmentMap.set(assignment.ghl_contact_id, assignment.assigned_user_id);
+              }
+            });
+          }
+        }
 
         const mappedContacts = getArrayFromResponse(response, "contacts").map((contact: any): Contact => {
           const tags = contact.tags || [];
@@ -323,15 +366,12 @@ export function ContactDirectory() {
             getCustomFieldValue(contact, customFieldsMap, "case");
           const caseType = Array.isArray(caseTypeValue) ? caseTypeValue.join(", ") : caseTypeValue || "General";
 
-          let attorneyAssigned = "Unassigned";
-          if (contact.assignedTo) {
-            const assignedUser = fetchedUsers.find((user) => user.id === contact.assignedTo);
-            attorneyAssigned = assignedUser ? getUserName(assignedUser) : contact.assignedTo;
-          } else if (attorneyField) {
-            const field = contact.customFields?.find((customField: any) => customField.id === attorneyField.id);
-            const value = field?.value || field?.field_value;
-            attorneyAssigned = Array.isArray(value) ? value[0] : value || "Unassigned";
-          }
+          const assignedUserId = assignmentMap.get(contact.id) || "";
+          const assignedUser = assignedUserId
+            ? fetchedUsers.find((user) => getUserId(user) === assignedUserId)
+            : null;
+          const attorneyAssignedId = assignedUser ? getUserId(assignedUser) : "";
+          const attorneyAssigned = assignedUser ? getUserName(assignedUser) : "Unassigned";
 
           const dateValue = contact.dateUpdated || contact.dateAdded;
           const date = dateValue ? new Date(dateValue) : null;
@@ -340,11 +380,12 @@ export function ContactDirectory() {
             id: contact.id,
             name: `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.email || "Unknown",
             email: contact.email || "N/A",
-            phone: contact.phone || "N/A",
+            phone: formatPhoneNumber(contact.phone),
             type,
             status,
             caseType,
             attorneyAssigned,
+            attorneyAssignedId,
             lastContact: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "Recently",
             dob: contact.dateOfBirth ? new Date(contact.dateOfBirth).toISOString().split("T")[0] : "",
             gender: contact.gender || getCustomFieldValue(contact, customFieldsMap, "gender") || "",
@@ -354,12 +395,12 @@ export function ContactDirectory() {
 
         setContacts(mappedContacts);
       } catch (error) {
-        const message = error instanceof Error ? error.message : "Unknown error";
+        const message = getUserFriendlyErrorMessage(error, "We couldn't load your contacts right now.");
         console.error("Failed to fetch CRM contacts:", error);
         toast({
           variant: "destructive",
           title: "Sync Failed",
-          description: `We couldn't load your contacts right now. (${message})`,
+          description: message,
         });
       } finally {
         setIsLoading(false);
@@ -380,28 +421,35 @@ export function ContactDirectory() {
       };
 
       if (newContactData.email && newContactData.email !== "N/A") payload.email = newContactData.email;
-      if (newContactData.phone && newContactData.phone !== "N/A") payload.phone = newContactData.phone;
+      if (newContactData.phone && newContactData.phone !== "N/A") {
+        payload.phone = formatPhoneNumber(newContactData.phone, "");
+      }
       if (newContactData.dob?.trim()) payload.dateOfBirth = newContactData.dob;
 
       const customFields = buildContactCustomFields(crmCustomFields, newContactData);
 
       if (customFields.length > 0) payload.customFields = customFields;
 
-      const assignedUser = systemUsers.find((user) => getUserName(user) === newContactData.attorneyAssigned);
-      if (assignedUser) payload.assignedTo = assignedUser.id;
+      const assignedUser = systemUsers.find((user) => getUserId(user) === newContactData.attorneyAssigned);
 
       const response: any = await createContact(payload);
       const createdContact = response.contact || response.data?.contact || response.data || response;
+      const createdContactId = createdContact.id || crypto.randomUUID();
+
+      if (assignedUser) {
+        await saveContactAssignment(createdContactId, getUserId(assignedUser));
+      }
 
       const newContact: Contact = {
-        id: createdContact.id || crypto.randomUUID(),
+        id: createdContactId,
         name: newContactData.name,
         email: newContactData.email,
-        phone: newContactData.phone,
+        phone: formatPhoneNumber(newContactData.phone),
         type: newContactData.type,
         status: newContactData.status as ContactStatus,
         caseType: newContactData.caseType,
-        attorneyAssigned: newContactData.attorneyAssigned,
+        attorneyAssigned: assignedUser ? getUserName(assignedUser) : "Unassigned",
+        attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
         lastContact: "Just now",
         dob: newContactData.dob,
         gender: newContactData.gender,
@@ -411,11 +459,11 @@ export function ContactDirectory() {
       setContacts((current) => [newContact, ...current]);
       toast({ title: "Contact Added", description: `${newContact.name} has been added to CRM.` });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const message = getUserFriendlyErrorMessage(error, "Failed to create contact in CRM. Please try again.");
       toast({
         variant: "destructive",
         title: "Creation Failed",
-        description: `Failed to create contact in CRM: ${message}`,
+        description: message,
       });
       throw error;
     }
@@ -424,10 +472,14 @@ export function ContactDirectory() {
   const handleEditContact = async (updatedData: ContactFormValues) => {
     if (!contactToEdit) return;
     const previousContacts = contacts;
+    const selectedAssignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
     const updatedContact: Contact = {
       ...contactToEdit,
       ...updatedData,
+      phone: formatPhoneNumber(updatedData.phone),
       status: updatedData.status as ContactStatus,
+      attorneyAssigned: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
+      attorneyAssignedId: selectedAssignedUser ? getUserId(selectedAssignedUser) : "",
     };
     setContacts((current) =>
       current.map((contact) => (contact.id === contactToEdit.id ? updatedContact : contact)),
@@ -441,24 +493,24 @@ export function ContactDirectory() {
         tags: [updatedData.type, updatedData.status],
       };
       if (updatedData.email) payload.email = updatedData.email;
-      if (updatedData.phone) payload.phone = updatedData.phone;
+      if (updatedData.phone) payload.phone = formatPhoneNumber(updatedData.phone, "");
       if (updatedData.dob?.trim()) payload.dateOfBirth = updatedData.dob;
 
       const customFields = buildContactCustomFields(crmCustomFields, updatedData);
       if (customFields.length > 0) payload.customFields = customFields;
 
-      const assignedUser = systemUsers.find((user) => getUserName(user) === updatedData.attorneyAssigned);
-      if (assignedUser) payload.assignedTo = assignedUser.id;
+      const assignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
 
       await updateContact(contactToEdit.id, payload);
+      await saveContactAssignment(contactToEdit.id, assignedUser ? getUserId(assignedUser) : "");
       toast({ title: "Contact Updated", description: `${updatedContact.name}'s details have been saved.` });
     } catch (error) {
       setContacts(previousContacts);
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const message = getUserFriendlyErrorMessage(error, "Failed to save contact changes. Please try again.");
       toast({
         variant: "destructive",
         title: "Update Failed",
-        description: `Failed to save changes to CRM: ${message}`,
+        description: message,
       });
       throw error;
     }
@@ -467,14 +519,15 @@ export function ContactDirectory() {
   const handleDeleteContact = async (contactId: string) => {
     try {
       await deleteContact(contactId);
+      await saveContactAssignment(contactId, "");
       setContacts((current) => current.filter((contact) => contact.id !== contactId));
       toast({ title: "Contact Deleted", description: "The contact has been removed from CRM." });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Unknown error";
+      const message = getUserFriendlyErrorMessage(error, "Failed to delete the contact. Please try again.");
       toast({
         variant: "destructive",
         title: "Delete Failed",
-        description: `Failed to delete contact from CRM: ${message}`,
+        description: message,
       });
       throw error;
     }
@@ -856,7 +909,6 @@ export function ContactDirectory() {
         onOpenChange={setIsAddModalOpen}
         onAddContact={handleAddContact}
         locationId={locationId}
-        attorneyOptions={attorneyOptions}
         accountTypeOptions={accountTypeOptions}
         practiceAreaOptions={practiceAreaOptions}
         languageOptions={languageOptions}
@@ -868,7 +920,6 @@ export function ContactDirectory() {
         onOpenChange={setIsEditModalOpen}
         onEditContact={handleEditContact}
         contact={contactToEdit}
-        attorneyOptions={attorneyOptions}
         accountTypeOptions={accountTypeOptions}
         practiceAreaOptions={practiceAreaOptions}
         languageOptions={languageOptions}
@@ -948,14 +999,16 @@ function ContactCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const contactInitials = getAvatarInitials({ fullName: contact.name, email: contact.email }, "C");
+
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
       <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
         <div className="flex items-center space-x-4">
           <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-            <AvatarImage src={contact.avatarUrl} />
+            <AvatarImage src={contact.avatarUrl} alt={`${contactInitials} avatar`} />
             <AvatarFallback className="bg-primary/10 font-semibold text-primary">
-              {contact.name.split(" ").map((part) => part[0]?.toUpperCase()).join("")}
+              {contactInitials}
             </AvatarFallback>
           </Avatar>
           <div>
@@ -1105,8 +1158,12 @@ function ContactTable({
               <td className="px-4 py-2">
                 <div className="flex items-center space-x-3">
                   <Avatar className="h-8 w-8">
+                    <AvatarImage
+                      src={contact.avatarUrl}
+                      alt={`${getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")} avatar`}
+                    />
                     <AvatarFallback className="bg-primary/10 text-xs text-primary">
-                      {contact.name.split(" ").map((part) => part[0]?.toUpperCase()).join("")}
+                      {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
                     </AvatarFallback>
                   </Avatar>
                   <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
@@ -1114,8 +1171,18 @@ function ContactTable({
                   </Link>
                 </div>
               </td>
-              <td className="px-4 py-2 text-foreground/70">{contact.email}</td>
-              <td className="px-4 py-2 text-foreground/70">{contact.phone}</td>
+              <td className="px-4 py-2 text-foreground/70">
+                <div className="flex items-center">
+                  <Mail className="mr-2 h-3.5 w-3.5 shrink-0" />
+                  <span>{contact.email}</span>
+                </div>
+              </td>
+              <td className="px-4 py-2 text-foreground/70">
+                <div className="flex items-center">
+                  <Phone className="mr-2 h-3.5 w-3.5 shrink-0" />
+                  <span>{contact.phone}</span>
+                </div>
+              </td>
               <td className="px-4 py-2">
                 <Badge variant="outline" className={cn("border-transparent", getStatusColor(contact.status))}>
                   {contact.status}

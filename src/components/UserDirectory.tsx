@@ -30,9 +30,62 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { getActiveGhlLocationId } from "@/lib/api";
+import { getAvatarInitials } from "@/lib/avatar";
+import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { getPasswordResetSkippedMessage, isPasswordResetCooldown } from "@/lib/password-reset";
+import { formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
+import { cn } from "@/lib/utils";
+
+async function getFunctionErrorMessage(error: unknown) {
+  const functionError = error as { message?: string; context?: unknown; status?: number };
+
+  if (functionError.context instanceof Response) {
+    const response = functionError.context;
+    const body = await response.clone().json().catch(async () => {
+      const text = await response.clone().text().catch(() => "");
+      return text ? { error: text } : null;
+    });
+    return body?.error || body?.message || body?.passwordResetSkippedReason || functionError.message;
+  }
+
+  if (functionError.context && typeof functionError.context === "object") {
+    const context = functionError.context as Record<string, unknown>;
+    return (
+      (typeof context.error === "string" && context.error) ||
+      (typeof context.message === "string" && context.message) ||
+      (typeof context.passwordResetSkippedReason === "string" && context.passwordResetSkippedReason) ||
+      functionError.message
+    );
+  }
+
+  return functionError.message;
+}
+
+function getVisiblePageItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sortedPages = [...pages]
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+
+  sortedPages.forEach((page, index) => {
+    const previousPage = sortedPages[index - 1];
+    if (previousPage && page - previousPage > 1) {
+      items.push("ellipsis");
+    }
+    items.push(page);
+  });
+
+  return items;
+}
 
 export function UserDirectory() {
   const { toast } = useToast();
@@ -40,7 +93,7 @@ export function UserDirectory() {
   const [searchTerm, setSearchTerm] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
-  const [itemsPerPage] = useState(25);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
   const [locationId, setLocationId] = useState("");
   const [editingUser, setEditingUser] = useState<any>(null);
   const [userToResetPassword, setUserToResetPassword] = useState<any>(null);
@@ -63,7 +116,7 @@ export function UserDirectory() {
       toast({
         variant: "destructive",
         title: "Sync Failed",
-        description: "Could not load system users.",
+        description: getUserFriendlyErrorMessage(error, "Could not load system users. Please refresh and try again."),
       });
     } finally {
       setIsLoading(false);
@@ -86,31 +139,39 @@ export function UserDirectory() {
       });
 
       if (error) {
-        const status = (error as any).status;
+        const message = await getFunctionErrorMessage(error);
+        const status = (error as { status?: number }).status;
         if (
-          error.message?.toLowerCase().includes("rate limit") ||
+          message?.toLowerCase().includes("rate limit") ||
           status === 429 ||
-          error.message?.toLowerCase().includes("too many")
+          message?.toLowerCase().includes("too many")
         ) {
           throw new Error("Too many reset emails were sent recently. Please wait a few minutes and try again.");
         }
-        throw new Error(error.message || "Failed to send password reset email");
+        throw new Error(message || "Failed to send password reset email");
       }
 
       if (data?.error) throw new Error(data.error);
 
+      const resetSkippedReason =
+        typeof data?.passwordResetSkippedReason === "string" ? data.passwordResetSkippedReason : undefined;
+      const resetWasSkipped = data?.passwordResetSent === false;
+
       toast({
-        title: data?.passwordResetSent === false ? "User found" : "Success",
-        description:
-          data?.passwordResetSent === false
-            ? data.passwordResetSkippedReason || "Password reset email was not sent."
-            : "Password reset email sent.",
-        variant: data?.passwordResetSent === false ? "destructive" : "default",
+        title: resetWasSkipped
+          ? isPasswordResetCooldown(resetSkippedReason)
+            ? "Reset email cooldown"
+            : "Reset email not sent"
+          : "Success",
+        description: resetWasSkipped
+          ? getPasswordResetSkippedMessage(resetSkippedReason)
+          : "Password reset email sent.",
+        variant: resetWasSkipped && !isPasswordResetCooldown(resetSkippedReason) ? "destructive" : "default",
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to send password reset email";
+      const message = getUserFriendlyErrorMessage(error, "Failed to send password reset email. Please try again.");
       console.error(error);
-      toast({ variant: "destructive", title: "Error", description: message });
+      toast({ variant: "destructive", title: "Reset Email Not Sent", description: message });
     } finally {
       setUserToResetPassword(null);
     }
@@ -132,9 +193,9 @@ export function UserDirectory() {
       toast({ title: "User deactivated successfully" });
       fetchUsers();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to deactivate user";
+      const message = getUserFriendlyErrorMessage(error, "Failed to deactivate user. Please try again.");
       console.error(error);
-      toast({ variant: "destructive", title: "Error", description: message });
+      toast({ variant: "destructive", title: "User Not Deactivated", description: message });
     }
   };
 
@@ -153,9 +214,9 @@ export function UserDirectory() {
       toast({ title: "User reactivated successfully" });
       fetchUsers();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to reactivate user";
+      const message = getUserFriendlyErrorMessage(error, "Failed to reactivate user. Please try again.");
       console.error(error);
-      toast({ variant: "destructive", title: "Error", description: message });
+      toast({ variant: "destructive", title: "User Not Reactivated", description: message });
     }
   };
 
@@ -170,9 +231,16 @@ export function UserDirectory() {
     return "Unknown";
   };
 
-  const getInitial = (user: any) => {
-    const name = getDisplayName(user);
-    return name !== "Unknown" ? name[0].toUpperCase() : "U";
+  const getUserInitials = (user: any) => {
+    return getAvatarInitials(
+      {
+        firstName: user.first_name || user.firstName,
+        lastName: user.last_name || user.lastName,
+        fullName: getDisplayName(user),
+        email: user.email,
+      },
+      "U",
+    );
   };
 
   const filteredUsers = users.filter((user) => {
@@ -181,14 +249,19 @@ export function UserDirectory() {
   });
 
   const totalPages = Math.ceil(filteredUsers.length / itemsPerPage);
-  const startIndex = (currentPage - 1) * itemsPerPage;
+  const safeTotalPages = Math.max(1, totalPages);
+  const effectiveCurrentPage = Math.min(currentPage, safeTotalPages);
+  const firstVisibleRow = filteredUsers.length === 0 ? 0 : (effectiveCurrentPage - 1) * itemsPerPage + 1;
+  const lastVisibleRow = Math.min(effectiveCurrentPage * itemsPerPage, filteredUsers.length);
+  const visiblePageItems = getVisiblePageItems(effectiveCurrentPage, safeTotalPages);
+  const startIndex = (effectiveCurrentPage - 1) * itemsPerPage;
   const paginatedUsers = filteredUsers.slice(startIndex, startIndex + itemsPerPage);
 
   return (
     <div className="space-y-6 p-6">
       <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
         <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold tracking-tight">User Management</h1>
+          <h1 className="text-2xl font-bold tracking-tight text-primary">User Management</h1>
           <Badge className="rounded-full border-transparent bg-primary text-primary-foreground hover:bg-primary/90">
             {filteredUsers.length}
           </Badge>
@@ -211,7 +284,7 @@ export function UserDirectory() {
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-xl border border-border bg-background shadow-sm">
+      <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
@@ -242,9 +315,11 @@ export function UserDirectory() {
                   <td className="px-4 py-2">
                     <div className="flex items-center space-x-3">
                       <Avatar className="h-8 w-8">
-                        <AvatarImage src={user.avatar_url || user.profilePhoto || ""} />
+                        {(user.avatar_url || user.profilePhoto) && (
+                          <AvatarImage src={user.avatar_url || user.profilePhoto} alt={`${getUserInitials(user)} avatar`} />
+                        )}
                         <AvatarFallback className="bg-primary/10 text-xs text-primary">
-                          {getInitial(user)}
+                          {getUserInitials(user)}
                         </AvatarFallback>
                       </Avatar>
                       <div className="capitalize text-[#2384CA] hover:underline">{getDisplayName(user)}</div>
@@ -259,7 +334,7 @@ export function UserDirectory() {
                   <td className="px-4 py-2">
                     <div className="flex items-center text-sm text-foreground/70">
                       <Phone className="mr-2 h-3.5 w-3.5" />
-                      <span>{user.phone || "N/A"}</span>
+                      <span>{formatPhoneNumber(user.phone)}</span>
                     </div>
                   </td>
                   <td className="px-4 py-2">
@@ -311,54 +386,94 @@ export function UserDirectory() {
         </table>
       </div>
 
-      {totalPages > 1 && (
-        <Pagination className="justify-end">
-          <PaginationContent>
-            <PaginationItem>
-              <PaginationPrevious
-                href="#"
-                onClick={(event) => {
-                  event.preventDefault();
-                  setCurrentPage((page) => Math.max(1, page - 1));
-                }}
-                className={currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
-              />
-            </PaginationItem>
-            {Array.from({ length: Math.min(5, totalPages) }).map((_, index) => {
-              let pageNum = index + 1;
-              if (totalPages > 5 && currentPage > 3) {
-                pageNum = currentPage - 2 + index;
-                if (pageNum > totalPages) pageNum = totalPages - (4 - index);
-              }
-              return (
-                <PaginationItem key={pageNum}>
-                  <PaginationLink
-                    href="#"
-                    isActive={currentPage === pageNum}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      setCurrentPage(pageNum);
-                    }}
-                    className="cursor-pointer"
-                  >
-                    {pageNum}
-                  </PaginationLink>
-                </PaginationItem>
-              );
-            })}
-            <PaginationItem>
-              <PaginationNext
-                href="#"
-                onClick={(event) => {
-                  event.preventDefault();
-                  setCurrentPage((page) => Math.min(totalPages, page + 1));
-                }}
-                className={currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"}
-              />
-            </PaginationItem>
-          </PaginationContent>
-        </Pagination>
-      )}
+      <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-muted-foreground">
+          Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
+          {" - "}
+          <span className="font-medium text-foreground">{lastVisibleRow}</span>
+          {" of "}
+          <span className="font-medium text-foreground">{filteredUsers.length}</span> users
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center justify-between gap-2 text-muted-foreground sm:justify-start">
+            <span>Rows per page</span>
+            <Select
+              value={itemsPerPage.toString()}
+              onValueChange={(value) => {
+                setItemsPerPage(Number(value));
+                setCurrentPage(1);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[78px] rounded-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="min-w-[78px]">
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="75">75</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Pagination className="mx-0 w-full justify-end sm:w-auto">
+            <PaginationContent className="justify-end">
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.max(1, effectiveCurrentPage - 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer",
+                  )}
+                />
+              </PaginationItem>
+              {visiblePageItems.map((item, index) =>
+                item === "ellipsis" ? (
+                  <PaginationItem key={`ellipsis-${index}`} className="hidden px-1 text-muted-foreground sm:block">
+                    ...
+                  </PaginationItem>
+                ) : (
+                  <PaginationItem key={item} className="hidden sm:block">
+                    <PaginationLink
+                      href="#"
+                      isActive={effectiveCurrentPage === item}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setCurrentPage(item);
+                      }}
+                      className="h-9 min-w-9 cursor-pointer rounded-full px-3"
+                    >
+                      {item}
+                    </PaginationLink>
+                  </PaginationItem>
+                ),
+              )}
+              <PaginationItem className="sm:hidden">
+                <span className="flex h-9 items-center rounded-full px-3 text-sm text-muted-foreground">
+                  Page {effectiveCurrentPage} of {safeTotalPages}
+                </span>
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.min(safeTotalPages, effectiveCurrentPage + 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === safeTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer",
+                  )}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
+      </div>
 
       <EditUserSheet
         user={editingUser}

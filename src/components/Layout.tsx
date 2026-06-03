@@ -44,6 +44,7 @@ import { supabase } from "@/lib/supabase";
 import { getAppLocationContext, type AppLocationContext } from "@/lib/api";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { getAvatarInitials } from "@/lib/avatar";
 import { formatDistanceToNow } from "date-fns";
 
 type NotificationRow = {
@@ -62,23 +63,29 @@ export function Layout({ children }: { children: ReactNode }) {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [userAvatar, setUserAvatar] = useState("");
   const [userEmail, setUserEmail] = useState("");
+  const [userFirstName, setUserFirstName] = useState("");
+  const [userLastName, setUserLastName] = useState("");
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [appContext, setAppContext] = useState<AppLocationContext | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
 
   useEffect(() => {
+    const setUserProfile = (user?: { email?: string; user_metadata?: Record<string, unknown> } | null) => {
+      const metadata = user?.user_metadata ?? {};
+      setUserAvatar(typeof metadata.avatar_url === "string" ? metadata.avatar_url.trim() : "");
+      setUserEmail(user?.email || "");
+      setUserFirstName(typeof metadata.first_name === "string" ? metadata.first_name : "");
+      setUserLastName(typeof metadata.last_name === "string" ? metadata.last_name : "");
+    };
+
     supabase.auth.getUser().then(({ data: { user } }) => {
-      if (user) {
-        setUserAvatar(user.user_metadata?.avatar_url || "");
-        setUserEmail(user.email || "");
-      }
+      setUserProfile(user);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUserAvatar(session?.user?.user_metadata?.avatar_url || "");
-      setUserEmail(session?.user?.email || "");
+      setUserProfile(session?.user);
     });
 
     const handleFullscreenChange = () => {
@@ -138,6 +145,11 @@ export function Layout({ children }: { children: ReactNode }) {
   }, []);
 
   const unreadCount = notifications.filter((notification) => !notification.is_read).length;
+  const userInitials = getAvatarInitials({
+    firstName: userFirstName,
+    lastName: userLastName,
+    email: userEmail,
+  });
 
   const markAllAsRead = async () => {
     const locationId = localStorage.getItem("locationId");
@@ -302,9 +314,9 @@ export function Layout({ children }: { children: ReactNode }) {
             </div>
             {userEmail && <span className="text-sm font-medium">{userEmail}</span>}
             <Avatar className="h-8 w-8">
-              <AvatarImage src={userAvatar} />
+              {userAvatar ? <AvatarImage src={userAvatar} alt={`${userInitials} avatar`} /> : null}
               <AvatarFallback className="bg-secondary text-sm font-bold text-secondary-foreground">
-                {userEmail ? userEmail.slice(0, 2).toUpperCase() : "LB"}
+                {userInitials}
               </AvatarFallback>
             </Avatar>
           </div>
