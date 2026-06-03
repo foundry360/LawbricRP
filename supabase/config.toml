@@ -59,3 +59,30 @@ verify_jwt = false
 
 [functions.app-location-context]
 verify_jwt = false
+
+[functions.create_case]
+verify_jwt = false
+
+[functions.update_case]
+verify_jwt = false
+
+[functions.get_case]
+verify_jwt = false
+
+[functions.list_cases]
+verify_jwt = false
+
+[functions.add_case_party]
+verify_jwt = false
+
+[functions.create_task]
+verify_jwt = false
+
+[functions.create_event]
+verify_jwt = false
+
+[functions.upload_document]
+verify_jwt = false
+
+[functions.create_note]
+verify_jwt = false

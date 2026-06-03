@@ -1,5 +1,7 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { CalendarPage } from "@/pages/CalendarPage";
+import { CaseDetailPage } from "@/pages/CaseDetailPage";
+import { CasesPage } from "@/pages/CasesPage";
 import { ContactDetailPage } from "@/pages/ContactDetailPage";
 import { Layout } from "@/components/Layout";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -39,6 +41,26 @@ function ContactDetailShell() {
   );
 }
 
+function CasesShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <CasesPage />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
+function CaseDetailShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <CaseDetailPage />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
 function CalendarShell() {
   return (
     <RequireAuth>
@@ -66,7 +88,8 @@ export function App() {
         <Route path="/" element={<IndexShell />} />
         <Route path="/contact/:contactId" element={<ContactDetailShell />} />
         <Route path="/dashboard" element={<AppShell title="Dashboard" />} />
-        <Route path="/cases" element={<AppShell title="Cases" />} />
+        <Route path="/cases" element={<CasesShell />} />
+        <Route path="/case/:caseId" element={<CaseDetailShell />} />
         <Route path="/calendar" element={<CalendarShell />} />
         <Route path="/tasks" element={<AppShell title="Tasks" />} />
         <Route path="/users" element={<UsersShell />} />

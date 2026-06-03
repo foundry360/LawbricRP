@@ -323,7 +323,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <Sidebar collapsible="icon" className="z-40 border-r pt-16">
+      <Sidebar collapsible="icon" className="z-40 border-r bg-[#EFF6FF] pt-16">
         <SidebarContent>
           <SidebarGroup className="pt-4">
             <SidebarGroupContent>
@@ -332,8 +332,8 @@ export function Layout({ children }: { children: ReactNode }) {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <SidebarMenuButton className="h-10 justify-start font-medium hover:bg-transparent focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
-                        <div className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
-                          <Plus className="h-5 w-5" strokeWidth={1.5} />
+                        <div className="relative right-px top-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                          <Plus className="h-4 w-4" strokeWidth={1.8} />
                         </div>
                         <span className="text-[13px] group-data-[collapsible=icon]:hidden">
                           Quick Add
@@ -359,7 +359,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 <div className="mx-4 mb-2 mt-6 h-px bg-border group-data-[collapsible=icon]:mx-2" />
                 <NavItem icon={LayoutGrid} label="Dashboard" to="/dashboard" active={location.pathname === "/dashboard"} />
                 <NavItem icon={Users} label="Contacts" to="/" active={location.pathname === "/" || location.pathname.startsWith("/contact")} />
-                <NavItem icon={Briefcase} label="Cases" to="/cases" active={location.pathname === "/cases"} />
+                <NavItem icon={Briefcase} label="Cases" to="/cases" active={location.pathname === "/cases" || location.pathname.startsWith("/case/")} />
                 <NavItem icon={Calendar} label="Calendar" to="/calendar" active={location.pathname === "/calendar"} />
                 <NavItem icon={CheckSquare} label="Tasks" to="/tasks" active={location.pathname === "/tasks"} />
                 <NavItem icon={UserCog} label="User Management" to="/users" active={location.pathname === "/users"} />
@@ -372,7 +372,7 @@ export function Layout({ children }: { children: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter className="border-t p-4">
+        <SidebarFooter className="border-t bg-[#EFF6FF] p-4">
           <SidebarTrigger />
         </SidebarFooter>
       </Sidebar>

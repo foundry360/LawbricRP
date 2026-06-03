@@ -1007,7 +1007,7 @@ function ContactCard({
         <div className="flex items-center space-x-4">
           <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
             <AvatarImage src={contact.avatarUrl} alt={`${contactInitials} avatar`} />
-            <AvatarFallback className="bg-primary/10 font-semibold text-primary">
+            <AvatarFallback className="bg-blue-50 font-semibold text-primary">
               {contactInitials}
             </AvatarFallback>
           </Avatar>
@@ -1162,7 +1162,7 @@ function ContactTable({
                       src={contact.avatarUrl}
                       alt={`${getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")} avatar`}
                     />
-                    <AvatarFallback className="bg-primary/10 text-xs text-primary">
+                    <AvatarFallback className="bg-blue-50 text-xs text-primary">
                       {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
                     </AvatarFallback>
                   </Avatar>

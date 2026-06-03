@@ -1,0 +1,107 @@
+import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import {
+  corsHeaders,
+  getCaseOrThrow,
+  getRequestContext,
+  handleError,
+  jsonResponse,
+  readJsonBody,
+  syncCaseStageToGhl,
+} from "../_shared/case-utils.ts";
+
+serve(async (req) => {
+  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
+
+  try {
+    const body = await readJsonBody(req);
+    const context = await getRequestContext(req, body.locationId);
+    if (!body.caseId) return jsonResponse({ error: "Case ID is required" }, 400);
+
+    const existing = await getCaseOrThrow(context, body.caseId);
+    const updates: Record<string, unknown> = {
+      updated_by: context.user.id,
+    };
+
+    if (body.caseNumber !== undefined) updates.case_number = String(body.caseNumber).trim();
+    if (body.caseName !== undefined) updates.case_name = String(body.caseName).trim();
+    if (body.caseType !== undefined) updates.case_type = String(body.caseType).trim() || "General";
+    if (body.status !== undefined) updates.status = body.status;
+    if (body.stage !== undefined) updates.stage = body.stage;
+    if (body.assignedUserId !== undefined) updates.assigned_user_id = body.assignedUserId || null;
+    if (body.assignedGhlUserId !== undefined) updates.assigned_ghl_user_id = body.assignedGhlUserId || null;
+    if (body.ghlPipelineStageId !== undefined) updates.ghl_pipeline_stage_id = body.ghlPipelineStageId || null;
+    if (body.metadata !== undefined) updates.metadata = { ...(existing.metadata || {}), ...body.metadata };
+    if (body.status === "closed" && !existing.closed_at) updates.closed_at = new Date().toISOString();
+
+    const stageChanged = body.stage !== undefined && body.stage !== existing.stage;
+    const statusChanged = body.status !== undefined && body.status !== existing.status;
+
+    const { data: caseRow, error } = await context.supabase
+      .from("cases")
+      .update(updates)
+      .eq("id", body.caseId)
+      .eq("location_id", context.location.id)
+      .select("*")
+      .single();
+
+    if (error) throw new Error(error.message);
+
+    if (body.assignedUserId !== undefined) {
+      const nextAssignedUserId = body.assignedUserId || null;
+      const endedAt = new Date().toISOString();
+
+      const { error: clearAssignmentError } = await context.supabase
+        .from("case_assignments")
+        .update({ is_primary: false, ended_at: endedAt })
+        .eq("location_id", context.location.id)
+        .eq("case_id", caseRow.id)
+        .eq("role", "owner")
+        .eq("is_primary", true);
+
+      if (clearAssignmentError) throw new Error(clearAssignmentError.message);
+
+      if (nextAssignedUserId) {
+        const { error: upsertAssignmentError } = await context.supabase.from("case_assignments").upsert(
+          {
+            location_id: context.location.id,
+            case_id: caseRow.id,
+            assigned_user_id: nextAssignedUserId,
+            role: "owner",
+            is_primary: true,
+            assigned_by: context.user.id,
+            assigned_at: endedAt,
+            ended_at: null,
+          },
+          { onConflict: "case_id,assigned_user_id,role" },
+        );
+
+        if (upsertAssignmentError) throw new Error(upsertAssignmentError.message);
+      }
+    }
+
+    if (stageChanged || statusChanged) {
+      await context.supabase.from("case_events").insert({
+        location_id: context.location.id,
+        case_id: caseRow.id,
+        title: "Case stage updated",
+        event_type: "stage_change",
+        description: `Case changed from ${existing.stage}/${existing.status} to ${caseRow.stage}/${caseRow.status}.`,
+        start_at: new Date().toISOString(),
+        status: "completed",
+        metadata: {
+          previous_stage: existing.stage,
+          previous_status: existing.status,
+          stage: caseRow.stage,
+          status: caseRow.status,
+        },
+        created_by: context.user.id,
+      });
+      await syncCaseStageToGhl(context, caseRow);
+    }
+
+    return jsonResponse({ ok: true, case: caseRow });
+  } catch (error) {
+    return handleError(error);
+  }
+});

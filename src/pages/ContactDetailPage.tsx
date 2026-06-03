@@ -373,7 +373,7 @@ export function ContactDetailPage() {
                 src={contact.avatarUrl}
                 alt={`${getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")} avatar`}
               />
-              <AvatarFallback className="bg-primary/10 text-lg text-primary">
+              <AvatarFallback className="bg-blue-50 text-lg text-primary">
                 {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
               </AvatarFallback>
             </Avatar>
