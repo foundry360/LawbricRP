@@ -1,6 +1,10 @@
 import { supabase } from "@/lib/supabase";
 import { API_CONFIG } from "@/lib/config";
 
+type GhlRequestInit = RequestInit & {
+  ghlVersion?: string;
+};
+
 export type AppLocationContext = {
   ok: boolean;
   configured: boolean;
@@ -88,11 +92,12 @@ async function invokeGhlHandoff<T>(action: string, payload?: unknown): Promise<T
   return data as T;
 }
 
-export async function apiClient<T = unknown>(endpoint: string, init?: RequestInit): Promise<T> {
+export async function apiClient<T = unknown>(endpoint: string, init?: GhlRequestInit): Promise<T> {
   return invokeGhlHandoff<T>("api", {
     endpoint,
     method: init?.method ?? "GET",
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    version: init?.ghlVersion,
   });
 }
 
@@ -126,4 +131,12 @@ export async function getCustomFields(locationId: string) {
   return apiClient<{ customFields?: unknown[] }>(
     `/locations/${encodeURIComponent(locationId)}/customFields`,
   );
+}
+
+export async function createCalendar(payload: Record<string, unknown>) {
+  return apiClient<{ calendar?: unknown }>("/calendars/", {
+    method: "POST",
+    ghlVersion: "2021-04-15",
+    body: JSON.stringify(payload),
+  });
 }

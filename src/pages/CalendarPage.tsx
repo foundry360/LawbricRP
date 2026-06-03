@@ -37,6 +37,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -45,18 +46,51 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, getActiveGhlLocationId } from "@/lib/api";
+import { apiClient, createCalendar, getActiveGhlLocationId } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneNumber } from "@/lib/phone";
 import { cn } from "@/lib/utils";
 
 const CALENDAR_ID = "oU7nwKUfwAL5rhpTmgbV";
+const CALENDAR_COLORS = ["#2384CA", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#f43f5e"];
+const BOOKING_DURATION_OPTIONS = ["15", "30", "45", "60"];
+const SELECTED_CALENDARS_STORAGE_PREFIX = "lawbric:selectedCalendars";
+const DEFAULT_SCHEDULE_START_TIME = "08:00";
+const DEFAULT_SCHEDULE_END_TIME = "18:00";
+
+const CALENDAR_SCHEDULE_DAYS = [
+  { day: "sunday", label: "Sun" },
+  { day: "monday", label: "Mon" },
+  { day: "tuesday", label: "Tue" },
+  { day: "wednesday", label: "Wed" },
+  { day: "thursday", label: "Thu" },
+  { day: "friday", label: "Fri" },
+  { day: "saturday", label: "Sat" },
+] as const;
+
+type CalendarScheduleDayName = (typeof CALENDAR_SCHEDULE_DAYS)[number]["day"];
+
+type CalendarScheduleDay = {
+  day: CalendarScheduleDayName;
+  label: string;
+  enabled: boolean;
+  startTime: string;
+  endTime: string;
+};
 
 type CalendarOption = {
   id: string;
   name: string;
   color: string;
+  description?: string;
+  meetingLocation?: string;
+  slotDuration?: number;
+  slotInterval?: number;
+  assignedUserId?: string;
+  assignedUserName?: string;
+  scheduleDays?: CalendarScheduleDay[];
   teamMembers?: any[];
+  rawCalendar?: any;
 };
 
 type CalendarEvent = {
@@ -70,6 +104,17 @@ type CalendarEvent = {
 };
 
 type SlotMap = Record<string, { slots: string[] }>;
+
+type CreateCalendarForm = {
+  name: string;
+  description: string;
+  meetingLocation: string;
+  slotDuration: string;
+  color: string;
+  assignedUserId: string;
+  assignedUserName: string;
+  scheduleDays: CalendarScheduleDay[];
+};
 
 function getDisplayName(entity: any) {
   return (
@@ -90,6 +135,368 @@ function formatContactName(contact: any) {
   );
 }
 
+function getCalendarColor(index: number) {
+  return CALENDAR_COLORS[index % CALENDAR_COLORS.length];
+}
+
+function getSelectedCalendarsStorageKey(locationId: string) {
+  return `${SELECTED_CALENDARS_STORAGE_PREFIX}:${locationId}`;
+}
+
+function getStoredSelectedCalendarIds(locationId: string) {
+  try {
+    const storedValue = window.localStorage.getItem(getSelectedCalendarsStorageKey(locationId));
+    const parsedValue = storedValue ? JSON.parse(storedValue) : [];
+
+    return Array.isArray(parsedValue) ? parsedValue.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSelectedCalendarIds(locationId: string, calendarIds: string[]) {
+  if (!locationId || calendarIds.length === 0) return;
+
+  window.localStorage.setItem(getSelectedCalendarsStorageKey(locationId), JSON.stringify(calendarIds));
+}
+
+function createDefaultScheduleDays(): CalendarScheduleDay[] {
+  return CALENDAR_SCHEDULE_DAYS.map(({ day, label }) => ({
+    day,
+    label,
+    enabled: day !== "sunday" && day !== "saturday",
+    startTime: DEFAULT_SCHEDULE_START_TIME,
+    endTime: DEFAULT_SCHEDULE_END_TIME,
+  }));
+}
+
+function getTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+function normalizeScheduleTime(value: unknown, fallback: string) {
+  return typeof value === "string" && /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/.test(value) ? value.padStart(5, "0") : fallback;
+}
+
+function parseScheduleTime(time: string) {
+  const [hour, minute] = time.split(":").map((value) => Number.parseInt(value, 10));
+
+  return {
+    hour: Number.isFinite(hour) ? hour : 0,
+    minute: Number.isFinite(minute) ? minute : 0,
+  };
+}
+
+function getScheduleRules(scheduleDays: CalendarScheduleDay[]) {
+  return scheduleDays
+    .filter((scheduleDay) => scheduleDay.enabled)
+    .map((scheduleDay) => ({
+      type: "wday",
+      day: scheduleDay.day,
+      intervals: [
+        {
+          from: normalizeScheduleTime(scheduleDay.startTime, DEFAULT_SCHEDULE_START_TIME),
+          to: normalizeScheduleTime(scheduleDay.endTime, DEFAULT_SCHEDULE_END_TIME),
+        },
+      ],
+    }));
+}
+
+function getCalendarOpenHours(scheduleDays: CalendarScheduleDay[]) {
+  return scheduleDays
+    .filter((scheduleDay) => scheduleDay.enabled)
+    .map((scheduleDay) => {
+      const dayIndex = CALENDAR_SCHEDULE_DAYS.findIndex((dayOption) => dayOption.day === scheduleDay.day);
+      const start = parseScheduleTime(normalizeScheduleTime(scheduleDay.startTime, DEFAULT_SCHEDULE_START_TIME));
+      const end = parseScheduleTime(normalizeScheduleTime(scheduleDay.endTime, DEFAULT_SCHEDULE_END_TIME));
+
+      return {
+        daysOfTheWeek: [dayIndex],
+        hours: [
+          {
+            openHour: start.hour,
+            openMinute: start.minute,
+            closeHour: end.hour,
+            closeMinute: end.minute,
+          },
+        ],
+      };
+    });
+}
+
+function getInvalidScheduleDay(scheduleDays: CalendarScheduleDay[]) {
+  return scheduleDays.find(
+    (scheduleDay) =>
+      scheduleDay.enabled &&
+      normalizeScheduleTime(scheduleDay.startTime, DEFAULT_SCHEDULE_START_TIME) >=
+        normalizeScheduleTime(scheduleDay.endTime, DEFAULT_SCHEDULE_END_TIME),
+  );
+}
+
+function normalizeScheduleDays(schedule?: any, calendar?: any): CalendarScheduleDay[] {
+  const scheduleDays = createDefaultScheduleDays().map((scheduleDay) => ({ ...scheduleDay, enabled: false }));
+  const rules = Array.isArray(schedule?.rules) ? schedule.rules : [];
+
+  if (rules.length > 0) {
+    rules.forEach((rule: any) => {
+      if (rule?.type !== "wday" || !rule.day) return;
+      const day = scheduleDays.find((item) => item.day === String(rule.day).toLowerCase());
+      const interval = Array.isArray(rule.intervals) ? rule.intervals[0] : null;
+      if (!day || !interval) return;
+
+      day.enabled = true;
+      day.startTime = normalizeScheduleTime(interval.from, DEFAULT_SCHEDULE_START_TIME);
+      day.endTime = normalizeScheduleTime(interval.to, DEFAULT_SCHEDULE_END_TIME);
+    });
+
+    return scheduleDays;
+  }
+
+  const openHours = Array.isArray(calendar?.openHours) ? calendar.openHours : [];
+  if (openHours.length > 0) {
+    openHours.forEach((openHourGroup: any) => {
+      const firstHours = Array.isArray(openHourGroup.hours) ? openHourGroup.hours[0] : null;
+      if (!firstHours || !Array.isArray(openHourGroup.daysOfTheWeek)) return;
+
+      openHourGroup.daysOfTheWeek.forEach((dayIndex: number) => {
+        const scheduleDay = scheduleDays[dayIndex];
+        if (!scheduleDay) return;
+
+        scheduleDay.enabled = true;
+        scheduleDay.startTime = `${String(firstHours.openHour ?? 8).padStart(2, "0")}:${String(firstHours.openMinute ?? 0).padStart(2, "0")}`;
+        scheduleDay.endTime = `${String(firstHours.closeHour ?? 18).padStart(2, "0")}:${String(firstHours.closeMinute ?? 0).padStart(2, "0")}`;
+      });
+    });
+
+    return scheduleDays;
+  }
+
+  return createDefaultScheduleDays();
+}
+
+function getCalendarSlug(name: string) {
+  const slug = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return `${slug || "calendar"}-${Date.now().toString(36)}`;
+}
+
+function normalizeCalendar(calendar: any, index: number): CalendarOption {
+  const slotDuration = Number.parseInt(String(calendar.slotDuration || calendar.slotInterval || 30), 10);
+  const slotInterval = Number.parseInt(String(calendar.slotInterval || slotDuration || 30), 10);
+  const meetingLocation = calendar.locationConfigurations?.[0]?.location || calendar.meetingLocation || "";
+  const assignedMember = calendar.teamMembers?.find((member: any) => member.userId || member.id);
+  const assignedUserId = assignedMember?.userId || assignedMember?.id || "";
+  const assignedUserName = assignedMember ? getDisplayName({ ...assignedMember, id: assignedUserId }) : "";
+
+  return {
+    id: calendar.id,
+    name: calendar.name || "Calendar",
+    color: calendar.color || calendar.eventColor || getCalendarColor(index),
+    description: calendar.description || "",
+    meetingLocation,
+    slotDuration: Number.isFinite(slotDuration) && slotDuration > 0 ? slotDuration : 30,
+    slotInterval: Number.isFinite(slotInterval) && slotInterval > 0 ? slotInterval : 30,
+    assignedUserId,
+    assignedUserName,
+    scheduleDays: normalizeScheduleDays(undefined, calendar),
+    teamMembers: calendar.teamMembers || [],
+    rawCalendar: calendar,
+  };
+}
+
+async function fetchCalendarScheduleDays(calendarId: string) {
+  try {
+    const response: any = await apiClient(`/calendars/schedules/event-calendar/${encodeURIComponent(calendarId)}`, {
+      ghlVersion: "2021-04-15",
+    });
+
+    return normalizeScheduleDays(response?.schedule || response);
+  } catch {
+    return undefined;
+  }
+}
+
+async function syncCalendarSchedule(calendarId: string, scheduleDays: CalendarScheduleDay[], preferredMethod: "POST" | "PUT") {
+  const body = JSON.stringify({
+    rules: getScheduleRules(scheduleDays),
+    timezone: getTimezone(),
+  });
+
+  try {
+    await apiClient(`/calendars/schedules/event-calendar/${encodeURIComponent(calendarId)}`, {
+      method: preferredMethod,
+      ghlVersion: "2021-04-15",
+      body,
+    });
+    return;
+  } catch (error) {
+    const fallbackMethod = preferredMethod === "POST" ? "PUT" : "POST";
+
+    try {
+      await apiClient(`/calendars/schedules/event-calendar/${encodeURIComponent(calendarId)}`, {
+        method: fallbackMethod,
+        ghlVersion: "2021-04-15",
+        body,
+      });
+    } catch (fallbackError) {
+      console.warn("Failed to sync calendar availability schedule", calendarId, fallbackError || error);
+    }
+  }
+}
+
+function getCalendarName(calendars: CalendarOption[], calendarId: string) {
+  return calendars.find((calendar) => calendar.id === calendarId)?.name || "";
+}
+
+function getCalendarSlotDuration(calendars: CalendarOption[], calendarId: string) {
+  return calendars.find((calendar) => calendar.id === calendarId)?.slotDuration || 30;
+}
+
+function getCalendarSlotInterval(calendars: CalendarOption[], calendarId: string) {
+  return calendars.find((calendar) => calendar.id === calendarId)?.slotInterval || getCalendarSlotDuration(calendars, calendarId);
+}
+
+function isCalendarTeamMember(calendar: CalendarOption | undefined, userId: string) {
+  if (!calendar || !userId) return false;
+
+  return calendar.teamMembers?.some((member: any) => member.userId === userId || member.id === userId) ?? false;
+}
+
+function getUserDefaultCalendar(calendars: CalendarOption[], userId: string) {
+  if (!userId) return undefined;
+
+  return calendars.find((calendar) => isCalendarTeamMember(calendar, userId));
+}
+
+function getCalendarTeamMembers(userId: string, meetingLocation: string) {
+  if (!userId || userId === "unassigned") return [];
+
+  return [
+    {
+      userId,
+      priority: 1,
+      isPrimary: true,
+      locationConfigurations: [
+        {
+          kind: "custom",
+          location: meetingLocation || "To be determined",
+        },
+      ],
+    },
+  ];
+}
+
+function formatSlotRange(slot: string, durationMinutes = 30) {
+  const start = new Date(slot);
+  const end = new Date(start.getTime() + durationMinutes * 60 * 1000);
+
+  return `${format(start, "h:mm a")} to ${format(end, "h:mm a")}`;
+}
+
+function getFirstDateValue(source: any, keys: string[]) {
+  for (const key of keys) {
+    if (source?.[key]) return source[key];
+  }
+
+  return "";
+}
+
+function getEventStartTime(event: CalendarEvent) {
+  const rawStart = getFirstDateValue(event.rawEvent, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
+  const start = new Date(rawStart || event.date);
+
+  return Number.isNaN(start.getTime()) ? new Date(event.date) : start;
+}
+
+function getEventEndTime(event: CalendarEvent) {
+  const start = getEventStartTime(event);
+  const rawEnd = getFirstDateValue(event.rawEvent, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
+  const end = rawEnd ? new Date(rawEnd) : null;
+
+  return end && end.getTime() > start.getTime() ? end : new Date(start.getTime() + 30 * 60 * 1000);
+}
+
+function getEventDurationMinutes(event: CalendarEvent) {
+  const start = getEventStartTime(event);
+  const end = getEventEndTime(event);
+
+  return Math.max(15, Math.round((end.getTime() - start.getTime()) / 60000));
+}
+
+function getAppointmentPayload(response: any) {
+  return response?.appointment || response?.event || response?.data?.appointment || response?.data?.event || response?.data || response;
+}
+
+function getPositionedEvents(events: CalendarEvent[]) {
+  const sortedEvents = [...events].sort((a, b) => getEventStartTime(a).getTime() - getEventStartTime(b).getTime());
+  const positionedEvents: Array<{ event: CalendarEvent; column: number; columns: number }> = [];
+
+  const positionCluster = (cluster: CalendarEvent[]) => {
+    const columnEndTimes: number[] = [];
+    const assignments = cluster.map((event) => {
+      const start = getEventStartTime(event).getTime();
+      const end = getEventEndTime(event).getTime();
+      let column = columnEndTimes.findIndex((columnEndTime) => start >= columnEndTime);
+
+      if (column === -1) {
+        column = columnEndTimes.length;
+      }
+
+      columnEndTimes[column] = end;
+
+      return { event, column };
+    });
+
+    const columns = Math.max(1, columnEndTimes.length);
+    positionedEvents.push(...assignments.map((assignment) => ({ ...assignment, columns })));
+  };
+
+  let cluster: CalendarEvent[] = [];
+  let clusterEnd = 0;
+
+  sortedEvents.forEach((event) => {
+    const start = getEventStartTime(event).getTime();
+    const end = getEventEndTime(event).getTime();
+
+    if (cluster.length > 0 && start >= clusterEnd) {
+      positionCluster(cluster);
+      cluster = [];
+      clusterEnd = 0;
+    }
+
+    cluster.push(event);
+    clusterEnd = Math.max(clusterEnd, end);
+  });
+
+  if (cluster.length > 0) {
+    positionCluster(cluster);
+  }
+
+  return positionedEvents;
+}
+
+function filterSlotsByDuration(slots: string[], durationMinutes: number, intervalMinutes: number) {
+  if (durationMinutes <= intervalMinutes) return slots;
+
+  const slotTimes = new Set(slots.map((slot) => new Date(slot).getTime()));
+  const intervalMs = intervalMinutes * 60 * 1000;
+  const durationMs = durationMinutes * 60 * 1000;
+
+  return slots.filter((slot) => {
+    const startTime = new Date(slot).getTime();
+
+    for (let offset = intervalMs; offset < durationMs; offset += intervalMs) {
+      if (!slotTimes.has(startTime + offset)) return false;
+    }
+
+    return true;
+  });
+}
+
 export function CalendarPage() {
   const [locationId, setLocationId] = useState("");
   const [date, setDate] = useState<Date | undefined>(new Date());
@@ -99,6 +506,7 @@ export function CalendarPage() {
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState("");
+  const [bookingDuration, setBookingDuration] = useState("30");
   const [bookingCalendarId, setBookingCalendarId] = useState("");
   const [bookingDate, setBookingDate] = useState<Date | undefined>(new Date());
   const [bookingSlots, setBookingSlots] = useState<string[]>([]);
@@ -112,6 +520,7 @@ export function CalendarPage() {
     calendarId: "",
     date: new Date(),
     slot: "",
+    duration: "30",
     contactId: "",
     assignedUserId: "unassigned",
     notes: "",
@@ -135,8 +544,22 @@ export function CalendarPage() {
 
   const [selectedCalendars, setSelectedCalendars] = useState<string[]>([CALENDAR_ID]);
   const [availableCalendars, setAvailableCalendars] = useState<CalendarOption[]>([
-    { id: CALENDAR_ID, name: "Main Calendar", color: "#2384CA" },
+    { id: CALENDAR_ID, name: "Main Calendar", color: "#2384CA", slotDuration: 30, slotInterval: 30 },
   ]);
+  const [isCreateCalendarOpen, setIsCreateCalendarOpen] = useState(false);
+  const [isCreatingCalendar, setIsCreatingCalendar] = useState(false);
+  const [isUpdatingCalendar, setIsUpdatingCalendar] = useState(false);
+  const [editingCalendarId, setEditingCalendarId] = useState<string | null>(null);
+  const [createCalendarForm, setCreateCalendarForm] = useState<CreateCalendarForm>({
+    name: "",
+    description: "",
+    meetingLocation: "",
+    slotDuration: "30",
+    color: getCalendarColor(1),
+    assignedUserId: "unassigned",
+    assignedUserName: "",
+    scheduleDays: createDefaultScheduleDays(),
+  });
 
   const [formData, setFormData] = useState({
     firstName: "",
@@ -160,35 +583,69 @@ export function CalendarPage() {
     }
   }, [view]);
 
+  const loadCalendars = async (
+    locId: string,
+    options: { preserveSelection?: boolean; selectedCalendarId?: string } = {},
+  ) => {
+    if (!locId) return;
+
+    const res: any = await apiClient(`/calendars/?locationId=${locId}`);
+    if (res?.calendars?.length > 0) {
+      const calendars: CalendarOption[] = await Promise.all(
+        res.calendars.map(async (calendar: any, index: number) => {
+          const normalizedCalendar = normalizeCalendar(calendar, index);
+          const scheduleDays = await fetchCalendarScheduleDays(normalizedCalendar.id);
+
+          return scheduleDays ? { ...normalizedCalendar, scheduleDays } : normalizedCalendar;
+        }),
+      );
+      setAvailableCalendars(calendars);
+      setSelectedCalendars((current) => {
+        if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
+          return [options.selectedCalendarId];
+        }
+        const validSelected = current.filter((calendarId) => calendars.some((calendar) => calendar.id === calendarId));
+        if (options.preserveSelection && validSelected.length > 0) return validSelected;
+        const storedSelected = getStoredSelectedCalendarIds(locId).filter((calendarId) =>
+          calendars.some((calendar) => calendar.id === calendarId),
+        );
+        if (storedSelected.length > 0) return storedSelected;
+        return [calendars[0].id];
+      });
+      setBookingCalendarId((current) => {
+        if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
+          return options.selectedCalendarId;
+        }
+
+        return current && calendars.some((calendar) => calendar.id === current) ? current : calendars[0].id;
+      });
+
+      const extractedUsers = new Map<string, any>();
+      calendars.forEach((calendar: CalendarOption) => {
+        calendar.teamMembers?.forEach((member: any) => {
+          const userId = member.userId || member.id;
+          if (userId) extractedUsers.set(userId, { ...member, id: userId, name: getDisplayName({ ...member, id: userId }) });
+        });
+      });
+      if (extractedUsers.size > 0) {
+        setUsers((previous) => {
+          const usersById = new Map(previous.map((user) => [user.id, user]));
+          extractedUsers.forEach((user, userId) => {
+            if (!usersById.has(userId)) usersById.set(userId, user);
+          });
+          return Array.from(usersById.values());
+        });
+      }
+    }
+  };
+
   useEffect(() => {
     const loadLocation = async () => {
       const locId = await getActiveGhlLocationId();
       setLocationId(locId);
 
-      if (!locId) return;
-
       try {
-        const res: any = await apiClient(`/calendars/?locationId=${locId}`);
-        if (res?.calendars?.length > 0) {
-          const colors = ["#2384CA", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#f43f5e"];
-          const calendars = res.calendars.map((calendar: any, index: number) => ({
-            id: calendar.id,
-            name: calendar.name || "Calendar",
-            color: colors[index % colors.length],
-            teamMembers: calendar.teamMembers || [],
-          }));
-          setAvailableCalendars(calendars);
-          setSelectedCalendars([calendars[0].id]);
-          setBookingCalendarId(calendars[0].id);
-
-          const extractedUsers = new Map<string, any>();
-          calendars.forEach((calendar: CalendarOption) => {
-            calendar.teamMembers?.forEach((member: any) => {
-              if (member.userId) extractedUsers.set(member.userId, { id: member.userId, name: member.name || "" });
-            });
-          });
-          if (extractedUsers.size > 0) setUsers((previous) => (previous.length > 0 ? previous : Array.from(extractedUsers.values())));
-        }
+        await loadCalendars(locId);
       } catch (error) {
         console.error("Failed to fetch available calendars", error);
       }
@@ -209,20 +666,41 @@ export function CalendarPage() {
         try {
           const res: any = await apiClient(
             `/calendars/events?locationId=${locationId}&calendarId=${calendarId}&startTime=${start}&endTime=${end}`,
+            { ghlVersion: "2021-04-15" },
           );
           if (res?.events) {
             const calendar = availableCalendars.find((item) => item.id === calendarId);
-            allEvents.push(
-              ...res.events.map((event: any) => ({
-                id: event.id,
-                name: event.title || event.contactName || "Booked Appointment",
-                date: event.startTime,
-                color: event.color || calendar?.color,
-                calendarName: calendar?.name,
-                calendarId,
-                rawEvent: event,
-              })),
+            const hydratedEvents = await Promise.all(
+              res.events.map(async (event: any) => {
+                let eventDetails = event;
+
+                try {
+                  if (event.id) {
+                    const detailResponse: any = await apiClient(
+                      `/calendars/events/appointments/${encodeURIComponent(event.id)}`,
+                      { ghlVersion: "2021-04-15" },
+                    );
+                    eventDetails = { ...event, ...getAppointmentPayload(detailResponse) };
+                  }
+                } catch (error) {
+                  console.error("Failed to fetch appointment details", event.id, error);
+                }
+
+                const startTime = getFirstDateValue(eventDetails, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
+                const endTime = getFirstDateValue(eventDetails, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
+
+                return {
+                  id: eventDetails.id || event.id,
+                  name: eventDetails.title || eventDetails.contactName || event.title || event.contactName || "Booked Appointment",
+                  date: startTime,
+                  color: eventDetails.color || event.color || calendar?.color,
+                  calendarName: calendar?.name,
+                  calendarId,
+                  rawEvent: { ...eventDetails, startTime, ...(endTime ? { endTime } : {}) },
+                };
+              }),
             );
+            allEvents.push(...hydratedEvents);
           }
         } catch (error) {
           console.error("Failed to fetch events for calendar", calendarId, error);
@@ -259,18 +737,16 @@ export function CalendarPage() {
       const allSlots: SlotMap = {};
 
       for (const calendarId of selectedCalendars) {
-        const res = await fetch(
-          `https://backend.leadconnectorhq.com/calendars/${calendarId}/free-slots?startDate=${start.getTime()}&endDate=${finalEnd.getTime()}&timezone=${timezone}`,
+        const data = await apiClient<any>(
+          `/calendars/${encodeURIComponent(calendarId)}/free-slots?startDate=${start.getTime()}&endDate=${finalEnd.getTime()}&timezone=${encodeURIComponent(timezone)}`,
+          { ghlVersion: "2021-04-15" },
         );
-        if (res.ok) {
-          const data = await res.json();
-          Object.keys(data).forEach((dateStr) => {
-            if (!allSlots[dateStr]) allSlots[dateStr] = { slots: [] };
-            if (Array.isArray(data[dateStr]?.slots)) {
-              allSlots[dateStr].slots = [...new Set([...allSlots[dateStr].slots, ...data[dateStr].slots])].sort();
-            }
-          });
-        }
+        Object.keys(data).forEach((dateStr) => {
+          if (!allSlots[dateStr]) allSlots[dateStr] = { slots: [] };
+          if (Array.isArray(data[dateStr]?.slots)) {
+            allSlots[dateStr].slots = [...new Set([...allSlots[dateStr].slots, ...data[dateStr].slots])].sort();
+          }
+        });
       }
 
       setSlots(allSlots);
@@ -286,10 +762,14 @@ export function CalendarPage() {
   }, [month, selectedCalendars.join(",")]);
 
   useEffect(() => {
-    if (isSheetOpen || isEventDetailsOpen) {
+    if (isSheetOpen || isEventDetailsOpen || isCreateCalendarOpen) {
       if (isSheetOpen) {
         setBookingDate(date || new Date());
-        if (!bookingCalendarId && availableCalendars.length > 0) setBookingCalendarId(availableCalendars[0].id);
+        if (!bookingCalendarId && availableCalendars.length > 0) {
+          const defaultCalendar = getUserDefaultCalendar(availableCalendars, selectedUserId) || availableCalendars[0];
+          setBookingCalendarId(defaultCalendar.id);
+          setBookingDuration(String(getCalendarSlotDuration(availableCalendars, defaultCalendar.id)));
+        }
       }
 
       if (locationId && contacts.length === 0) {
@@ -303,7 +783,7 @@ export function CalendarPage() {
           .catch(console.error);
       }
     }
-  }, [isSheetOpen, isEventDetailsOpen, date, availableCalendars, locationId, contacts.length, users.length, bookingCalendarId]);
+  }, [isSheetOpen, isEventDetailsOpen, isCreateCalendarOpen, date, availableCalendars, locationId, contacts.length, users.length, bookingCalendarId, selectedUserId]);
 
   useEffect(() => {
     if (!locationId) return;
@@ -349,16 +829,44 @@ export function CalendarPage() {
     }
     const end = new Date(start + 24 * 60 * 60 * 1000).getTime();
     const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const res = await fetch(
-      `https://backend.leadconnectorhq.com/calendars/${calendarId}/free-slots?startDate=${start}&endDate=${end}&timezone=${timezone}`,
+    const data = await apiClient<any>(
+      `/calendars/${encodeURIComponent(calendarId)}/free-slots?startDate=${start}&endDate=${end}&timezone=${encodeURIComponent(timezone)}`,
+      { ghlVersion: "2021-04-15" },
     );
-    if (!res.ok) return [];
-    const data = await res.json();
     const dateStr = format(targetDate, "yyyy-MM-dd");
     const fetchedSlots = data[dateStr]?.slots?.sort() || [];
     return originalSlot && format(new Date(originalSlot), "yyyy-MM-dd") === dateStr && !fetchedSlots.includes(originalSlot)
       ? [...fetchedSlots, originalSlot].sort()
       : fetchedSlots;
+  };
+
+  const handleBookingCalendarChange = (calendarId: string) => {
+    setBookingCalendarId(calendarId);
+    setBookingDuration(String(getCalendarSlotDuration(availableCalendars, calendarId)));
+    setSelectedSlot("");
+  };
+
+  const handleBookingDurationChange = (duration: string) => {
+    setBookingDuration(duration);
+    setSelectedSlot("");
+  };
+
+  const handleBookingOwnerChange = (userId: string) => {
+    setSelectedUserId(userId);
+    const defaultCalendar = getUserDefaultCalendar(availableCalendars, userId);
+
+    if (defaultCalendar && defaultCalendar.id !== bookingCalendarId) {
+      setBookingCalendarId(defaultCalendar.id);
+      setBookingDuration(String(getCalendarSlotDuration(availableCalendars, defaultCalendar.id)));
+      setSelectedSlot("");
+    }
+  };
+
+  const updateSelectedCalendars = (calendarIds: string[]) => {
+    if (calendarIds.length === 0) return;
+
+    setSelectedCalendars(calendarIds);
+    persistSelectedCalendarIds(locationId, calendarIds);
   };
 
   const handlePrev = () => {
@@ -383,6 +891,238 @@ export function CalendarPage() {
     setDate(today);
   };
 
+  const getEmptyCalendarForm = (colorIndex = availableCalendars.length): CreateCalendarForm => ({
+    name: "",
+    description: "",
+    meetingLocation: "",
+    slotDuration: "30",
+    color: getCalendarColor(colorIndex),
+    assignedUserId: "unassigned",
+    assignedUserName: "",
+    scheduleDays: createDefaultScheduleDays(),
+  });
+
+  const openCreateCalendarSheet = () => {
+    setEditingCalendarId(null);
+    setCreateCalendarForm(getEmptyCalendarForm());
+    setIsCreateCalendarOpen(true);
+  };
+
+  const openEditCalendarSheet = (calendar: CalendarOption) => {
+    setEditingCalendarId(calendar.id);
+    setCreateCalendarForm({
+      name: calendar.name,
+      description: calendar.description || "",
+      meetingLocation: calendar.meetingLocation || "",
+      slotDuration: String(calendar.slotDuration || 30),
+      color: calendar.color || getCalendarColor(availableCalendars.length),
+      assignedUserId: calendar.assignedUserId || "unassigned",
+      assignedUserName: calendar.assignedUserName || "",
+      scheduleDays: calendar.scheduleDays || createDefaultScheduleDays(),
+    });
+    setIsCreateCalendarOpen(true);
+  };
+
+  const handleCreateCalendar = async (event: React.FormEvent) => {
+    event.preventDefault();
+
+    const name = createCalendarForm.name.trim();
+    if (!name) {
+      toast({ title: "Calendar Name Required", description: "Please enter a calendar name.", variant: "destructive" });
+      return;
+    }
+
+    if (!locationId) {
+      toast({
+        title: "Location Not Ready",
+        description: "Please wait for the GHL location to finish loading, then try again.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const slotDuration = Number.parseInt(createCalendarForm.slotDuration, 10) || 30;
+    const slug = getCalendarSlug(name);
+    const color = createCalendarForm.color || getCalendarColor(availableCalendars.length);
+    const meetingLocation = createCalendarForm.meetingLocation.trim() || "To be determined";
+    const teamMembers = getCalendarTeamMembers(createCalendarForm.assignedUserId, meetingLocation);
+    const openHours = getCalendarOpenHours(createCalendarForm.scheduleDays);
+    const invalidScheduleDay = getInvalidScheduleDay(createCalendarForm.scheduleDays);
+
+    if (invalidScheduleDay) {
+      toast({
+        title: "Schedule Time Invalid",
+        description: `${invalidScheduleDay.label} must end after it starts.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCreatingCalendar(true);
+    try {
+      const response: any = await createCalendar({
+        isActive: true,
+        locationId,
+        name,
+        description: createCalendarForm.description.trim(),
+        slug,
+        widgetSlug: slug,
+        calendarType: teamMembers.length > 0 ? "personal" : "event",
+        widgetType: "classic",
+        eventTitle: "{{contact.name}}",
+        eventColor: color,
+        ...(teamMembers.length > 0 ? { teamMembers } : {}),
+        openHours,
+        locationConfigurations: [
+          {
+            kind: "custom",
+            location: meetingLocation,
+          },
+        ],
+        slotDuration,
+        slotDurationUnit: "mins",
+        slotInterval: slotDuration,
+        slotIntervalUnit: "mins",
+        slotBuffer: 0,
+        slotBufferUnit: "mins",
+        preBuffer: 0,
+        preBufferUnit: "mins",
+        appoinmentPerSlot: 1,
+        appoinmentPerDay: 0,
+        allowBookingAfter: 0,
+        allowBookingAfterUnit: "days",
+        allowBookingFor: 0,
+        allowBookingForUnit: "days",
+        enableRecurring: false,
+        autoConfirm: true,
+        allowReschedule: true,
+        allowCancellation: true,
+      });
+
+      const calendar = {
+        ...normalizeCalendar(response?.calendar || response, availableCalendars.length),
+        scheduleDays: createCalendarForm.scheduleDays,
+      };
+      if (calendar.id) {
+        await syncCalendarSchedule(calendar.id, createCalendarForm.scheduleDays, "POST");
+        setAvailableCalendars((current) => [...current, calendar]);
+        setSelectedCalendars([calendar.id]);
+        persistSelectedCalendarIds(locationId, [calendar.id]);
+        setBookingCalendarId(calendar.id);
+      }
+
+      toast({ title: "Calendar Created", description: `${name} has been created in GHL.` });
+      setCreateCalendarForm({
+        name: "",
+        description: "",
+        meetingLocation: "",
+        slotDuration: "30",
+        color: getCalendarColor(availableCalendars.length + 1),
+        assignedUserId: "unassigned",
+        assignedUserName: "",
+        scheduleDays: createDefaultScheduleDays(),
+      });
+      setIsCreateCalendarOpen(false);
+      await loadCalendars(locationId, { preserveSelection: true, selectedCalendarId: calendar.id });
+    } catch (error) {
+      const message = getUserFriendlyErrorMessage(error, "Could not create the calendar in GHL. Please try again.");
+      toast({ title: "Calendar Not Created", description: message, variant: "destructive" });
+    } finally {
+      setIsCreatingCalendar(false);
+    }
+  };
+
+  const handleUpdateCalendar = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!editingCalendarId) return;
+
+    const name = createCalendarForm.name.trim();
+    if (!name) {
+      toast({ title: "Calendar Name Required", description: "Please enter a calendar name.", variant: "destructive" });
+      return;
+    }
+
+    const slotDuration = Number.parseInt(createCalendarForm.slotDuration, 10) || 30;
+    const color = createCalendarForm.color || getCalendarColor(availableCalendars.length);
+    const meetingLocation = createCalendarForm.meetingLocation.trim() || "To be determined";
+    const teamMembers = getCalendarTeamMembers(createCalendarForm.assignedUserId, meetingLocation);
+    const openHours = getCalendarOpenHours(createCalendarForm.scheduleDays);
+    const invalidScheduleDay = getInvalidScheduleDay(createCalendarForm.scheduleDays);
+
+    if (invalidScheduleDay) {
+      toast({
+        title: "Schedule Time Invalid",
+        description: `${invalidScheduleDay.label} must end after it starts.`,
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsUpdatingCalendar(true);
+    try {
+      await apiClient(`/calendars/${encodeURIComponent(editingCalendarId)}`, {
+        method: "PUT",
+        ghlVersion: "2021-04-15",
+        body: JSON.stringify({
+          name,
+          description: createCalendarForm.description.trim(),
+          eventColor: color,
+          ...(teamMembers.length > 0 ? { teamMembers } : {}),
+          openHours,
+          locationConfigurations: [
+            {
+              kind: "custom",
+              location: meetingLocation,
+            },
+          ],
+          slotDuration,
+          slotDurationUnit: "mins",
+          slotInterval: slotDuration,
+          slotIntervalUnit: "mins",
+        }),
+      });
+
+      toast({ title: "Calendar Updated", description: `${name} has been updated in GHL.` });
+      setAvailableCalendars((current) =>
+        current.map((calendar) =>
+          calendar.id === editingCalendarId
+            ? {
+                ...calendar,
+                name,
+                description: createCalendarForm.description.trim(),
+                meetingLocation,
+                color,
+                slotDuration,
+                slotInterval: slotDuration,
+                assignedUserId: createCalendarForm.assignedUserId === "unassigned" ? "" : createCalendarForm.assignedUserId,
+                teamMembers,
+                scheduleDays: createCalendarForm.scheduleDays,
+              }
+            : calendar,
+        ),
+      );
+      setBookedEvents((current) =>
+        current.map((eventItem) =>
+          eventItem.calendarId === editingCalendarId
+            ? { ...eventItem, color, calendarName: name }
+            : eventItem,
+        ),
+      );
+      if (createCalendarForm.assignedUserId !== "unassigned" && selectedUserId === createCalendarForm.assignedUserId) {
+        setBookingCalendarId(editingCalendarId);
+      }
+      await syncCalendarSchedule(editingCalendarId, createCalendarForm.scheduleDays, "PUT");
+      setIsCreateCalendarOpen(false);
+      setEditingCalendarId(null);
+      await loadCalendars(locationId, { preserveSelection: true, selectedCalendarId: editingCalendarId });
+    } catch (error) {
+      const message = getUserFriendlyErrorMessage(error, "Could not update the calendar in GHL. Please try again.");
+      toast({ title: "Calendar Not Updated", description: message, variant: "destructive" });
+    } finally {
+      setIsUpdatingCalendar(false);
+    }
+  };
+
   const handleBookingSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
 
@@ -394,46 +1134,61 @@ export function CalendarPage() {
       toast({ title: "Contact Required", description: "Please select a contact.", variant: "destructive" });
       return;
     }
+    if (!locationId) {
+      toast({
+        title: "Location Not Ready",
+        description: "Please wait for the GHL location to finish loading, then try again.",
+        variant: "destructive",
+      });
+      return;
+    }
 
     const contact = contacts.find((item) => item.id === selectedContactId);
+    const calendarId = bookingCalendarId || selectedCalendars[0] || CALENDAR_ID;
+    const calendar = availableCalendars.find((item) => item.id === calendarId);
+    const durationMinutes = Number.parseInt(bookingDuration, 10) || getCalendarSlotDuration(availableCalendars, calendarId);
+    const endTime = new Date(new Date(selectedSlot).getTime() + durationMinutes * 60 * 1000).toISOString();
+    const bookableAssignedUserId = isCalendarTeamMember(calendar, selectedUserId) ? selectedUserId : "";
     setSubmitting(true);
 
     try {
-      const response = await fetch("https://backend.leadconnectorhq.com/vibe-ai/booking/submit", {
+      const data: any = await apiClient("/calendars/events/appointments", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          calendarId,
           locationId,
-          calendarId: bookingCalendarId || selectedCalendars[0] || CALENDAR_ID,
-          firstName: contact?.firstName || "",
-          lastName: contact?.lastName || "",
-          email: contact?.email || "",
-          phone: formatPhoneNumber(contact?.phone, ""),
-          notes: formData.notes,
-          selectedSlot,
-          selectedTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          sessionId: crypto.randomUUID(),
-          ...(selectedUserId ? { assignedUserId: selectedUserId } : {}),
+          contactId: selectedContactId,
+          startTime: selectedSlot,
+          endTime,
+          title: contact ? formatContactName(contact) : "New Appointment",
+          description: formData.notes || undefined,
+          appointmentStatus: "confirmed",
+          ignoreDateRange: true,
+          ignoreFreeSlotValidation: true,
+          toNotify: false,
+          ...(bookableAssignedUserId ? { assignedUserId: bookableAssignedUserId } : {}),
         }),
+        ghlVersion: "2021-04-15",
       });
 
-      if (!response.ok) throw new Error("Failed to book appointment.");
-
-      const data = await response.json().catch(() => ({}));
       toast({ title: "Success", description: "Appointment booked successfully." });
       setBookedEvents((previous) => [
         ...previous,
         {
-          id: data.appointmentId || crypto.randomUUID(),
+          id: data?.appointment?.id || data?.event?.id || data?.id || data?.appointmentId || crypto.randomUUID(),
           name: contact ? formatContactName(contact) : "New Appointment",
           date: selectedSlot,
-          calendarId: bookingCalendarId || selectedCalendars[0] || CALENDAR_ID,
+          calendarId,
           rawEvent: {
-            contactId: data.contactId || selectedContactId,
+            ...(data?.appointment || data?.event || {}),
+            contactId: data?.contactId || selectedContactId,
             contactEmail: contact?.email,
             contactPhone: formatPhoneNumber(contact?.phone, ""),
-            assignedUserId: selectedUserId || undefined,
+            assignedUserId: bookableAssignedUserId || undefined,
             notes: formData.notes,
+            startTime: selectedSlot,
+            endTime,
+            appointmentStatus: "confirmed",
           },
         },
       ]);
@@ -480,12 +1235,8 @@ export function CalendarPage() {
     setSavingEvent(true);
     try {
       const startTime = editFormData.slot;
-      const originalStart = new Date(selectedEvent.date);
-      const originalEnd = selectedEvent.rawEvent?.endTime
-        ? new Date(selectedEvent.rawEvent.endTime)
-        : new Date(originalStart.getTime() + 30 * 60000);
-      const duration = Math.max(30 * 60000, originalEnd.getTime() - originalStart.getTime());
-      const endTime = new Date(new Date(startTime).getTime() + duration).toISOString();
+      const durationMinutes = Number.parseInt(editFormData.duration, 10) || getEventDurationMinutes(selectedEvent);
+      const endTime = new Date(new Date(startTime).getTime() + durationMinutes * 60 * 1000).toISOString();
       const calendarId = editFormData.calendarId || selectedEvent.calendarId;
 
       const payload: any = {
@@ -496,6 +1247,7 @@ export function CalendarPage() {
         endTime,
         title: selectedEvent.rawEvent?.title || selectedEvent.name,
         ignoreDateRange: true,
+        ignoreFreeSlotValidation: true,
         notes: editFormData.notes,
         appointmentStatus: editFormData.appointmentStatus || selectedEvent.rawEvent?.appointmentStatus,
       };
@@ -541,17 +1293,33 @@ export function CalendarPage() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-64px)] w-full max-w-[1600px] flex-col overflow-hidden px-0 py-4">
+      <CreateCalendarSheet
+        open={isCreateCalendarOpen}
+        onOpenChange={(open) => {
+          setIsCreateCalendarOpen(open);
+          if (!open) setEditingCalendarId(null);
+        }}
+        formData={createCalendarForm}
+        setFormData={setCreateCalendarForm}
+        users={users}
+        submitting={isCreatingCalendar || isUpdatingCalendar}
+        mode={editingCalendarId ? "edit" : "create"}
+        onSubmit={editingCalendarId ? handleUpdateCalendar : handleCreateCalendar}
+      />
+
       <BookingSheet
         open={isSheetOpen}
         onOpenChange={setIsSheetOpen}
         availableCalendars={availableCalendars}
         bookingCalendarId={bookingCalendarId}
-        setBookingCalendarId={setBookingCalendarId}
+        setBookingCalendarId={handleBookingCalendarChange}
         bookingDate={bookingDate}
         setBookingDate={setBookingDate}
         bookingSlots={bookingSlots}
         selectedSlot={selectedSlot}
         setSelectedSlot={setSelectedSlot}
+        bookingDuration={bookingDuration}
+        setBookingDuration={handleBookingDurationChange}
         contacts={contacts}
         selectedContactId={selectedContactId}
         setSelectedContactId={setSelectedContactId}
@@ -559,7 +1327,7 @@ export function CalendarPage() {
         setIsContactPopoverOpen={setIsContactPopoverOpen}
         users={users}
         selectedUserId={selectedUserId}
-        setSelectedUserId={setSelectedUserId}
+        setSelectedUserId={handleBookingOwnerChange}
         isUserPopoverOpen={isUserPopoverOpen}
         setIsUserPopoverOpen={setIsUserPopoverOpen}
         notes={formData.notes}
@@ -610,36 +1378,62 @@ export function CalendarPage() {
           </div>
 
           <div className="min-h-0 flex-1 py-4 pl-0 pr-6">
-            <h3 className="mb-3 text-sm font-medium">Calendars</h3>
-            <div className="space-y-3">
-              <div className="mb-1 flex items-center space-x-2 border-b border-border/50 pb-3">
+            <div className="mb-3 flex items-center justify-between gap-2">
+              <h3 className="text-sm font-medium">Calendars</h3>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className="h-8 w-8 rounded-full"
+                onClick={openCreateCalendarSheet}
+                aria-label="Add calendar"
+                title="Add calendar"
+              >
+                <Plus className="h-4 w-4" />
+              </Button>
+            </div>
+            <div className="space-y-0.5">
+              <div className="mb-1 flex h-7 items-center gap-1.5 border-b border-border/50 pb-2">
                 <Checkbox
                   id="cal-all"
                   checked={selectedCalendars.length === availableCalendars.length && availableCalendars.length > 0}
                   onCheckedChange={(checked) => {
-                    setSelectedCalendars(checked ? availableCalendars.map((calendar) => calendar.id) : [availableCalendars[0]?.id].filter(Boolean));
+                    updateSelectedCalendars(checked ? availableCalendars.map((calendar) => calendar.id) : [availableCalendars[0]?.id].filter(Boolean));
                   }}
                 />
-                <Label htmlFor="cal-all" className="flex-1 cursor-pointer truncate text-sm font-medium">
+                <Label htmlFor="cal-all" className="flex-1 cursor-pointer truncate text-sm font-medium leading-none">
                   All Calendars
                 </Label>
               </div>
-              {availableCalendars.map((calendar) => (
-                <div key={calendar.id} className="flex items-center space-x-2">
-                  <Checkbox
-                    id={`cal-${calendar.id}`}
-                    checked={selectedCalendars.includes(calendar.id)}
-                    onCheckedChange={(checked) => {
-                      if (checked) setSelectedCalendars([...selectedCalendars, calendar.id]);
-                      else if (selectedCalendars.length > 1) setSelectedCalendars(selectedCalendars.filter((id) => id !== calendar.id));
-                    }}
-                  />
-                  <Label htmlFor={`cal-${calendar.id}`} className="flex-1 cursor-pointer truncate text-sm">
-                    {calendar.name}
-                  </Label>
-                  <div className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
-                </div>
-              ))}
+              <div className="space-y-0.5 pt-2">
+                {availableCalendars.map((calendar) => (
+                  <div key={calendar.id} className="group flex h-6 items-center gap-1.5">
+                    <Checkbox
+                      id={`cal-${calendar.id}`}
+                      checked={selectedCalendars.includes(calendar.id)}
+                      onCheckedChange={(checked) => {
+                        if (checked) updateSelectedCalendars([...selectedCalendars, calendar.id]);
+                        else if (selectedCalendars.length > 1) updateSelectedCalendars(selectedCalendars.filter((id) => id !== calendar.id));
+                      }}
+                    />
+                    <Label htmlFor={`cal-${calendar.id}`} className="min-w-0 flex-1 cursor-pointer truncate text-sm leading-none">
+                      {calendar.name}
+                    </Label>
+                    <div className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: calendar.color }} />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="h-5 w-5 shrink-0 p-0 opacity-70 hover:opacity-100"
+                      onClick={() => openEditCalendarSheet(calendar)}
+                      aria-label={`Edit ${calendar.name}`}
+                      title={`Edit ${calendar.name}`}
+                    >
+                      <Edit className="h-3 w-3" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         </aside>
@@ -719,6 +1513,8 @@ type BookingSheetProps = {
   bookingSlots: string[];
   selectedSlot: string;
   setSelectedSlot: (slot: string) => void;
+  bookingDuration: string;
+  setBookingDuration: (duration: string) => void;
   contacts: any[];
   selectedContactId: string;
   setSelectedContactId: (id: string) => void;
@@ -735,7 +1531,223 @@ type BookingSheetProps = {
   onSubmit: (event: React.FormEvent) => void;
 };
 
+type CreateCalendarSheetProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  formData: CreateCalendarForm;
+  setFormData: (formData: CreateCalendarForm) => void;
+  users: any[];
+  submitting: boolean;
+  mode: "create" | "edit";
+  onSubmit: (event: React.FormEvent) => void;
+};
+
+function CreateCalendarSheet({
+  open,
+  onOpenChange,
+  formData,
+  setFormData,
+  users,
+  submitting,
+  mode,
+  onSubmit,
+}: CreateCalendarSheetProps) {
+  const isEditMode = mode === "edit";
+  const selectedAssignedUser = users.find((user) => user.id === formData.assignedUserId);
+  const selectedAssignedUserName =
+    formData.assignedUserId === "unassigned"
+      ? "Unassigned"
+      : selectedAssignedUser
+        ? getDisplayName(selectedAssignedUser)
+        : formData.assignedUserName || "Selected user";
+  const shouldShowAssignedUserFallback =
+    formData.assignedUserId !== "unassigned" && !users.some((user) => user.id === formData.assignedUserId);
+  const updateScheduleDay = (day: CalendarScheduleDayName, updates: Partial<CalendarScheduleDay>) => {
+    setFormData({
+      ...formData,
+      scheduleDays: formData.scheduleDays.map((scheduleDay) =>
+        scheduleDay.day === day ? { ...scheduleDay, ...updates } : scheduleDay,
+      ),
+    });
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="overflow-y-auto p-6 sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>{isEditMode ? "Edit Calendar" : "Add Calendar"}</SheetTitle>
+          <SheetDescription>
+            {isEditMode ? "Update this calendar in GHL." : "Create a new calendar in GHL for this location."}
+          </SheetDescription>
+        </SheetHeader>
+
+        <form onSubmit={onSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="calendar-name">Calendar Name</Label>
+            <Input
+              id="calendar-name"
+              value={formData.name}
+              onChange={(event) => setFormData({ ...formData, name: event.target.value })}
+              placeholder="Initial Consultations"
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Select User</Label>
+            <Select
+              value={formData.assignedUserId}
+              onValueChange={(assignedUserId) => {
+                const user = users.find((item) => item.id === assignedUserId);
+                setFormData({
+                  ...formData,
+                  assignedUserId,
+                  assignedUserName: assignedUserId === "unassigned" ? "" : user ? getDisplayName(user) : formData.assignedUserName,
+                });
+              }}
+            >
+              <SelectTrigger>
+                <span className={cn(!formData.assignedUserId && "text-muted-foreground")}>
+                  {selectedAssignedUserName || "Select user"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="unassigned">Unassigned</SelectItem>
+                {shouldShowAssignedUserFallback && (
+                  <SelectItem value={formData.assignedUserId}>{selectedAssignedUserName}</SelectItem>
+                )}
+                {users.map((user) => (
+                  <SelectItem key={user.id} value={user.id}>
+                    {getDisplayName(user)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              Assigning a user saves them as the team member for this GHL calendar.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="calendar-description">Description</Label>
+            <Textarea
+              id="calendar-description"
+              value={formData.description}
+              onChange={(event) => setFormData({ ...formData, description: event.target.value })}
+              placeholder="Optional internal description"
+              rows={3}
+            />
+          </div>
+
+          <div className="space-y-3 rounded-md border p-3">
+            <div className="space-y-1">
+              <Label>Schedule</Label>
+              <p className="text-xs text-muted-foreground">{getTimezone()}</p>
+            </div>
+            <div className="space-y-2">
+              {formData.scheduleDays.map((scheduleDay) => (
+                <div key={scheduleDay.day} className="grid grid-cols-[72px_1fr_1fr] items-center gap-2">
+                  <div className="flex items-center gap-2">
+                    <Checkbox
+                      id={`schedule-${scheduleDay.day}`}
+                      checked={scheduleDay.enabled}
+                      onCheckedChange={(checked) => updateScheduleDay(scheduleDay.day, { enabled: checked })}
+                    />
+                    <Label htmlFor={`schedule-${scheduleDay.day}`} className="cursor-pointer text-sm font-normal">
+                      {scheduleDay.label}
+                    </Label>
+                  </div>
+                  <Input
+                    type="time"
+                    value={scheduleDay.startTime}
+                    disabled={!scheduleDay.enabled}
+                    onChange={(event) => updateScheduleDay(scheduleDay.day, { startTime: event.target.value })}
+                  />
+                  <Input
+                    type="time"
+                    value={scheduleDay.endTime}
+                    disabled={!scheduleDay.enabled}
+                    onChange={(event) => updateScheduleDay(scheduleDay.day, { endTime: event.target.value })}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="calendar-location">Meeting Location</Label>
+            <Input
+              id="calendar-location"
+              value={formData.meetingLocation}
+              onChange={(event) => setFormData({ ...formData, meetingLocation: event.target.value })}
+              placeholder="Phone call, Zoom, office, etc."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Calendar Color</Label>
+            <div className="flex flex-wrap gap-2">
+              {CALENDAR_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`Select calendar color ${color}`}
+                  className={cn(
+                    "h-6 w-6 rounded-full border-2 transition-transform hover:scale-105",
+                    formData.color === color ? "border-foreground ring-2 ring-ring ring-offset-2" : "border-transparent",
+                  )}
+                  style={{ backgroundColor: color }}
+                  onClick={() => setFormData({ ...formData, color })}
+                />
+              ))}
+              <Input
+                type="color"
+                value={formData.color}
+                onChange={(event) => setFormData({ ...formData, color: event.target.value })}
+                className="h-6 w-10 cursor-pointer p-0.5"
+                aria-label="Custom calendar color"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Slot Duration</Label>
+            <Select
+              value={formData.slotDuration}
+              onValueChange={(slotDuration) => setFormData({ ...formData, slotDuration })}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Select duration" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="15">15 minutes</SelectItem>
+                <SelectItem value="30">30 minutes</SelectItem>
+                <SelectItem value="45">45 minutes</SelectItem>
+                <SelectItem value="60">60 minutes</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex gap-3 pt-4">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1" disabled={submitting}>
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {isEditMode ? "Save Calendar" : "Create Calendar"}
+            </Button>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function BookingSheet(props: BookingSheetProps) {
+  const slotDuration = Number.parseInt(props.bookingDuration, 10) || getCalendarSlotDuration(props.availableCalendars, props.bookingCalendarId);
+  const slotInterval = getCalendarSlotInterval(props.availableCalendars, props.bookingCalendarId);
+  const availableSlots = filterSlotsByDuration(props.bookingSlots, slotDuration, slotInterval);
+
   return (
     <Sheet open={props.open} onOpenChange={props.onOpenChange}>
       <SheetContent className="overflow-y-auto p-6 sm:max-w-md">
@@ -749,7 +1761,9 @@ function BookingSheet(props: BookingSheetProps) {
               <Label>Calendar</Label>
               <Select value={props.bookingCalendarId} onValueChange={props.setBookingCalendarId} required>
                 <SelectTrigger>
-                  <SelectValue placeholder="Select a calendar" />
+                  <span className={cn(!props.bookingCalendarId && "text-muted-foreground")}>
+                    {getCalendarName(props.availableCalendars, props.bookingCalendarId) || "Select a calendar"}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   {props.availableCalendars.map((calendar) => (
@@ -774,26 +1788,43 @@ function BookingSheet(props: BookingSheetProps) {
                 />
               </div>
               <div className="space-y-2">
-                <Label>Time Slot</Label>
-                <Select value={props.selectedSlot} onValueChange={props.setSelectedSlot} required>
+                <Label>Duration</Label>
+                <Select value={props.bookingDuration} onValueChange={props.setBookingDuration} required>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select time" />
+                    <SelectValue placeholder="Select duration" />
                   </SelectTrigger>
                   <SelectContent>
-                    {props.bookingSlots.length > 0 ? (
-                      props.bookingSlots.map((slot, index) => (
-                        <SelectItem key={index} value={slot}>
-                          {format(new Date(slot), "h:mm a")}
-                        </SelectItem>
-                      ))
-                    ) : (
-                      <SelectItem value="none" disabled>
-                        No slots available
+                    {BOOKING_DURATION_OPTIONS.map((duration) => (
+                      <SelectItem key={duration} value={duration}>
+                        {duration} minutes
                       </SelectItem>
-                    )}
+                    ))}
                   </SelectContent>
                 </Select>
               </div>
+            </div>
+            <div className="space-y-2">
+              <Label>Time Slot</Label>
+              <Select value={props.selectedSlot} onValueChange={props.setSelectedSlot} required>
+                <SelectTrigger>
+                  <span className={cn(!props.selectedSlot && "text-muted-foreground")}>
+                    {props.selectedSlot ? formatSlotRange(props.selectedSlot, slotDuration) : "Select time"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent>
+                  {availableSlots.length > 0 ? (
+                    availableSlots.map((slot, index) => (
+                      <SelectItem key={index} value={slot}>
+                        {format(new Date(slot), "h:mm a")}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value="none" disabled>
+                      No slots available
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 
@@ -855,7 +1886,7 @@ function ContactAndOwnerFields({
         <Label>Select Contact</Label>
         <Popover open={isContactPopoverOpen} onOpenChange={setIsContactPopoverOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+            <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
               {selectedContactId ? formatContactName(contacts.find((contact) => contact.id === selectedContactId)) : "Select contact..."}
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
@@ -889,7 +1920,7 @@ function ContactAndOwnerFields({
         <Label>Appointment Owner</Label>
         <Popover open={isUserPopoverOpen} onOpenChange={setIsUserPopoverOpen}>
           <PopoverTrigger asChild>
-            <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+            <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
               {selectedUserId ? getDisplayName(users.find((user) => user.id === selectedUserId)) : "Select a user"}
               <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
             </Button>
@@ -964,8 +1995,9 @@ function EventDetailsSheet({
                     onClick={() => {
                       setEditFormData({
                         calendarId: selectedEvent.calendarId || "",
-                        date: new Date(selectedEvent.date),
-                        slot: selectedEvent.date,
+                        date: getEventStartTime(selectedEvent),
+                        slot: getEventStartTime(selectedEvent).toISOString(),
+                        duration: String(getEventDurationMinutes(selectedEvent)),
                         contactId: selectedEvent.rawEvent?.contactId || "",
                         assignedUserId: selectedEvent.rawEvent?.assignedUserId || "unassigned",
                         notes: selectedEvent.rawEvent?.notes || "",
@@ -1010,13 +2042,19 @@ function EventDetailsSheet({
 }
 
 function EditEventForm(props: any) {
+  const slotDuration = Number.parseInt(props.editFormData.duration, 10) || getCalendarSlotDuration(props.availableCalendars, props.editFormData.calendarId);
+  const slotInterval = getCalendarSlotInterval(props.availableCalendars, props.editFormData.calendarId);
+  const availableSlots = filterSlotsByDuration(props.editSlots, slotDuration, slotInterval);
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <Label>Calendar</Label>
         <Select value={props.editFormData.calendarId} onValueChange={(value) => props.setEditFormData({ ...props.editFormData, calendarId: value })} required>
           <SelectTrigger>
-            <SelectValue placeholder="Select a calendar" />
+            <span className={cn(!props.editFormData.calendarId && "text-muted-foreground")}>
+              {getCalendarName(props.availableCalendars, props.editFormData.calendarId) || "Select a calendar"}
+            </span>
           </SelectTrigger>
           <SelectContent>
             {props.availableCalendars.map((calendar: CalendarOption) => (
@@ -1038,26 +2076,43 @@ function EditEventForm(props: any) {
           />
         </div>
         <div className="space-y-2">
-          <Label>Time Slot</Label>
-          <Select value={props.editFormData.slot} onValueChange={(value) => props.setEditFormData({ ...props.editFormData, slot: value })} required>
+          <Label>Duration</Label>
+          <Select value={props.editFormData.duration} onValueChange={(duration) => props.setEditFormData({ ...props.editFormData, duration, slot: "" })} required>
             <SelectTrigger>
-              <SelectValue placeholder="Select time" />
+              <SelectValue placeholder="Select duration" />
             </SelectTrigger>
             <SelectContent>
-              {props.editSlots.length > 0 ? (
-                props.editSlots.map((slot: string, index: number) => (
-                  <SelectItem key={index} value={slot}>
-                    {format(new Date(slot), "h:mm a")}
-                  </SelectItem>
-                ))
-              ) : (
-                <SelectItem value="none" disabled>
-                  No slots available
+              {BOOKING_DURATION_OPTIONS.map((duration) => (
+                <SelectItem key={duration} value={duration}>
+                  {duration} minutes
                 </SelectItem>
-              )}
+              ))}
             </SelectContent>
           </Select>
         </div>
+      </div>
+      <div className="space-y-2">
+        <Label>Time Slot</Label>
+        <Select value={props.editFormData.slot} onValueChange={(value) => props.setEditFormData({ ...props.editFormData, slot: value })} required>
+          <SelectTrigger>
+            <span className={cn(!props.editFormData.slot && "text-muted-foreground")}>
+              {props.editFormData.slot ? formatSlotRange(props.editFormData.slot, slotDuration) : "Select time"}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {availableSlots.length > 0 ? (
+              availableSlots.map((slot: string, index: number) => (
+                <SelectItem key={index} value={slot}>
+                  {format(new Date(slot), "h:mm a")}
+                </SelectItem>
+              ))
+            ) : (
+              <SelectItem value="none" disabled>
+                No slots available
+              </SelectItem>
+            )}
+          </SelectContent>
+        </Select>
       </div>
       <ContactAndOwnerFields
         contacts={props.contacts}
@@ -1103,14 +2158,13 @@ function EditEventForm(props: any) {
 }
 
 function EventDetails({ selectedEvent, users }: { selectedEvent: CalendarEvent; users: any[] }) {
-  const endTime = selectedEvent.rawEvent?.endTime
-    ? new Date(selectedEvent.rawEvent.endTime)
-    : new Date(new Date(selectedEvent.date).getTime() + 30 * 60000);
+  const startTime = getEventStartTime(selectedEvent);
+  const endTime = getEventEndTime(selectedEvent);
 
   return (
     <div className="space-y-4">
       <DetailRow icon={Clock} label="Appointment Time">
-        {format(new Date(selectedEvent.date), "EEE, MMM d, yyyy 'at' h:mm a")} - {format(endTime, "h:mm a")}
+        {format(startTime, "EEE, MMM d, yyyy 'at' h:mm a")} - {format(endTime, "h:mm a")}
       </DetailRow>
       {selectedEvent.rawEvent?.appointmentStatus && (
         <DetailRow icon={Check} label="Status">
@@ -1162,33 +2216,76 @@ function DetailRow({ icon: Icon, label, children }: { icon: typeof Clock; label:
   );
 }
 
-function EventPill({ event, onClick, compact = false }: { event: CalendarEvent; onClick: (event: CalendarEvent, ev: React.MouseEvent) => void; compact?: boolean }) {
+function EventTooltipContent({ event }: { event: CalendarEvent }) {
+  const start = getEventStartTime(event);
+  const end = getEventEndTime(event);
+
+  return (
+    <TooltipContent className="z-[100] border bg-popover p-3 text-popover-foreground shadow-md">
+      <div className="font-semibold">{event.name}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{format(start, "EEEE, MMMM d, yyyy")}</div>
+      <div className="text-xs text-muted-foreground">
+        {format(start, "h:mm a")} to {format(end, "h:mm a")}
+      </div>
+    </TooltipContent>
+  );
+}
+
+function getEventTooltipText(event: CalendarEvent) {
+  const start = getEventStartTime(event);
+  const end = getEventEndTime(event);
+
+  return `${event.name}\n${format(start, "EEEE, MMMM d, yyyy")}\n${format(start, "h:mm a")} to ${format(end, "h:mm a")}`;
+}
+
+function EventPill({
+  event,
+  onClick,
+  compact = false,
+  className,
+  style,
+  neutral = false,
+}: {
+  event: CalendarEvent;
+  onClick: (event: CalendarEvent, ev: React.MouseEvent) => void;
+  compact?: boolean;
+  className?: string;
+  style?: React.CSSProperties;
+  neutral?: boolean;
+}) {
   const cancelled = event.rawEvent?.appointmentStatus === "cancelled";
+  const colorStyle = !neutral && !cancelled && event.color ? { backgroundColor: event.color, color: "#ffffff" } : {};
+
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <div
           className={cn(
-            "cursor-pointer truncate rounded border font-medium",
-            compact ? "p-1 text-[10px] sm:text-xs" : "p-1.5 text-sm",
-            cancelled ? "border-primary bg-background text-primary line-through" : "border-primary/20 bg-primary text-primary-foreground",
+            "flex cursor-pointer items-center truncate border-2 font-normal leading-none",
+            compact ? "rounded-sm px-1.5 py-0.5 text-[10px] sm:text-xs" : "rounded p-1.5 text-sm",
+            neutral
+              ? "border-transparent bg-transparent text-foreground"
+              : cancelled
+                ? "border-primary bg-background text-primary line-through"
+                : "border-background bg-primary text-primary-foreground",
+            className,
           )}
-          style={cancelled ? {} : event.color ? { backgroundColor: event.color, color: "#ffffff", borderColor: event.color } : {}}
+          style={{ ...colorStyle, ...style }}
           onClick={(ev) => onClick(event, ev)}
         >
-          {event.name} - {format(new Date(event.date), "h:mm a")}
+          {neutral ? <span className="mr-1 h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: event.color || "#2384CA" }} /> : null}
+          <span className="truncate">{event.name} - {format(getEventStartTime(event), "h:mm a")}</span>
         </div>
       </TooltipTrigger>
-      <TooltipContent className="z-[100] border bg-popover p-3 text-popover-foreground shadow-md">
-        <div className="font-semibold">{event.name}</div>
-        <div className="mt-1 text-xs text-muted-foreground">{format(new Date(event.date), "EEEE, MMMM d, yyyy")}</div>
-        <div className="text-xs text-muted-foreground">{format(new Date(event.date), "h:mm a")}</div>
-      </TooltipContent>
+      <EventTooltipContent event={event} />
     </Tooltip>
   );
 }
 
 function MonthView({ month, date, setDate, setMonth, events, openEvent }: any) {
+  const visibleEventLimit = 3;
+  const [overflowDay, setOverflowDay] = useState<{ day: Date; events: CalendarEvent[] } | null>(null);
+
   return (
     <>
       <div className="grid grid-cols-7 border-b bg-muted/50">
@@ -1204,13 +2301,19 @@ function MonthView({ month, date, setDate, setMonth, events, openEvent }: any) {
           const day = new Date(month.getFullYear(), month.getMonth(), index - firstDayOfMonth + 1);
           const isCurrentMonth = day.getMonth() === month.getMonth();
           const isSelected = date && day.toDateString() === date.toDateString();
+          const dayEvents = events
+            .filter((event: CalendarEvent) => getEventStartTime(event).toDateString() === day.toDateString())
+            .sort((a: CalendarEvent, b: CalendarEvent) => getEventStartTime(a).getTime() - getEventStartTime(b).getTime());
+          const visibleEvents = dayEvents.slice(0, visibleEventLimit);
+          const hiddenEvents = dayEvents.slice(visibleEventLimit);
+
           return (
             <div
               key={index}
               className={cn(
                 "cursor-pointer border-b border-r p-2 transition-colors",
                 !isCurrentMonth ? "bg-muted/20 text-muted-foreground/50" : "hover:bg-muted/30",
-                isSelected && "bg-primary/5 ring-1 ring-inset ring-primary",
+                isSelected && "bg-primary/5",
               )}
               onClick={() => {
                 setDate(day);
@@ -1220,18 +2323,57 @@ function MonthView({ month, date, setDate, setMonth, events, openEvent }: any) {
               <div className={cn("flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium", isSelected && "bg-primary text-primary-foreground")}>
                 {day.getDate()}
               </div>
-              <div className="no-scrollbar mt-1 max-h-[80px] space-y-1 overflow-y-auto">
-                {events
-                  .filter((event: CalendarEvent) => new Date(event.date).toDateString() === day.toDateString())
-                  .sort((a: CalendarEvent, b: CalendarEvent) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                  .map((event: CalendarEvent) => (
-                    <EventPill key={event.id} event={event} compact onClick={(item, ev) => { ev.stopPropagation(); openEvent(item); }} />
-                  ))}
+              <div className="mt-1 flex flex-col gap-0 overflow-hidden">
+                {visibleEvents.map((event: CalendarEvent, eventIndex: number) => (
+                  <EventPill
+                    key={event.id}
+                    event={event}
+                    compact
+                    neutral
+                    className={cn(eventIndex > 0 && "-mt-0.5")}
+                    onClick={(item, ev) => { ev.stopPropagation(); openEvent(item); }}
+                  />
+                ))}
+                {hiddenEvents.length > 0 ? (
+                  <button
+                    type="button"
+                    className="border-2 border-transparent bg-transparent px-1.5 py-0 text-left text-[9px] font-normal leading-none text-primary hover:underline sm:text-[10px]"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setOverflowDay({ day, events: hiddenEvents });
+                    }}
+                  >
+                    +{hiddenEvents.length} more
+                  </button>
+                ) : null}
               </div>
             </div>
           );
         })}
       </div>
+      <Dialog open={Boolean(overflowDay)} onOpenChange={(open) => !open && setOverflowDay(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{overflowDay ? format(overflowDay.day, "EEEE, MMMM d") : "More appointments"}</DialogTitle>
+            <DialogDescription>Additional appointments for this day.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-0">
+            {overflowDay?.events.map((event, index) => (
+              <EventPill
+                key={event.id}
+                event={event}
+                neutral
+                className={cn("rounded-none", index > 0 && "-mt-0.5")}
+                onClick={(item, ev) => {
+                  ev.stopPropagation();
+                  setOverflowDay(null);
+                  openEvent(item);
+                }}
+              />
+            ))}
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -1257,6 +2399,7 @@ function WeekView({ month, date, setDate, events, currentTime, scrollRef, openEv
       <TimeGrid
         mode="week"
         month={month}
+        selectedDate={date}
         events={events}
         currentTime={currentTime}
         scrollRef={scrollRef}
@@ -1272,15 +2415,18 @@ function DayView({ month, events, currentTime, scrollRef, openEvent }: any) {
       <div className="flex items-center justify-center border-b bg-muted/50 p-4">
         <div className="text-xl font-bold text-primary">{format(month, "EEEE, MMMM d, yyyy")}</div>
       </div>
-      <TimeGrid mode="day" month={month} events={events} currentTime={currentTime} scrollRef={scrollRef} openEvent={openEvent} />
+      <TimeGrid mode="day" month={month} selectedDate={month} events={events} currentTime={currentTime} scrollRef={scrollRef} openEvent={openEvent} />
     </div>
   );
 }
 
-function TimeGrid({ mode, month, events, currentTime, scrollRef, openEvent }: any) {
+function TimeGrid({ mode, month, selectedDate, events, currentTime, scrollRef, openEvent }: any) {
   const isWeek = mode === "week";
   const rowHeight = isWeek ? 80 : 100;
   const leftWidth = isWeek ? "left-16" : "left-20";
+  const labelWidth = isWeek ? "w-16" : "w-20";
+  const gridHeight = 24 * rowHeight;
+  const [hoveredEvent, setHoveredEvent] = useState<{ event: CalendarEvent; x: number; y: number } | null>(null);
   const days = isWeek
     ? Array.from({ length: 7 }, (_, index) => {
         const weekStart = startOfWeek(month);
@@ -1294,38 +2440,104 @@ function TimeGrid({ mode, month, events, currentTime, scrollRef, openEvent }: an
 
   return (
     <div ref={scrollRef} className="no-scrollbar relative flex-1 overflow-y-auto bg-card">
-      {showCurrentLine && (
-        <div className={cn("pointer-events-none absolute right-0 z-10 border-t-2 border-blue-400/60", leftWidth)} style={{ top: `${(currentTime.getHours() + currentTime.getMinutes() / 60) * rowHeight}px` }}>
-          <div className="absolute -left-1.5 -top-1.5 h-3 w-3 rounded-full bg-blue-400 shadow-sm" />
-        </div>
-      )}
-      {Array.from({ length: 24 }).map((_, hour) => (
-        <div key={hour} className="relative flex border-b" style={{ height: `${rowHeight}px` }}>
-          <div className={cn("absolute right-0 top-1/2 pointer-events-none z-0 border-t border-dashed border-muted-foreground/20", leftWidth)} />
-          <div className={cn("relative z-10 shrink-0 border-r bg-blue-50/50 p-2 text-right text-xs text-muted-foreground", isWeek ? "w-16" : "w-20 text-sm font-medium")}>
-            {hour === 0 ? "12 AM" : hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`}
+      <div className="relative" style={{ height: `${gridHeight}px` }}>
+        {showCurrentLine && (
+          <div className={cn("pointer-events-none absolute right-0 z-10 border-t-2 border-blue-400/60", leftWidth)} style={{ top: `${(currentTime.getHours() + currentTime.getMinutes() / 60) * rowHeight}px` }}>
+            <div className="absolute -left-1.5 -top-1.5 h-3 w-3 rounded-full bg-blue-400 shadow-sm" />
           </div>
-          <div className={cn("grid flex-1 bg-card", isWeek ? "grid-cols-7" : "grid-cols-1")}>
-            {days.map((day: Date, index: number) => {
-              const hourEvents = events.filter((event: CalendarEvent) => new Date(event.date).toDateString() === day.toDateString() && new Date(event.date).getHours() === hour);
-              return (
-                <div key={index} className="no-scrollbar relative flex flex-col overflow-x-auto border-r p-1 transition-colors last:border-r-0 hover:bg-muted/10">
-                  <div className="flex h-1/2 w-full flex-row gap-1 pb-1">
-                    {hourEvents.filter((event: CalendarEvent) => new Date(event.date).getMinutes() < 30).map((event: CalendarEvent) => (
-                      <EventPill key={event.id} event={event} compact={isWeek} onClick={(item, ev) => { ev.stopPropagation(); openEvent(item); }} />
-                    ))}
-                  </div>
-                  <div className="flex h-1/2 w-full flex-row gap-1 pt-1">
-                    {hourEvents.filter((event: CalendarEvent) => new Date(event.date).getMinutes() >= 30).map((event: CalendarEvent) => (
-                      <EventPill key={event.id} event={event} compact={isWeek} onClick={(item, ev) => { ev.stopPropagation(); openEvent(item); }} />
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+        )}
+        {Array.from({ length: 24 }).map((_, hour) => (
+          <div key={hour} className="relative flex border-b" style={{ height: `${rowHeight}px` }}>
+            <div className={cn("absolute right-0 top-1/2 pointer-events-none z-0 border-t border-dashed border-muted-foreground/20", leftWidth)} />
+            <div className={cn("relative z-10 shrink-0 border-r bg-blue-50/50 p-2 text-right text-xs text-muted-foreground", labelWidth, !isWeek && "text-sm font-medium")}>
+              {hour === 0 ? "12 AM" : hour < 12 ? `${hour} AM` : hour === 12 ? "12 PM" : `${hour - 12} PM`}
+            </div>
+            <div className={cn("grid flex-1 bg-card", isWeek ? "grid-cols-7" : "grid-cols-1")}>
+              {days.map((day: Date, index: number) => {
+                const isSelectedDay = isWeek && selectedDate && day.toDateString() === selectedDate.toDateString();
+
+                return (
+                  <div
+                    key={index}
+                    className="border-r transition-colors last:border-r-0 hover:bg-muted/10"
+                    style={isSelectedDay ? { backgroundColor: "#F8FAFC" } : undefined}
+                  />
+                );
+              })}
+            </div>
           </div>
+        ))}
+        <div className={cn("pointer-events-none absolute inset-y-0 right-0 grid", leftWidth, isWeek ? "grid-cols-7" : "grid-cols-1")}>
+          {days.map((day: Date, index: number) => (
+            <div key={index} className="relative border-r last:border-r-0">
+              {getPositionedEvents(
+                events.filter((event: CalendarEvent) => getEventStartTime(event).toDateString() === day.toDateString()),
+              ).map(({ event, column, columns }) => {
+                  const start = getEventStartTime(event);
+                  const top = (start.getHours() + start.getMinutes() / 60) * rowHeight;
+                  const height = Math.max(24, (getEventDurationMinutes(event) / 60) * rowHeight);
+                  const laneWidth = 100 / columns;
+                  const laneLeft = column * laneWidth;
+                  const cancelled = event.rawEvent?.appointmentStatus === "cancelled";
+                  const eventStyle = cancelled
+                    ? {}
+                    : {
+                        backgroundColor: event.color || "#2384CA",
+                        color: "#ffffff",
+                      };
+
+                  return (
+                    <div
+                      key={event.id}
+                      className={cn(
+                        "pointer-events-auto absolute z-20 cursor-pointer overflow-hidden rounded border-2 border-background p-1 font-medium shadow-sm",
+                        isWeek ? "text-[10px] sm:text-xs" : "text-sm",
+                        cancelled ? "border-primary bg-background text-primary line-through" : "border-primary/20 bg-primary text-primary-foreground",
+                      )}
+                      style={{
+                        top: `${top}px`,
+                        left: `${laneLeft}%`,
+                        width: `${laneWidth}%`,
+                        height: `${height}px`,
+                        ...eventStyle,
+                      }}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        openEvent(event);
+                      }}
+                      onMouseEnter={(ev) => setHoveredEvent({ event, x: ev.clientX, y: ev.clientY })}
+                      onMouseMove={(ev) => setHoveredEvent({ event, x: ev.clientX, y: ev.clientY })}
+                      onMouseLeave={() => setHoveredEvent(null)}
+                    >
+                      <div className="truncate">
+                        {event.name} - {format(start, "h:mm a")}
+                      </div>
+                      {height >= 44 ? (
+                        <div className="mt-0.5 truncate text-[10px] opacity-90">
+                          {format(start, "h:mm a")} to {format(getEventEndTime(event), "h:mm a")}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+            </div>
+          ))}
         </div>
-      ))}
+        {hoveredEvent ? (
+          <div
+            className="pointer-events-none fixed z-[100] rounded-md border border-white/10 bg-[#0F1729] p-3 text-white shadow-md"
+            style={{ left: hoveredEvent.x + 12, top: hoveredEvent.y + 12 }}
+          >
+            <div className="font-semibold">{hoveredEvent.event.name}</div>
+            <div className="mt-1 text-xs text-white/70">
+              {format(getEventStartTime(hoveredEvent.event), "EEEE, MMMM d, yyyy")}
+            </div>
+            <div className="text-xs text-white/70">
+              {format(getEventStartTime(hoveredEvent.event), "h:mm a")} to {format(getEventEndTime(hoveredEvent.event), "h:mm a")}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

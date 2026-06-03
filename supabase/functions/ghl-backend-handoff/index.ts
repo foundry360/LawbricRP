@@ -17,6 +17,7 @@ type ApiPayload = {
   endpoint?: string;
   method?: string;
   body?: unknown;
+  version?: string;
 };
 
 type LocationRow = {
@@ -47,6 +48,17 @@ function buildGhlUrl(baseUrl: string, endpoint: string) {
   }
 
   return new URL(endpoint, `${baseUrl.replace(/\/$/, "")}/`).toString();
+}
+
+function getGhlApiVersion(payloadVersion: unknown, fallbackVersion: string) {
+  if (typeof payloadVersion !== "string" || payloadVersion.trim() === "") return fallbackVersion;
+
+  const version = payloadVersion.trim();
+  if (!["2021-07-28", "2021-04-15"].includes(version)) {
+    throw new Error("Unsupported GHL API version");
+  }
+
+  return version;
 }
 
 serve(async (req) => {
@@ -161,6 +173,13 @@ serve(async (req) => {
     return jsonResponse({ error: "Unsupported GHL API method" }, 400);
   }
 
+  let requestGhlApiVersion: string;
+  try {
+    requestGhlApiVersion = getGhlApiVersion(body.payload.version, ghlApiVersion);
+  } catch (error) {
+    return jsonResponse({ error: error instanceof Error ? error.message : "Invalid GHL API version" }, 400);
+  }
+
   let ghlUrl: string;
   try {
     ghlUrl = buildGhlUrl(ghlApiBaseUrl, body.payload.endpoint);
@@ -174,7 +193,7 @@ serve(async (req) => {
       "Accept": "application/json",
       "Authorization": `Bearer ${location.encrypted_api_key}`,
       "Content-Type": "application/json",
-      "Version": ghlApiVersion,
+      "Version": requestGhlApiVersion,
     },
     body: method === "GET" || method === "DELETE" || body.payload.body === undefined
       ? undefined

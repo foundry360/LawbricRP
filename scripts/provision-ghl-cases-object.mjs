@@ -7,6 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 const API_BASE_URL = process.env.GHL_API_BASE_URL || "https://services.leadconnectorhq.com";
 const API_VERSION = process.env.GHL_API_VERSION || "2021-07-28";
 const DRY_RUN = process.argv.includes("--dry-run");
+const INSPECT_ONLY = process.argv.includes("--inspect");
 
 const CASES = {
   objectKey: "custom_objects.cases",
@@ -18,6 +19,13 @@ const CASES = {
   schemaFieldKey: "custom_objects.cases.case_id",
   customFieldObjectKey: "custom_object.cases",
   customFieldKey: "custom_object.cases.case_id",
+  associationKey: "case_contact",
+  association: {
+    firstObjectLabel: "Case",
+    firstObjectKey: "custom_objects.cases",
+    secondObjectLabel: "Contact",
+    secondObjectKey: "contact",
+  },
 };
 
 class GhlApiError extends Error {
@@ -78,6 +86,79 @@ function hasCaseIdField(schema) {
     const fieldKey = String(field.fieldKey || field.key || "").trim().toLowerCase();
     return fieldName === "case id" || fieldKey === CASES.schemaFieldKey || fieldKey === CASES.customFieldKey;
   });
+}
+
+function getSchemaObject(schema) {
+  return schema?.object || schema?.data?.object || schema;
+}
+
+function getSchemaFields(schema) {
+  return getCollection(schema, "fields", "customFields", "properties");
+}
+
+function printCasesSchemaSummary(schema) {
+  const object = getSchemaObject(schema);
+  const fields = getSchemaFields(schema);
+
+  console.log("Cases object schema summary:");
+  console.log(JSON.stringify({
+    id: object?.id,
+    key: object?.key,
+    labels: object?.labels,
+    locationId: object?.locationId,
+    primaryDisplayProperty: object?.primaryDisplayProperty,
+    fieldCount: fields.length,
+    fields: fields.map((field) => ({
+      id: field.id,
+      name: field.name || field.label,
+      key: field.key,
+      fieldKey: field.fieldKey,
+      objectKey: field.objectKey,
+      dataType: field.dataType || field.type,
+      parentId: field.parentId,
+    })),
+  }, null, 2));
+}
+
+function getAssociations(response) {
+  const associations = getCollection(response, "associations");
+  if (associations.length > 0) return associations;
+  if (response?.association && typeof response.association === "object") return [response.association];
+  if (response?.data?.association && typeof response.data.association === "object") return [response.data.association];
+  if (response?.id && response?.firstObjectKey && response?.secondObjectKey) return [response];
+  return [];
+}
+
+function isCasesContactAssociation(association) {
+  const firstObjectKey = String(association.firstObjectKey || "").toLowerCase();
+  const secondObjectKey = String(association.secondObjectKey || "").toLowerCase();
+  const associationKey = String(association.key || "").toLowerCase();
+
+  return (
+    associationKey === CASES.associationKey ||
+    firstObjectKey === CASES.association.firstObjectKey && secondObjectKey === CASES.association.secondObjectKey ||
+    firstObjectKey === CASES.association.secondObjectKey && secondObjectKey === CASES.association.firstObjectKey
+  );
+}
+
+function printAssociationSummary(response) {
+  const associations = getAssociations(response);
+  const matchingAssociations = associations.filter(isCasesContactAssociation);
+
+  console.log("Cases/contact association summary:");
+  console.log(JSON.stringify({
+    associationCount: associations.length,
+    matchingAssociationCount: matchingAssociations.length,
+    matchingAssociations: matchingAssociations.map((association) => ({
+      id: association.id,
+      key: association.key,
+      firstObjectLabel: association.firstObjectLabel,
+      firstObjectKey: association.firstObjectKey,
+      secondObjectLabel: association.secondObjectLabel,
+      secondObjectKey: association.secondObjectKey,
+      associationType: association.associationType,
+    })),
+  }, null, 2));
 }
 
 async function resolveCredentialsFromSupabase() {
@@ -142,11 +223,17 @@ async function ghlRequest(endpoint, { method = "GET", body, token, expectedStatu
   const url = getUrl(endpoint);
   const label = `${method} ${endpoint}`;
 
+  if (DRY_RUN && method === "GET") {
+    console.log(`[dry-run] ${label}`);
+    return {};
+  }
+
   if (DRY_RUN && method !== "GET") {
     console.log(`[dry-run] ${label}`);
     if (body) console.log(JSON.stringify(body, null, 2));
     if (endpoint === "/custom-fields/folder") return { folder: { id: "dry-run-folder-id" } };
     if (endpoint === "/objects/") return { object: { key: CASES.objectKey } };
+    if (endpoint === "/associations/") return { association: { key: CASES.associationKey, ...CASES.association } };
     return {};
   }
 
@@ -188,6 +275,36 @@ async function getCasesSchema(token, locationId, key = CASES.objectKey) {
     `/objects/${encodeURIComponent(key)}?locationId=${encodeURIComponent(locationId)}&fetchProperties=true`,
     { token },
   );
+}
+
+async function tryReadCasesCustomFields(token, locationId) {
+  try {
+    return await ghlRequest(
+      `/custom-fields/object-key/${encodeURIComponent(CASES.objectKey)}?locationId=${encodeURIComponent(locationId)}`,
+      { token },
+    );
+  } catch (error) {
+    if (error instanceof GhlApiError) {
+      console.warn(`Could not read custom fields by object key (${error.status}): ${error.message}`);
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function tryReadCasesAssociations(token, locationId) {
+  try {
+    return await ghlRequest(
+      `/associations/objectKey/${encodeURIComponent(CASES.objectKey)}?locationId=${encodeURIComponent(locationId)}`,
+      { token },
+    );
+  } catch (error) {
+    if (error instanceof GhlApiError) {
+      console.warn(`Could not read associations by object key (${error.status}): ${error.message}`);
+      return null;
+    }
+    throw error;
+  }
 }
 
 function getCreateObjectBody() {
@@ -261,6 +378,36 @@ async function createCaseIdCustomField(token, locationId) {
   });
 }
 
+async function ensureCasesContactAssociation(token, locationId) {
+  const associations = await tryReadCasesAssociations(token, locationId);
+  if (associations && getAssociations(associations).some(isCasesContactAssociation)) {
+    console.log("Cases/contact association already exists.");
+    return;
+  }
+
+  console.log("Creating Cases/contact association...");
+  try {
+    await ghlRequest("/associations/", {
+      method: "POST",
+      token,
+      body: {
+        locationId,
+        key: CASES.associationKey,
+        ...CASES.association,
+      },
+    });
+  } catch (error) {
+    if (error instanceof GhlApiError && String(error.message).toLowerCase().includes("already")) {
+      console.log("Cases/contact association already exists.");
+      return;
+    }
+
+    throw error;
+  }
+
+  console.log("Cases/contact association created.");
+}
+
 async function main() {
   const { token, locationId, source } = await resolveCredentials();
 
@@ -273,26 +420,56 @@ async function main() {
   if (existing) {
     console.log(`Cases object already exists: ${existing.key || existing.id}`);
     const schema = await getCasesSchema(token, locationId, existing.key || CASES.objectKey);
+    printCasesSchemaSummary(schema);
+
+    if (INSPECT_ONLY) {
+      const customFields = await tryReadCasesCustomFields(token, locationId);
+      if (customFields) {
+        console.log("Custom fields object-key endpoint summary:");
+        console.log(JSON.stringify({
+          fieldCount: getSchemaFields(customFields).length,
+          fields: getSchemaFields(customFields).map((field) => ({
+            id: field.id,
+            name: field.name || field.label,
+            fieldKey: field.fieldKey,
+            objectKey: field.objectKey,
+            dataType: field.dataType || field.type,
+          })),
+        }, null, 2));
+      }
+      const associations = await tryReadCasesAssociations(token, locationId);
+      if (associations) printAssociationSummary(associations);
+      return;
+    }
+
     if (hasCaseIdField(schema)) {
-      console.log("Case ID field already exists. Nothing to create.");
+      console.log("Case ID field already exists.");
+      await ensureCasesContactAssociation(token, locationId);
       return;
     }
 
     await createCaseIdCustomField(token, locationId);
     console.log("Case ID field created.");
+    await ensureCasesContactAssociation(token, locationId);
     return;
   }
 
   await createCasesObject(token, locationId);
 
   const schema = DRY_RUN ? null : await getCasesSchema(token, locationId);
+  if (schema) printCasesSchemaSummary(schema);
+
+  if (INSPECT_ONLY) return;
+
   if (schema && hasCaseIdField(schema)) {
     console.log("Cases object created with Case ID field.");
+    await ensureCasesContactAssociation(token, locationId);
     return;
   }
 
   await createCaseIdCustomField(token, locationId);
   console.log("Cases object and Case ID field created.");
+  await ensureCasesContactAssociation(token, locationId);
 }
 
 main().catch((error) => {
@@ -307,6 +484,8 @@ main().catch((error) => {
           "- objects/schema.write",
           "- locations/customFields.readonly",
           "- locations/customFields.write",
+          "- associations.readonly",
+          "- associations.write",
         ].join("\n"),
       );
     }
