@@ -17,8 +17,8 @@ const CASES = {
   fieldName: "Case ID",
   fieldSlug: "case_id",
   schemaFieldKey: "custom_objects.cases.case_id",
-  customFieldObjectKey: "custom_object.cases",
-  customFieldKey: "custom_object.cases.case_id",
+  customFieldObjectKey: "custom_objects.cases",
+  customFieldKey: "custom_objects.cases.case_id",
   associationKey: "case_contact",
   association: {
     firstObjectLabel: "Case",
@@ -27,6 +27,18 @@ const CASES = {
     secondObjectKey: "contact",
   },
 };
+
+const CASE_FIELDS = [
+  { name: "Case ID", slug: "case_id" },
+  { name: "Case Name", slug: "case_name" },
+  { name: "Practice Area", slug: "case_type" },
+  { name: "Status", slug: "status" },
+  { name: "Stage", slug: "stage" },
+  { name: "Primary Attorney", slug: "primary_attorney" },
+  { name: "Primary Attorney ID", slug: "primary_attorney_id" },
+  { name: "Primary Attorney Email", slug: "primary_attorney_email" },
+  { name: "GHL Contact ID", slug: "contact_id" },
+];
 
 class GhlApiError extends Error {
   constructor(message, status, body) {
@@ -80,12 +92,7 @@ function getCollection(response, ...keys) {
 }
 
 function hasCaseIdField(schema) {
-  const fields = getCollection(schema, "fields", "customFields", "properties");
-  return fields.some((field) => {
-    const fieldName = String(field.name || field.label || "").trim().toLowerCase();
-    const fieldKey = String(field.fieldKey || field.key || "").trim().toLowerCase();
-    return fieldName === "case id" || fieldKey === CASES.schemaFieldKey || fieldKey === CASES.customFieldKey;
-  });
+  return hasCaseField(schema, CASE_FIELDS[0]);
 }
 
 function getSchemaObject(schema) {
@@ -94,6 +101,25 @@ function getSchemaObject(schema) {
 
 function getSchemaFields(schema) {
   return getCollection(schema, "fields", "customFields", "properties");
+}
+
+function fieldKeysFor(slug) {
+  return new Set([
+    slug,
+    `custom_object.cases.${slug}`,
+    `custom_objects.cases.${slug}`,
+  ]);
+}
+
+function hasCaseField(schema, field) {
+  const expectedKeys = fieldKeysFor(field.slug);
+  const expectedName = field.name.trim().toLowerCase();
+  return getSchemaFields(schema).some((schemaField) => {
+    const fieldName = String(schemaField.name || schemaField.label || "").trim().toLowerCase();
+    const key = String(schemaField.key || "").trim().toLowerCase();
+    const fieldKey = String(schemaField.fieldKey || "").trim().toLowerCase();
+    return fieldName === expectedName || expectedKeys.has(key) || expectedKeys.has(fieldKey);
+  });
 }
 
 function printCasesSchemaSummary(schema) {
@@ -340,42 +366,64 @@ async function createCasesObject(token, locationId) {
   throw new Error("Could not create the Cases custom object with the supported request shapes.");
 }
 
-async function createCaseIdCustomField(token, locationId) {
+async function getCaseFieldsFolderId(token, locationId, schema) {
   const parentId = getEnv("GHL_CASES_FIELD_FOLDER_ID");
-  let folderId = parentId;
+  if (parentId) return parentId;
 
-  if (!folderId) {
-    console.log("Creating Case Details custom field folder...");
-    const folder = await ghlRequest("/custom-fields/folder", {
-      method: "POST",
-      token,
-      body: {
-        objectKey: CASES.customFieldObjectKey,
-        name: "Case Details",
-        locationId,
-      },
-    });
-    folderId = folder?.folder?.id || folder?.id;
-  }
+  const existingFolderId = getSchemaFields(schema).find((field) => field.parentId)?.parentId;
+  if (existingFolderId) return existingFolderId;
+
+  console.log("Creating Case Details custom field folder...");
+  const folder = await ghlRequest("/custom-fields/folder", {
+    method: "POST",
+    token,
+    body: {
+      objectKey: CASES.customFieldObjectKey,
+      name: "Case Details",
+      locationId,
+    },
+  });
+  const folderId = folder?.folder?.id || folder?.id;
 
   if (!folderId) {
     throw new Error("GHL did not return a custom field folder id. Set GHL_CASES_FIELD_FOLDER_ID and rerun.");
   }
 
-  console.log("Creating Case ID custom field...");
+  return folderId;
+}
+
+async function createCaseCustomField(token, locationId, field, parentId) {
+  console.log(`Creating ${field.name} custom field...`);
   return ghlRequest("/custom-fields/", {
     method: "POST",
     token,
     body: {
       locationId,
-      name: CASES.fieldName,
+      name: field.name,
       dataType: "TEXT",
-      fieldKey: CASES.customFieldKey,
+      fieldKey: `custom_objects.cases.${field.slug}`,
       objectKey: CASES.customFieldObjectKey,
-      parentId: folderId,
+      parentId,
       showInForms: true,
     },
   });
+}
+
+async function ensureCaseCustomFields(token, locationId, schema) {
+  const missingFields = CASE_FIELDS.filter((field) => !hasCaseField(schema, field));
+
+  if (missingFields.length === 0) {
+    console.log("All case custom fields already exist.");
+    return false;
+  }
+
+  const folderId = await getCaseFieldsFolderId(token, locationId, schema);
+  for (const field of missingFields) {
+    await createCaseCustomField(token, locationId, field, folderId);
+  }
+
+  console.log(`Created ${missingFields.length} case custom field(s).`);
+  return true;
 }
 
 async function ensureCasesContactAssociation(token, locationId) {
@@ -442,14 +490,7 @@ async function main() {
       return;
     }
 
-    if (hasCaseIdField(schema)) {
-      console.log("Case ID field already exists.");
-      await ensureCasesContactAssociation(token, locationId);
-      return;
-    }
-
-    await createCaseIdCustomField(token, locationId);
-    console.log("Case ID field created.");
+    await ensureCaseCustomFields(token, locationId, schema);
     await ensureCasesContactAssociation(token, locationId);
     return;
   }
@@ -461,14 +502,8 @@ async function main() {
 
   if (INSPECT_ONLY) return;
 
-  if (schema && hasCaseIdField(schema)) {
-    console.log("Cases object created with Case ID field.");
-    await ensureCasesContactAssociation(token, locationId);
-    return;
-  }
-
-  await createCaseIdCustomField(token, locationId);
-  console.log("Cases object and Case ID field created.");
+  if (schema && hasCaseIdField(schema)) console.log("Cases object created with Case ID field.");
+  if (schema) await ensureCaseCustomFields(token, locationId, schema);
   await ensureCasesContactAssociation(token, locationId);
 }
 
@@ -482,10 +517,13 @@ main().catch((error) => {
           "Required GHL Private Integration Token scopes:",
           "- objects/schema.readonly",
           "- objects/schema.write",
+          "- objects/record.readonly",
+          "- objects/record.write",
           "- locations/customFields.readonly",
           "- locations/customFields.write",
           "- associations.readonly",
           "- associations.write",
+          "- associations/relation.write",
         ].join("\n"),
       );
     }

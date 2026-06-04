@@ -52,3 +52,32 @@ a {
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+.hover-scrollbar {
+  scrollbar-color: transparent transparent;
+  scrollbar-width: thin;
+}
+
+.hover-scrollbar:hover {
+  scrollbar-color: hsl(var(--border)) transparent;
+}
+
+.hover-scrollbar::-webkit-scrollbar {
+  height: 8px;
+  width: 8px;
+}
+
+.hover-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.hover-scrollbar::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border: 2px solid transparent;
+  border-radius: 9999px;
+  background-clip: padding-box;
+}
+
+.hover-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: hsl(var(--border));
+}

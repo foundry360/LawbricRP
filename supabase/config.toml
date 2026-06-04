@@ -78,6 +78,12 @@ verify_jwt = false
 [functions.create_task]
 verify_jwt = false
 
+[functions.list_tasks]
+verify_jwt = false
+
+[functions.update_task]
+verify_jwt = false
+
 [functions.create_event]
 verify_jwt = false
 

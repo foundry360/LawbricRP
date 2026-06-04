@@ -37,6 +37,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -141,6 +142,9 @@ export function CasesPage() {
   const [locationId, setLocationId] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [stageFilter, setStageFilter] = useState("All");
+  const [assignedUserFilter, setAssignedUserFilter] = useState("All");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [listViews, setListViews] = useState<CaseListView[]>(defaultCaseListViews);
@@ -226,6 +230,20 @@ export function CasesPage() {
   }, [toast]);
 
   const activeListView = listViews.find((view) => view.id === activeListViewId) || listViews[0];
+  const caseTypeOptions = useMemo(
+    () => [...new Set([...CASE_TYPES, ...cases.map((caseRecord) => caseRecord.case_type).filter(Boolean)])],
+    [cases],
+  );
+  const stageOptions = useMemo(
+    () => [...new Set(cases.map((caseRecord) => caseRecord.stage).filter(Boolean))],
+    [cases],
+  );
+  const activeFilterCount = [
+    typeFilter,
+    statusFilter,
+    stageFilter,
+    assignedUserFilter,
+  ].filter((value) => value !== "All").length;
 
   const filteredCases = useMemo(() => {
     const search = searchTerm.toLowerCase();
@@ -238,6 +256,11 @@ export function CasesPage() {
         caseRecord.stage.toLowerCase().includes(search) ||
         (caseRecord.primary_contact_name || "").toLowerCase().includes(search);
       const matchesType = typeFilter === "All" || caseRecord.case_type === typeFilter;
+      const matchesStatus = statusFilter === "All" || caseRecord.status === statusFilter;
+      const matchesStage = stageFilter === "All" || caseRecord.stage === stageFilter;
+      const matchesAssigned =
+        assignedUserFilter === "All" ||
+        (assignedUserFilter === "unassigned" ? !caseRecord.assigned_user_id : caseRecord.assigned_user_id === assignedUserFilter);
       let matchesListView = true;
 
       if (activeListView.filters.status && caseRecord.status !== activeListView.filters.status) matchesListView = false;
@@ -247,9 +270,9 @@ export function CasesPage() {
         matchesListView = false;
       }
 
-      return matchesSearch && matchesType && matchesListView;
+      return matchesSearch && matchesType && matchesStatus && matchesStage && matchesAssigned && matchesListView;
     });
-  }, [activeListView, cases, searchTerm, typeFilter]);
+  }, [activeListView, assignedUserFilter, cases, searchTerm, stageFilter, statusFilter, typeFilter]);
 
   const sortedCases = useMemo(() => {
     return [...filteredCases].sort((a, b) => {
@@ -311,8 +334,8 @@ export function CasesPage() {
         onOpenChange={setIsListViewPanelOpen}
         editingListView={editingListView}
         users={users}
-        caseTypes={CASE_TYPES}
-        stages={[...new Set(cases.map((caseRecord) => caseRecord.stage).filter(Boolean))]}
+        caseTypes={caseTypeOptions}
+        stages={stageOptions}
         onSave={(newListView) => {
           const updatedViews = editingListView
             ? listViews.map((view) => (view.id === newListView.id ? newListView : view))
@@ -326,7 +349,7 @@ export function CasesPage() {
         }}
       />
 
-      <div className="flex w-full flex-col items-start justify-between gap-4 overflow-hidden xl:flex-row xl:items-center">
+      <div className="flex w-full flex-col items-start justify-between gap-4 overflow-visible xl:flex-row xl:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
           <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">Cases</h2>
           <Tabs
@@ -437,25 +460,127 @@ export function CasesPage() {
                 />
               </div>
 
-              <Select
-                value={typeFilter}
-                onValueChange={(value) => {
-                  setTypeFilter(value);
-                  setCurrentPage(1);
-                }}
-              >
-                <SelectTrigger className="flex h-10 w-10 items-center justify-center rounded-full border border-input bg-background p-0 [&>svg:last-child]:hidden">
-                  <Filter className="h-4 w-4" />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value="All">All Types</SelectItem>
-                  {CASE_TYPES.map((caseType) => (
-                    <SelectItem key={caseType} value={caseType}>
-                      {caseType}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={cn(
+                      "relative h-10 w-10 shrink-0 rounded-full",
+                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                    )}
+                  >
+                    <Filter className="h-4 w-4" />
+                    {activeFilterCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="right-0 w-80 p-4">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">Filter Cases</div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setTypeFilter("All");
+                          setStatusFilter("All");
+                          setStageFilter("All");
+                          setAssignedUserFilter("All");
+                          setCurrentPage(1);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Practice Area</Label>
+                      <Select value={typeFilter} onValueChange={(value) => {
+                        setTypeFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any practice area" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150]">
+                          <SelectItem value="All">Any Practice Area</SelectItem>
+                          {caseTypeOptions.map((caseType) => (
+                            <SelectItem key={caseType} value={caseType}>
+                              {caseType}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Status</Label>
+                      <Select value={statusFilter} onValueChange={(value) => {
+                        setStatusFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any status" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150]">
+                          <SelectItem value="All">Any Status</SelectItem>
+                          {CASE_STATUSES.map((status) => (
+                            <SelectItem key={status} value={status}>
+                              <span className="capitalize">{status}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Stage</Label>
+                      <Select value={stageFilter} onValueChange={(value) => {
+                        setStageFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any stage" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150]">
+                          <SelectItem value="All">Any Stage</SelectItem>
+                          {stageOptions.map((stage) => (
+                            <SelectItem key={stage} value={stage}>
+                              <span className="capitalize">{stage.replace(/_/g, " ")}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Primary Attorney</Label>
+                      <Select value={assignedUserFilter} onValueChange={(value) => {
+                        setAssignedUserFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any attorney" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150] max-h-72 overflow-y-auto">
+                          <SelectItem value="All">Any Attorney</SelectItem>
+                          <SelectItem value="unassigned">Unassigned</SelectItem>
+                          {users.map((user) => (
+                            <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                              {getUserName(user)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               <Tabs
                 value={viewMode}

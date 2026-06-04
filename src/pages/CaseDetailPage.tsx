@@ -4,6 +4,8 @@ import {
   ArrowLeft,
   Briefcase,
   Calendar,
+  ChevronLeft,
+  ChevronRight,
   CheckSquare,
   DollarSign,
   FileText,
@@ -27,6 +29,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { apiClient } from "@/lib/api";
 import {
   addCaseParty,
   createCaseEvent,
@@ -87,6 +90,18 @@ function toTitleCase(value: string) {
     .join(" ");
 }
 
+function formatContactAddress(rawContact: any) {
+  return [
+    rawContact?.address1,
+    [rawContact?.city, `${rawContact?.state || ""} ${rawContact?.postalCode || ""}`.trim()]
+      .filter(Boolean)
+      .join(", "),
+    rawContact?.country === "US" ? "United States" : rawContact?.country,
+  ]
+    .filter(Boolean)
+    .join("\n") || "Not set";
+}
+
 export function CaseDetailPage() {
   const { caseId } = useParams();
   const { toast } = useToast();
@@ -94,13 +109,27 @@ export function CaseDetailPage() {
   const [loading, setLoading] = useState(true);
   const [savingOverview, setSavingOverview] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
+  const [contactAddress, setContactAddress] = useState("Not set");
   const [users, setUsers] = useState<AssignableUser[]>([]);
 
   const loadCase = async () => {
     if (!caseId) return;
     setLoading(true);
     try {
-      setDetail(await getCase(caseId));
+      const caseDetail = await getCase(caseId);
+      setDetail(caseDetail);
+      setContactAddress("Not set");
+
+      if (caseDetail.case.ghl_contact_id) {
+        try {
+          const data: any = await apiClient(`/contacts/${encodeURIComponent(caseDetail.case.ghl_contact_id)}`);
+          const rawContact = data.contact || data.data?.contact || data.data || data;
+          setContactAddress(formatContactAddress(rawContact));
+        } catch (error) {
+          console.error("Failed to load contact address", error);
+        }
+      }
     } catch (error) {
       toast({
         title: "Case Not Loaded",
@@ -199,8 +228,8 @@ export function CaseDetailPage() {
           loadCase();
         }}
       />
-      <div className="mb-5 shrink-0 border-b border-border pb-4">
-        <div className="grid items-center gap-6 md:grid-cols-[1fr_auto_1fr]">
+      <div className="shrink-0 border-b border-border pb-4">
+        <div className="grid items-center gap-6 md:grid-cols-[1fr_auto]">
           <div className="flex items-center gap-5">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-background bg-blue-50 text-primary shadow-sm">
               <Briefcase className="h-6 w-6" />
@@ -219,9 +248,6 @@ export function CaseDetailPage() {
                 </Badge>
               </div>
             </div>
-          </div>
-          <div className="text-center text-lg font-semibold text-foreground md:justify-self-center">
-            Case No.: {detail.case.case_number}
           </div>
           <div className="flex w-full gap-3 md:w-auto md:justify-self-end">
             <Button
@@ -252,8 +278,13 @@ export function CaseDetailPage() {
         </div>
       </div>
 
-      <div className="mt-2 grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[25fr_45fr_30fr] lg:divide-x lg:divide-border">
-        <div className="h-full overflow-y-auto pb-6 lg:pb-0 lg:pr-6">
+      <div
+        className={cn(
+          "grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:divide-x lg:divide-border",
+          isOverviewCollapsed ? "lg:grid-cols-[25fr_75fr_40px]" : "lg:grid-cols-[25fr_45fr_30fr]",
+        )}
+      >
+        <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pr-6">
           <div className="mb-2 border-b border-border pb-3">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
               <Link to="/cases" className="text-muted-foreground transition-colors hover:text-foreground" title="Back to cases">
@@ -290,6 +321,7 @@ export function CaseDetailPage() {
                   />
                   <DetailRow label="Email" value={detail.case.primary_contact_email || "Not set"} />
                   <DetailRow label="Phone" value={detail.case.primary_contact_phone || "Not set"} />
+                  <DetailRow label="Address" value={contactAddress} className="whitespace-pre-line" />
                 </div>
               </AccordionContent>
             </AccordionItem>
@@ -305,9 +337,9 @@ export function CaseDetailPage() {
           </Accordion>
         </div>
 
-        <div className="h-full overflow-y-auto py-6 lg:px-6 lg:py-0">
-          <Tabs defaultValue="tasks" className="w-full">
-            <div className="mb-4">
+        <div className="h-full overflow-hidden lg:px-6">
+          <Tabs defaultValue="tasks" className="flex h-full min-h-0 w-full flex-col">
+            <div className="shrink-0 bg-background pb-4 pt-6">
               <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0 xl:grid-cols-6">
                 <TabsTrigger value="tasks" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Tasks</TabsTrigger>
                 <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Timeline</TabsTrigger>
@@ -318,30 +350,53 @@ export function CaseDetailPage() {
               </TabsList>
             </div>
 
-            <TabsContent value="tasks" className="m-0">
-              <TasksTab detail={detail} onChanged={loadCase} />
-            </TabsContent>
-            <TabsContent value="timeline" className="m-0">
-              <TimelineTab detail={detail} onChanged={loadCase} />
-            </TabsContent>
-            <TabsContent value="parties" className="m-0">
-              <PartiesTab detail={detail} onChanged={loadCase} />
-            </TabsContent>
-            <TabsContent value="events" className="m-0">
-              <EventsTab detail={detail} onChanged={loadCase} />
-            </TabsContent>
-            <TabsContent value="documents" className="m-0">
-              <DocumentsTab detail={detail} onChanged={loadCase} />
-            </TabsContent>
-            <TabsContent value="financials" className="m-0">
-              <FinancialsTab detail={detail} />
-            </TabsContent>
+            <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
+              <TabsContent value="tasks" className="m-0">
+                <TasksTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="timeline" className="m-0">
+                <TimelineTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="parties" className="m-0">
+                <PartiesTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="events" className="m-0">
+                <EventsTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="documents" className="m-0">
+                <DocumentsTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="financials" className="m-0">
+                <FinancialsTab detail={detail} />
+              </TabsContent>
+            </div>
           </Tabs>
         </div>
 
-        <div className="h-full overflow-y-auto py-6 lg:py-0 lg:pl-6">
-          <OverviewTab detail={detail} saving={savingOverview} onSave={handleOverviewSave} />
-        </div>
+        {!isOverviewCollapsed && (
+          <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pl-6">
+            <OverviewTab
+              detail={detail}
+              saving={savingOverview}
+              onSave={handleOverviewSave}
+              onToggleCollapse={() => setIsOverviewCollapsed(true)}
+            />
+          </div>
+        )}
+        {isOverviewCollapsed && (
+          <div className="hidden h-full items-start justify-center bg-[#F8FAFC] py-6 lg:flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full text-muted-foreground"
+              onClick={() => setIsOverviewCollapsed(false)}
+              title="Show overview"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -523,7 +578,17 @@ function EditCaseSheet({
   );
 }
 
-function OverviewTab({ detail, saving, onSave }: { detail: CaseDetail; saving: boolean; onSave: (updates: Record<string, unknown>) => void }) {
+function OverviewTab({
+  detail,
+  saving,
+  onSave,
+  onToggleCollapse,
+}: {
+  detail: CaseDetail;
+  saving: boolean;
+  onSave: (updates: Record<string, unknown>) => void;
+  onToggleCollapse: () => void;
+}) {
   const [stage, setStage] = useState(detail.case.stage);
   const [status, setStatus] = useState(detail.case.status);
 
@@ -534,7 +599,19 @@ function OverviewTab({ detail, saving, onSave }: { detail: CaseDetail; saving: b
 
   return (
     <>
-      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-foreground/70">Case Overview</h3>
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Case Overview</h3>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 rounded-full text-muted-foreground"
+          onClick={onToggleCollapse}
+          title="Hide overview"
+        >
+          <ChevronRight className="h-4 w-4" />
+        </Button>
+      </div>
       <div className="space-y-4">
         <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
           <div className="mb-1 text-xs uppercase text-muted-foreground">Practice Area</div>

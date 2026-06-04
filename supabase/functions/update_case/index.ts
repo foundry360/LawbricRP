@@ -6,6 +6,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  syncCaseReference,
   syncCaseStageToGhl,
 } from "../_shared/case-utils.ts";
 
@@ -28,7 +29,9 @@ serve(async (req) => {
     if (body.caseType !== undefined) updates.case_type = String(body.caseType).trim() || "General";
     if (body.status !== undefined) updates.status = body.status;
     if (body.stage !== undefined) updates.stage = body.stage;
+
     if (body.assignedUserId !== undefined) updates.assigned_user_id = body.assignedUserId || null;
+    if (body.assignedUserId !== undefined) updates.assigned_ghl_user_id = null;
     if (body.assignedGhlUserId !== undefined) updates.assigned_ghl_user_id = body.assignedGhlUserId || null;
     if (body.ghlPipelineStageId !== undefined) updates.ghl_pipeline_stage_id = body.ghlPipelineStageId || null;
     if (body.metadata !== undefined) updates.metadata = { ...(existing.metadata || {}), ...body.metadata };
@@ -36,6 +39,10 @@ serve(async (req) => {
 
     const stageChanged = body.stage !== undefined && body.stage !== existing.stage;
     const statusChanged = body.status !== undefined && body.status !== existing.status;
+    const caseReferenceChanged = body.caseNumber !== undefined ||
+      body.caseName !== undefined ||
+      body.caseType !== undefined ||
+      body.assignedUserId !== undefined;
 
     const { data: caseRow, error } = await context.supabase
       .from("cases")
@@ -78,6 +85,7 @@ serve(async (req) => {
 
         if (upsertAssignmentError) throw new Error(upsertAssignmentError.message);
       }
+
     }
 
     if (stageChanged || statusChanged) {
@@ -98,6 +106,8 @@ serve(async (req) => {
         created_by: context.user.id,
       });
       await syncCaseStageToGhl(context, caseRow);
+    } else if (caseReferenceChanged) {
+      await syncCaseReference(context, caseRow);
     }
 
     return jsonResponse({ ok: true, case: caseRow });

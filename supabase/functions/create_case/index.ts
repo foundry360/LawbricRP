@@ -1,7 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
   corsHeaders,
-  createTemplateTasks,
   getRequestContext,
   handleError,
   jsonResponse,
@@ -94,8 +93,6 @@ serve(async (req) => {
         created_by: context.user.id,
       });
     }
-
-    await createTemplateTasks(context, caseRow);
 
     try {
       await syncCaseReference(context, caseRow);

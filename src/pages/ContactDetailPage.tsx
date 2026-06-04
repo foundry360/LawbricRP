@@ -365,7 +365,7 @@ export function ContactDetailPage() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-80px)] w-full flex-col overflow-hidden px-4 pb-2 pt-2 sm:px-6">
-      <div className="mb-5 shrink-0 border-b border-border pb-4">
+      <div className="shrink-0 border-b border-border pb-4">
         <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
           <div className="flex items-center gap-5">
             <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
@@ -412,8 +412,8 @@ export function ContactDetailPage() {
         </div>
       </div>
 
-      <div className="mt-2 grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[25fr_45fr_30fr] lg:divide-x lg:divide-border">
-        <div className="h-full overflow-y-auto pb-6 lg:pb-0 lg:pr-6">
+      <div className="grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[25fr_45fr_30fr] lg:divide-x lg:divide-border">
+        <div className="h-full overflow-y-auto py-6 lg:pr-6">
           <div className="mb-2 border-b border-border pb-3">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
               <Link to="/" className="text-muted-foreground transition-colors hover:text-foreground" title="Back to Directory">
@@ -474,7 +474,7 @@ export function ContactDetailPage() {
           </Accordion>
         </div>
 
-        <div className="h-full overflow-y-auto py-6 lg:px-6 lg:py-0">
+        <div className="h-full overflow-y-auto py-6 lg:px-6">
           <Tabs defaultValue="tasks" className="w-full">
             <div className="mb-4">
               <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0">
@@ -533,7 +533,7 @@ export function ContactDetailPage() {
           </Tabs>
         </div>
 
-        <div className="h-full overflow-y-auto py-6 lg:py-0 lg:pl-6">
+        <div className="h-full overflow-y-auto py-6 lg:pl-6">
           <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-foreground/70">Case Overview</h3>
           <div className="space-y-4">
             <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">

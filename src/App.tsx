@@ -10,6 +10,7 @@ import { Login } from "@/pages/Login";
 import NotFound from "@/pages/NotFound";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
 import { ResetPassword } from "@/pages/ResetPassword";
+import { TasksPage } from "@/pages/TasksPage";
 import { Toaster } from "@/components/ui/toaster";
 import UserManagement from "@/pages/UserManagement";
 
@@ -71,6 +72,16 @@ function CalendarShell() {
   );
 }
 
+function TasksShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <TasksPage />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
 function IndexShell() {
   return (
     <RequireAuth>
@@ -91,7 +102,7 @@ export function App() {
         <Route path="/cases" element={<CasesShell />} />
         <Route path="/case/:caseId" element={<CaseDetailShell />} />
         <Route path="/calendar" element={<CalendarShell />} />
-        <Route path="/tasks" element={<AppShell title="Tasks" />} />
+        <Route path="/tasks" element={<TasksShell />} />
         <Route path="/users" element={<UsersShell />} />
         <Route path="/leads" element={<AppShell title="Leads" />} />
         <Route path="/billing" element={<AppShell title="Billing" />} />
