@@ -88,7 +88,7 @@ export function SidebarMenuButton({
   children: ReactNode;
 }) {
   const classes = cn(
-    "flex w-full items-center gap-3 rounded-md px-3 text-sm transition-colors hover:bg-primary/10 hover:text-primary",
+    "flex min-w-0 w-full items-center gap-3 overflow-hidden whitespace-nowrap rounded-md px-3 text-sm transition-colors hover:bg-primary/10 hover:text-primary",
     isActive && "bg-primary/15 font-medium text-primary",
     className,
   );

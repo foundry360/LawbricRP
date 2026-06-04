@@ -8,11 +8,21 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EditContactDialog, type ContactFormValues } from "@/components/EditContactDialog";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, getAppLocationContext, getCustomFields, updateContact } from "@/lib/api";
+import {
+  apiClient,
+  createLocationTag,
+  getAppLocationContext,
+  getCustomFields,
+  getLocationTags,
+  type GhlTag,
+  updateContact,
+} from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneNumber } from "@/lib/phone";
+import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
+import { createTagMetadata, loadTagsWithMetadata } from "@/lib/tag-metadata";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -72,9 +82,12 @@ export function ContactDetailPage() {
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
+  const [tagOptions, setTagOptions] = useState<GhlTag[]>([]);
   const [crmCustomFields, setCrmCustomFields] = useState<any[]>([]);
   const [systemUsers, setSystemUsers] = useState<any[]>([]);
+  const [locationId, setLocationId] = useState("");
   const [locationRecordId, setLocationRecordId] = useState("");
+  const effectivePracticeAreaOptions = Array.from(new Set([...PRACTICE_AREAS, ...practiceAreaOptions]));
 
   const saveContactAssignment = async (ghlContactId: string, assignedUserId: string) => {
     if (!locationRecordId || !ghlContactId) return;
@@ -103,17 +116,66 @@ export function ContactDetailPage() {
     if (error) throw new Error(error.message);
   };
 
+  const handleCreateTag = async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+
+    const existingTag = tagOptions.find((tag) => tag.name.toLowerCase() === trimmedName.toLowerCase());
+    if (existingTag) return existingTag.name;
+
+    if (!locationId) {
+      toast({ title: "Tag Not Created", description: "No GHL location is configured.", variant: "destructive" });
+      throw new Error("No GHL location is configured.");
+    }
+
+    try {
+      const createdTag = await createLocationTag(locationId, trimmedName);
+      const createdTagWithMetadata = locationRecordId
+        ? await createTagMetadata(locationRecordId, createdTag)
+        : createdTag;
+      setTagOptions((current) => {
+        if (
+          current.some(
+            (tag) =>
+              tag.id === createdTagWithMetadata.id ||
+              tag.name.toLowerCase() === createdTagWithMetadata.name.toLowerCase(),
+          )
+        ) {
+          return current;
+        }
+        return [...current, createdTagWithMetadata];
+      });
+      toast({ title: "Tag Created", description: `${createdTagWithMetadata.name} has been added.` });
+      return createdTagWithMetadata.name;
+    } catch (error) {
+      toast({
+        title: "Tag Not Created",
+        description: getUserFriendlyErrorMessage(error, "Could not create this tag in GHL. Please try again."),
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
   useEffect(() => {
     const fetchFields = async () => {
       try {
         const context = await getAppLocationContext();
         const locId = context.location?.ghlLocationId || "";
+        setLocationId(locId);
         setLocationRecordId(context.location?.id || "");
         if (!locId) return;
 
         const fieldsResponse: any = await getCustomFields(locId);
         const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
         setCrmCustomFields(customFieldsList);
+
+        try {
+          const fetchedTags = await getLocationTags(locId);
+          setTagOptions(context.location?.id ? await loadTagsWithMetadata(context.location.id, fetchedTags) : fetchedTags);
+        } catch (error) {
+          console.error("Failed to fetch tags", error);
+        }
 
         try {
           const fetchedUsers = await getAssignableUsers();
@@ -154,6 +216,7 @@ export function ContactDetailPage() {
       phone: formatPhoneNumber(updatedData.phone),
       assignedAttorney: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
       assignedAttorneyId: selectedAssignedUser ? getUserId(selectedAssignedUser) : "",
+      tags: Array.from(new Set([updatedData.type, updatedData.status, ...(updatedData.tags || [])].filter(Boolean))),
     });
 
     try {
@@ -162,7 +225,7 @@ export function ContactDetailPage() {
         firstName,
         lastName: rest.join(" "),
         email: updatedData.email,
-        tags: [updatedData.type, updatedData.status].filter(Boolean),
+        tags: Array.from(new Set([updatedData.type, updatedData.status, ...(updatedData.tags || [])].filter(Boolean))),
       };
 
       if (updatedData.phone && updatedData.phone !== "N/A") payload.phone = formatPhoneNumber(updatedData.phone, "");
@@ -315,6 +378,7 @@ export function ContactDetailPage() {
             ? rawContact.gender.charAt(0).toUpperCase() + rawContact.gender.slice(1)
             : getCustomFieldValue(rawContact, "gender") || "N/A",
           language: getCustomFieldValue(rawContact, "language") || "English",
+          tags,
           notes: "No notes available.",
           lastContact: "Recently",
           avatarUrl:
@@ -558,8 +622,10 @@ export function ContactDetailPage() {
         onEditContact={handleEditContact}
         contact={contact}
         accountTypeOptions={accountTypeOptions}
-        practiceAreaOptions={practiceAreaOptions}
+        practiceAreaOptions={effectivePracticeAreaOptions}
         languageOptions={languageOptions}
+        tagOptions={tagOptions.map((tag) => tag.name)}
+        onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
       />
     </div>

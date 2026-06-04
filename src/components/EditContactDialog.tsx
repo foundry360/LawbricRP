@@ -1,24 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { Check, ChevronsUpDown } from "lucide-react";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
-import {
-  Command,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from "@/components/ui/command";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { SearchableSelect } from "@/components/SearchableSelect";
+import { TagMultiSelect } from "@/components/TagMultiSelect";
 import {
   Form,
   FormControl,
@@ -28,10 +14,8 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
-import { cn } from "@/lib/utils";
 
 const contactSchema = z.object({
   name: z.string().min(2, "Name is required"),
@@ -44,7 +28,11 @@ const contactSchema = z.object({
   dob: z.string().optional(),
   gender: z.string().optional(),
   language: z.string().optional(),
+  tags: z.array(z.string()).optional(),
 });
+
+const CONTACT_STATUS_OPTIONS = ["Active", "Pending", "Consultation", "Closed"];
+const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 export type ContactFormValues = z.infer<typeof contactSchema>;
 
@@ -67,6 +55,8 @@ type EditContactDialogProps = {
   accountTypeOptions?: string[];
   practiceAreaOptions?: string[];
   languageOptions?: string[];
+  tagOptions?: string[];
+  onCreateTag?: (name: string) => Promise<string | void> | string | void;
   systemUsers?: SystemUser[];
 };
 
@@ -103,9 +93,10 @@ export function EditContactDialog({
   accountTypeOptions = [],
   practiceAreaOptions = [],
   languageOptions = [],
+  tagOptions = [],
+  onCreateTag,
   systemUsers = [],
 }: EditContactDialogProps) {
-  const [isAttorneyPopoverOpen, setIsAttorneyPopoverOpen] = useState(false);
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
     defaultValues: {
@@ -119,6 +110,7 @@ export function EditContactDialog({
       dob: "",
       gender: "",
       language: "",
+      tags: [],
     },
   });
 
@@ -145,9 +137,12 @@ export function EditContactDialog({
         dob: contact.dob === "N/A" ? "" : String(trimValue(contact.dob) || ""),
         gender: contact.gender === "N/A" ? "" : normalizedGender,
         language: String(findMatchingOption(contact.language, languageOptions) || ""),
+        tags: Array.isArray(contact.tags)
+          ? contact.tags.filter((tag: string) => tagOptions.some((option) => option.toLowerCase() === tag.toLowerCase()))
+          : [],
       });
     }
-  }, [contact, open, form, accountTypeOptions, practiceAreaOptions, languageOptions, systemUsers]);
+  }, [contact, open, form, accountTypeOptions, practiceAreaOptions, languageOptions, tagOptions, systemUsers]);
 
   const onSubmit = async (data: ContactFormValues) => {
     await onEditContact(data);
@@ -155,23 +150,21 @@ export function EditContactDialog({
   };
 
   return (
-    <Dialog
+    <Sheet
       open={open}
       onOpenChange={(value) => {
         if (!value) form.reset();
         onOpenChange(value);
       }}
     >
-      <DialogContent className="sm:max-w-[700px]">
-        <DialogHeader>
-          <DialogTitle>Edit Contact</DialogTitle>
-          <DialogDescription>
-            Update the details of the contact here. Click save when you're done.
-          </DialogDescription>
-        </DialogHeader>
+      <SheetContent className="bottom-0 top-0 flex h-screen min-h-screen w-full flex-col overflow-hidden p-0 sm:max-w-md">
+        <SheetHeader className="shrink-0 space-y-1 px-6 pb-4 pt-6">
+          <SheetTitle className="text-lg font-semibold">Edit Contact</SheetTitle>
+        </SheetHeader>
         <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
+            <div className="hover-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6">
+            <div className="grid grid-cols-1 gap-4">
               <FormField
                 control={form.control}
                 name="name"
@@ -200,7 +193,7 @@ export function EditContactDialog({
               />
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-4">
               <FormField
                 control={form.control}
                 name="phone"
@@ -225,23 +218,16 @@ export function EditContactDialog({
                   <FormItem>
                     <FormLabel>Account Type</FormLabel>
                     {accountTypeOptions.length > 0 ? (
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select type" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {accountTypeOptions.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option}
-                            </SelectItem>
-                          ))}
-                          {field.value && !accountTypeOptions.includes(field.value) && (
-                            <SelectItem value={field.value}>{field.value}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <SearchableSelect
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          options={accountTypeOptions}
+                          placeholder="Select type"
+                          searchPlaceholder="Search account types..."
+                          emptyMessage="No account types found."
+                        />
+                      </FormControl>
                     ) : (
                       <FormControl>
                         <Input placeholder="e.g. Client" {...field} />
@@ -251,28 +237,22 @@ export function EditContactDialog({
                   </FormItem>
                 )}
               />
-            </div>
-
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <FormField
                 control={form.control}
                 name="status"
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Status</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select status" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="Active">Active</SelectItem>
-                        <SelectItem value="Pending">Pending</SelectItem>
-                        <SelectItem value="Consultation">Consultation</SelectItem>
-                        <SelectItem value="Closed">Closed</SelectItem>
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <SearchableSelect
+                        value={field.value}
+                        onValueChange={field.onChange}
+                        options={CONTACT_STATUS_OPTIONS}
+                        placeholder="Select status"
+                        searchPlaceholder="Search statuses..."
+                        emptyMessage="No statuses found."
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -284,23 +264,16 @@ export function EditContactDialog({
                   <FormItem>
                     <FormLabel>Practice Area</FormLabel>
                     {practiceAreaOptions.length > 0 ? (
-                      <Select onValueChange={field.onChange} value={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select practice area" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {practiceAreaOptions.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option}
-                            </SelectItem>
-                          ))}
-                          {field.value && !practiceAreaOptions.includes(field.value) && (
-                            <SelectItem value={field.value}>{field.value}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <SearchableSelect
+                          value={field.value}
+                          onValueChange={field.onChange}
+                          options={practiceAreaOptions}
+                          placeholder="Select practice area"
+                          searchPlaceholder="Search practice areas..."
+                          emptyMessage="No practice areas found."
+                        />
+                      </FormControl>
                     ) : (
                       <FormControl>
                         <Input placeholder="e.g. Corporate Litigation" {...field} />
@@ -315,95 +288,50 @@ export function EditContactDialog({
             <FormField
               control={form.control}
               name="attorneyAssigned"
-              render={({ field }) => {
-                const selectedUser = getUserByFormValue(systemUsers, field.value);
-                const selectedLabel =
-                  field.value && field.value !== "Unassigned"
-                    ? selectedUser
-                      ? getUserName(selectedUser)
-                      : "Select attorney"
-                    : "Select attorney";
-
-                return (
-                  <FormItem className="flex flex-col">
-                    <FormLabel>Assigned Attorney</FormLabel>
-                    <Popover open={isAttorneyPopoverOpen} onOpenChange={setIsAttorneyPopoverOpen}>
-                      <FormControl>
-                        <PopoverTrigger asChild>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            role="combobox"
-                            className={cn(
-                              "w-full justify-between font-normal",
-                              !field.value && "text-muted-foreground",
-                            )}
-                          >
-                            {selectedLabel}
-                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                          </Button>
-                        </PopoverTrigger>
-                      </FormControl>
-                      <PopoverContent className="w-[300px] p-0">
-                        <Command>
-                          <CommandInput placeholder="Search users..." />
-                          <CommandList>
-                            <CommandGroup>
-                              <CommandItem
-                                value="Unassigned"
-                                onSelect={() => {
-                                  form.setValue("attorneyAssigned", "Unassigned");
-                                  setIsAttorneyPopoverOpen(false);
-                                }}
-                              >
-                                <Check
-                                  className={cn(
-                                    "mr-2 h-4 w-4",
-                                    field.value === "Unassigned" || !field.value
-                                      ? "opacity-100"
-                                      : "opacity-0",
-                                  )}
-                                />
-                                Unassigned
-                              </CommandItem>
-                              {systemUsers.length === 0 && (
-                                <div className="px-2 py-3 text-center text-sm text-muted-foreground">
-                                  No users found.
-                                </div>
-                              )}
-                              {systemUsers.map((user) => {
-                                const userName = getUserName(user);
-                                return (
-                                  <CommandItem
-                                    value={`${userName} ${user.id}`}
-                                    key={user.id}
-                                    onSelect={() => {
-                                      form.setValue("attorneyAssigned", user.id);
-                                      setIsAttorneyPopoverOpen(false);
-                                    }}
-                                  >
-                                    <Check
-                                      className={cn(
-                                        "mr-2 h-4 w-4",
-                                        field.value === user.id ? "opacity-100" : "opacity-0",
-                                      )}
-                                    />
-                                    {userName}
-                                  </CommandItem>
-                                );
-                              })}
-                            </CommandGroup>
-                          </CommandList>
-                        </Command>
-                      </PopoverContent>
-                    </Popover>
-                    <FormMessage />
-                  </FormItem>
-                );
-              }}
+              render={({ field }) => (
+                <FormItem className="flex flex-col">
+                  <FormLabel>Assigned Attorney</FormLabel>
+                  <FormControl>
+                    <SearchableSelect
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      options={["Unassigned", ...systemUsers.map((user) => user.id)]}
+                      placeholder="Select attorney"
+                      searchPlaceholder="Search users..."
+                      emptyMessage="No users found."
+                      getOptionLabel={(value) => {
+                        if (value === "Unassigned") return "Unassigned";
+                        const user = systemUsers.find((candidate) => candidate.id === value || getUserName(candidate) === value);
+                        return user ? getUserName(user) : value;
+                      }}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <FormField
+              control={form.control}
+              name="tags"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Tags</FormLabel>
+                  <FormControl>
+                    <TagMultiSelect
+                      value={field.value || []}
+                      onValueChange={field.onChange}
+                      options={tagOptions}
+                      placeholder="Select tags"
+                      onCreateOption={onCreateTag}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <div className="grid grid-cols-1 gap-4">
               <FormField
                 control={form.control}
                 name="dob"
@@ -423,21 +351,16 @@ export function EditContactDialog({
                 render={({ field }) => (
                   <FormItem>
                     <FormLabel>Gender</FormLabel>
-                    <Select onValueChange={field.onChange} value={field.value !== "N/A" ? field.value : ""}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select gender" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value="Male">Male</SelectItem>
-                        <SelectItem value="Female">Female</SelectItem>
-                        <SelectItem value="Other">Other</SelectItem>
-                        {field.value && !["Male", "Female", "Other"].includes(field.value) && (
-                          <SelectItem value={field.value}>{field.value}</SelectItem>
-                        )}
-                      </SelectContent>
-                    </Select>
+                    <FormControl>
+                      <SearchableSelect
+                        value={field.value && field.value !== "N/A" ? field.value : ""}
+                        onValueChange={field.onChange}
+                        options={GENDER_OPTIONS}
+                        placeholder="Select gender"
+                        searchPlaceholder="Search genders..."
+                        emptyMessage="No genders found."
+                      />
+                    </FormControl>
                     <FormMessage />
                   </FormItem>
                 )}
@@ -449,23 +372,16 @@ export function EditContactDialog({
                   <FormItem>
                     <FormLabel>Language</FormLabel>
                     {languageOptions.length > 0 ? (
-                      <Select onValueChange={field.onChange} value={field.value !== "N/A" ? field.value : ""}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select language" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {languageOptions.map((option) => (
-                            <SelectItem key={option} value={option}>
-                              {option}
-                            </SelectItem>
-                          ))}
-                          {field.value && field.value !== "N/A" && !languageOptions.includes(field.value) && (
-                            <SelectItem value={field.value}>{field.value}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
+                      <FormControl>
+                        <SearchableSelect
+                          value={field.value && field.value !== "N/A" ? field.value : ""}
+                          onValueChange={field.onChange}
+                          options={languageOptions}
+                          placeholder="Select language"
+                          searchPlaceholder="Search languages..."
+                          emptyMessage="No languages found."
+                        />
+                      </FormControl>
                     ) : (
                       <FormControl>
                         <Input
@@ -480,18 +396,19 @@ export function EditContactDialog({
                 )}
               />
             </div>
+            </div>
 
-            <DialogFooter className="pt-4">
+            <div className="flex shrink-0 justify-end gap-2 border-t bg-background px-6 py-4">
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={form.formState.isSubmitting}>
                 Cancel
               </Button>
               <Button type="submit" disabled={form.formState.isSubmitting}>
                 {form.formState.isSubmitting ? "Saving..." : "Save Changes"}
               </Button>
-            </DialogFooter>
+            </div>
           </form>
         </Form>
-      </DialogContent>
-    </Dialog>
+      </SheetContent>
+    </Sheet>
   );
 }

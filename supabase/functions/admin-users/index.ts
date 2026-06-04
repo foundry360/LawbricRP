@@ -4,6 +4,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 type AdminUserAction =
   | "create"
   | "update"
+  | "delete"
   | "deactivate"
   | "reactivate"
   | "sendPasswordReset"
@@ -243,13 +244,14 @@ serve(async (req) => {
   if (
     body.action !== "create" &&
     body.action !== "update" &&
+    body.action !== "delete" &&
     body.action !== "deactivate" &&
     body.action !== "reactivate" &&
     body.action !== "sendPasswordReset" &&
     body.action !== "listAssignableUsers"
   ) {
     return jsonResponse({
-      error: "action must be create, update, deactivate, reactivate, sendPasswordReset, or listAssignableUsers",
+      error: "action must be create, update, delete, deactivate, reactivate, sendPasswordReset, or listAssignableUsers",
     }, 400);
   }
 
@@ -837,8 +839,8 @@ serve(async (req) => {
     });
   }
 
-  if (body.action === "deactivate" && body.userId === caller.id) {
-    return jsonResponse({ error: "Admins cannot deactivate themselves" }, 400);
+  if ((body.action === "deactivate" || body.action === "delete") && body.userId === caller.id) {
+    return jsonResponse({ error: body.action === "delete" ? "Admins cannot delete themselves" : "Admins cannot deactivate themselves" }, 400);
   }
 
   const { data: targetProfile, error: targetProfileError } = await supabase
@@ -855,7 +857,7 @@ serve(async (req) => {
     return jsonResponse({ error: "Target user profile not found" }, 404);
   }
 
-  if (body.action === "deactivate" && targetProfile.role === "admin") {
+  if ((body.action === "deactivate" || body.action === "delete") && targetProfile.role === "admin") {
     const { count, error: adminCountError } = await supabase
       .from("profiles")
       .select("id", { count: "exact", head: true })
@@ -868,8 +870,24 @@ serve(async (req) => {
     }
 
     if (!count || count < 1) {
-      return jsonResponse({ error: "Cannot deactivate the last active admin" }, 400);
+      return jsonResponse({
+        error: body.action === "delete" ? "Cannot delete the last active admin" : "Cannot deactivate the last active admin",
+      }, 400);
     }
+  }
+
+  if (body.action === "delete") {
+    const { error: authDeleteError } = await supabase.auth.admin.deleteUser(body.userId);
+
+    if (authDeleteError) {
+      return jsonResponse({ error: "Could not delete auth user" }, 500);
+    }
+
+    return jsonResponse({
+      ok: true,
+      userId: body.userId,
+      action: body.action,
+    });
   }
 
   const authAttributes =

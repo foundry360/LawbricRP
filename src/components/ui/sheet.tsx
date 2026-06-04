@@ -1,4 +1,5 @@
 import { cloneElement, createContext, isValidElement, ReactElement, ReactNode, useContext, useState } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "@/lib/utils";
 import { X } from "lucide-react";
 
@@ -60,10 +61,10 @@ export function SheetContent({
   children: ReactNode;
 }) {
   const { open, setOpen } = useSheet();
-  if (!open) return null;
+  if (!open || typeof document === "undefined") return null;
 
-  return (
-    <div className="fixed inset-0 z-[90]">
+  return createPortal(
+    <div className="fixed inset-0 z-[120]">
       <button
         aria-label="Close"
         className="absolute inset-0 bg-black/30"
@@ -86,7 +87,8 @@ export function SheetContent({
         </button>
         {children}
       </aside>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -103,5 +105,14 @@ export function SheetDescription({ className, children }: { className?: string; 
 }
 
 export function SheetFooter({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={cn("flex justify-end gap-2", className)}>{children}</div>;
+  return (
+    <div
+      className={cn(
+        "sticky -bottom-6 z-20 -mx-6 -mb-6 mt-6 flex min-h-[80px] justify-end gap-2 border-t bg-background px-6 pb-6 pt-4 shadow-[0_-12px_24px_-20px_rgba(15,23,42,0.45)]",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }

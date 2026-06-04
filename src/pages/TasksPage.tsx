@@ -21,6 +21,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -47,7 +48,7 @@ import { getAppLocationContext, getContacts } from "@/lib/api";
 import { type CaseRecord, listCases } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase";
-import { type TaskRecord, createTask, listTasks, updateTask } from "@/lib/tasks";
+import { type TaskRecord, createTask, deleteTask, listTasks, updateTask } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -187,6 +188,8 @@ export function TasksPage() {
   const [loading, setLoading] = useState(true);
   const [isTaskSheetOpen, setIsTaskSheetOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<TaskRecord | null>(null);
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [listViews, setListViews] = useState<TaskListView[]>(defaultTaskListViews);
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
@@ -374,6 +377,25 @@ export function TasksPage() {
     loadData();
   };
 
+  const handleDeleteTask = async () => {
+    if (!taskToDelete) return;
+    setIsDeletingTask(true);
+    try {
+      await deleteTask({ locationId, taskId: taskToDelete.id });
+      setTasks((current) => current.filter((task) => task.id !== taskToDelete.id));
+      toast({ title: "Task Deleted", description: `${taskToDelete.title} was permanently deleted.` });
+      setTaskToDelete(null);
+    } catch (error) {
+      toast({
+        title: "Task Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this task. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeletingTask(false);
+    }
+  };
+
   return (
     <div className="flex flex-col space-y-6 p-6">
       <TaskSheet
@@ -388,6 +410,15 @@ export function TasksPage() {
         users={users}
         locationId={locationId}
         onSaved={handleTaskSaved}
+      />
+      <DeleteConfirmationDialog
+        open={Boolean(taskToDelete)}
+        onOpenChange={(open) => !open && setTaskToDelete(null)}
+        title="Permanently delete task?"
+        recordType="task"
+        recordName={taskToDelete?.title}
+        isDeleting={isDeletingTask}
+        onConfirm={handleDeleteTask}
       />
       <TaskListViewSheet
         open={isListViewPanelOpen}
@@ -703,6 +734,7 @@ export function TasksPage() {
                     setEditingTask(task);
                     setIsTaskSheetOpen(true);
                   }}
+              onDelete={() => setTaskToDelete(task)}
                   navigate={navigate}
                 />
               ))}
@@ -718,6 +750,7 @@ export function TasksPage() {
                 setEditingTask(task);
                 setIsTaskSheetOpen(true);
               }}
+            onDelete={setTaskToDelete}
             />
           )}
 
@@ -827,11 +860,13 @@ function TaskCard({
   task,
   users,
   onEdit,
+  onDelete,
   navigate,
 }: {
   task: TaskRecord;
   users: AssignableUser[];
   onEdit: () => void;
+  onDelete: () => void;
   navigate: (path: string) => void;
 }) {
   const relatedPath = getRelatedPath(task);
@@ -842,7 +877,7 @@ function TaskCard({
           <h3 className="mb-1.5 text-lg leading-none text-[#2384CA]">{task.title}</h3>
           <div className="text-sm capitalize text-muted-foreground">{(task.related_type || "general").replace(/_/g, " ")}</div>
         </div>
-        <TaskActions onEdit={onEdit} />
+        <TaskActions onView={() => (relatedPath ? navigate(relatedPath) : onEdit())} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
       <CardContent className="space-y-3 pt-4">
         <div className="flex flex-wrap gap-2">
@@ -870,7 +905,15 @@ function TaskMeta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function TaskActions({ onEdit }: { onEdit: () => void }) {
+function TaskActions({
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  onView: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -882,10 +925,27 @@ function TaskActions({ onEdit }: { onEdit: () => void }) {
         <DropdownMenuItem
           onClick={(event) => {
             event.stopPropagation();
+            onView();
+          }}
+        >
+          View
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(event) => {
+            event.stopPropagation();
             onEdit();
           }}
         >
           Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-destructive"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -899,6 +959,7 @@ function TaskTable({
   handleSort,
   renderSortIcon,
   onEdit,
+  onDelete,
 }: {
   tasks: TaskRecord[];
   users: AssignableUser[];
@@ -906,6 +967,7 @@ function TaskTable({
   handleSort: (column: keyof TaskRecord) => void;
   renderSortIcon: (column: keyof TaskRecord) => ReactNode;
   onEdit: (task: TaskRecord) => void;
+  onDelete: (task: TaskRecord) => void;
 }) {
   const columns: Array<[keyof TaskRecord, string]> = [
     ["title", "Task"],
@@ -987,7 +1049,11 @@ function TaskTable({
                   </div>
                 </td>
                 <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                  <TaskActions onEdit={() => onEdit(task)} />
+                  <TaskActions
+                    onView={() => (relatedPath ? navigate(relatedPath) : onEdit(task))}
+                    onEdit={() => onEdit(task)}
+                    onDelete={() => onDelete(task)}
+                  />
                 </td>
               </tr>
             );

@@ -21,6 +21,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -41,12 +42,13 @@ import {
   uploadCaseDocument,
 } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
 const CASE_DETAIL_TAB_TRIGGER_CLASS =
   "rounded-none border-b-2 border-border py-3 text-muted-foreground/70 data-[state=active]:border-[#2384CA] data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
-const CASE_TYPE_OPTIONS = ["General", "Litigation", "Family", "Immigration", "Estate", "Criminal"];
+const CASE_TYPE_OPTIONS = PRACTICE_AREAS;
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
 
 function formatDateTime(value?: string | null) {
@@ -507,18 +509,14 @@ function EditCaseSheet({
 
           <div className="space-y-2">
             <Label>Practice Area</Label>
-            <Select value={form.caseType} onValueChange={(caseType) => setForm({ ...form, caseType })}>
-              <SelectTrigger>
-                <span>{form.caseType}</span>
-              </SelectTrigger>
-              <SelectContent>
-                {caseTypeOptions.map((caseType) => (
-                  <SelectItem key={caseType} value={caseType}>
-                    {caseType}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              value={form.caseType}
+              onValueChange={(caseType) => setForm({ ...form, caseType })}
+              options={caseTypeOptions}
+              placeholder="Select practice area"
+              searchPlaceholder="Search practice areas..."
+              emptyMessage="No practice areas found."
+            />
           </div>
 
           <div className="space-y-2">

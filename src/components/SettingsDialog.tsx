@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AccountActivationSettings } from "@/components/settings/AccountActivationSettings";
+import { TagSettings } from "@/components/settings/TagSettings";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -9,7 +10,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { supabase } from "@/lib/supabase";
-import { Key, Loader2, Upload, User } from "lucide-react";
+import { Key, Loader2, Tags, Upload, User } from "lucide-react";
 
 type SettingsDialogProps = {
   open: boolean;
@@ -146,37 +147,51 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-6xl overflow-hidden p-0">
+      <DialogContent className="max-w-[920px] overflow-hidden p-0">
         <div className="flex h-[600px]">
-          <aside className="flex w-64 flex-col gap-2 border-r bg-muted/30 p-6">
+          <aside className="flex w-64 flex-shrink-0 flex-col gap-2 border-r bg-muted/30 p-6">
             <h2 className="mb-4 font-semibold">Settings</h2>
             <nav className="flex flex-col gap-2">
               <Button
                 variant="ghost"
-                className={`justify-between hover:bg-transparent ${
+                className={`min-w-0 justify-between whitespace-nowrap hover:bg-transparent focus:ring-0 ${
                   activeTab === "profile" ? "font-bold text-foreground" : "text-muted-foreground"
                 }`}
                 onClick={() => setActiveTab("profile")}
               >
-                <div className="flex items-center">
-                  <User className="mr-2 h-4 w-4" />
-                  Profile
+                <div className="flex min-w-0 items-center">
+                  <User className="mr-2 h-4 w-4 shrink-0" />
+                  <span>Profile</span>
                 </div>
                 {activeTab === "profile" && <div className="h-2 w-2 rounded-full bg-green-500" />}
               </Button>
 
               <Button
                 variant="ghost"
-                className={`justify-between hover:bg-transparent ${
+                className={`min-w-0 justify-between whitespace-nowrap hover:bg-transparent focus:ring-0 ${
                   activeTab === "integration" ? "font-bold text-foreground" : "text-muted-foreground"
                 }`}
                 onClick={() => setActiveTab("integration")}
               >
-                <div className="flex items-center">
-                  <Key className="mr-2 h-4 w-4" />
-                  Account Activation
+                <div className="flex min-w-0 items-center">
+                  <Key className="mr-2 h-4 w-4 shrink-0" />
+                  <span>Account Activation</span>
                 </div>
                 {activeTab === "integration" && <div className="h-2 w-2 rounded-full bg-green-500" />}
+              </Button>
+
+              <Button
+                variant="ghost"
+                className={`min-w-0 justify-between whitespace-nowrap hover:bg-transparent focus:ring-0 ${
+                  activeTab === "tags" ? "font-bold text-foreground" : "text-muted-foreground"
+                }`}
+                onClick={() => setActiveTab("tags")}
+              >
+                <div className="flex min-w-0 items-center">
+                  <Tags className="mr-2 h-4 w-4 shrink-0" />
+                  <span>Tags</span>
+                </div>
+                {activeTab === "tags" && <div className="h-2 w-2 rounded-full bg-green-500" />}
               </Button>
             </nav>
           </aside>
@@ -187,7 +202,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 <div>
                   <h3 className="text-base font-medium">User Profile</h3>
                 </div>
-                <div className="max-w-2xl space-y-6">
+                <div className="max-w-xl space-y-6">
                   <div className="flex flex-col gap-4">
                     <Label>Avatar Image</Label>
                     <div className="flex items-center gap-6">
@@ -264,11 +279,13 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 <div>
                   <h3 className="text-base font-medium">Account Activation Settings</h3>
                 </div>
-                <div className="max-w-3xl">
+                <div className="max-w-2xl">
                   <AccountActivationSettings />
                 </div>
               </div>
             )}
+
+            {activeTab === "tags" && <TagSettings />}
           </div>
         </div>
       </DialogContent>

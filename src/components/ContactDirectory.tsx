@@ -20,19 +20,13 @@ import {
 } from "lucide-react";
 import { AddContactDialog, type ContactFormValues } from "@/components/AddContactDialog";
 import { CreateListViewSheet, type ListView } from "@/components/CreateListViewSheet";
+import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { EditContactDialog } from "@/components/EditContactDialog";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -48,22 +42,29 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
   createContact,
+  createLocationTag,
   deleteContact,
   getAppLocationContext,
   getContacts,
   getCustomFields,
+  getLocationTags,
+  type GhlTag,
   updateContact,
 } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneNumber } from "@/lib/phone";
+import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
+import { createTagMetadata, loadTagsWithMetadata } from "@/lib/tag-metadata";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -85,6 +86,7 @@ type Contact = {
   dob?: string;
   gender?: string;
   language?: string;
+  tags: string[];
 };
 
 const defaultListViews: ListView[] = [{ id: "all", name: "All Contacts", filters: {} }];
@@ -185,13 +187,15 @@ export function ContactDirectory() {
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [caseTypeFilter, setCaseTypeFilter] = useState("All");
+  const [attorneyFilter, setAttorneyFilter] = useState("All");
   const [viewMode, setViewMode] = useState<"grid" | "list">("list");
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [contactToEdit, setContactToEdit] = useState<Contact | null>(null);
-  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [contactToDelete, setContactToDelete] = useState<Contact | null>(null);
-  const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
+  const [isDeletingContact, setIsDeletingContact] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState(25);
@@ -202,6 +206,7 @@ export function ContactDirectory() {
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
+  const [tagOptions, setTagOptions] = useState<GhlTag[]>([]);
   const [crmCustomFields, setCrmCustomFields] = useState<any[]>([]);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [systemUsers, setSystemUsers] = useState<any[]>([]);
@@ -283,6 +288,20 @@ export function ContactDirectory() {
             variant: "destructive",
             title: "Custom Fields Sync Failed",
             description: "Could not load custom fields. Check the private integration scopes.",
+          });
+        }
+
+        let fetchedTags: GhlTag[] = [];
+        try {
+          fetchedTags = locId ? await getLocationTags(locId) : [];
+          fetchedTags = locRecordId ? await loadTagsWithMetadata(locRecordId, fetchedTags) : fetchedTags;
+          setTagOptions(fetchedTags);
+        } catch (error) {
+          console.error("Failed to fetch tags", error);
+          toast({
+            variant: "destructive",
+            title: "Tags Sync Failed",
+            description: "Could not load tags. Check the private integration scopes.",
           });
         }
 
@@ -390,6 +409,7 @@ export function ContactDirectory() {
             dob: contact.dateOfBirth ? new Date(contact.dateOfBirth).toISOString().split("T")[0] : "",
             gender: contact.gender || getCustomFieldValue(contact, customFieldsMap, "gender") || "",
             language: getCustomFieldValue(contact, customFieldsMap, "language") || "",
+            tags,
           };
         });
 
@@ -410,6 +430,62 @@ export function ContactDirectory() {
     fetchCRMContacts();
   }, []);
 
+  const buildContactTags = (data: ContactFormValues, existingTags: string[] = []) => {
+    const appTagNames = new Set(tagOptions.map((tag) => tag.name.toLowerCase()));
+    const systemTagNames = new Set(
+      [...accountTypeOptions, "Active", "Pending", "Consultation", "Closed", "Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"]
+        .filter(Boolean)
+        .map((tag) => tag.toLowerCase()),
+    );
+    const preservedTags = existingTags.filter((tag) => {
+      const normalized = tag.toLowerCase();
+      return !appTagNames.has(normalized) && !systemTagNames.has(normalized);
+    });
+
+    return Array.from(new Set([...preservedTags, data.type, data.status, ...(data.tags || [])].filter(Boolean)));
+  };
+
+  const handleCreateTag = async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+
+    const existingTag = tagOptions.find((tag) => tag.name.toLowerCase() === trimmedName.toLowerCase());
+    if (existingTag) return existingTag.name;
+
+    if (!locationId) {
+      toast({ title: "Tag Not Created", description: "No GHL location is configured.", variant: "destructive" });
+      throw new Error("No GHL location is configured.");
+    }
+
+    try {
+      const createdTag = await createLocationTag(locationId, trimmedName);
+      const createdTagWithMetadata = locationRecordId
+        ? await createTagMetadata(locationRecordId, createdTag)
+        : createdTag;
+      setTagOptions((current) => {
+        if (
+          current.some(
+            (tag) =>
+              tag.id === createdTagWithMetadata.id ||
+              tag.name.toLowerCase() === createdTagWithMetadata.name.toLowerCase(),
+          )
+        ) {
+          return current;
+        }
+        return [...current, createdTagWithMetadata];
+      });
+      toast({ title: "Tag Created", description: `${createdTagWithMetadata.name} has been added.` });
+      return createdTagWithMetadata.name;
+    } catch (error) {
+      toast({
+        title: "Tag Not Created",
+        description: getUserFriendlyErrorMessage(error, "Could not create this tag in GHL. Please try again."),
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
   const handleAddContact = async (newContactData: ContactFormValues) => {
     try {
       const [firstName, ...rest] = newContactData.name.trim().split(" ");
@@ -417,7 +493,7 @@ export function ContactDirectory() {
         locationId,
         firstName,
         lastName: rest.join(" "),
-        tags: [newContactData.type, newContactData.status],
+        tags: buildContactTags(newContactData),
       };
 
       if (newContactData.email && newContactData.email !== "N/A") payload.email = newContactData.email;
@@ -454,6 +530,7 @@ export function ContactDirectory() {
         dob: newContactData.dob,
         gender: newContactData.gender,
         language: newContactData.language,
+        tags: buildContactTags(newContactData),
       };
 
       setContacts((current) => [newContact, ...current]);
@@ -480,6 +557,7 @@ export function ContactDirectory() {
       status: updatedData.status as ContactStatus,
       attorneyAssigned: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
       attorneyAssignedId: selectedAssignedUser ? getUserId(selectedAssignedUser) : "",
+      tags: buildContactTags(updatedData, contactToEdit.tags || []),
     };
     setContacts((current) =>
       current.map((contact) => (contact.id === contactToEdit.id ? updatedContact : contact)),
@@ -490,7 +568,7 @@ export function ContactDirectory() {
       const payload: Record<string, any> = {
         firstName,
         lastName: rest.join(" "),
-        tags: [updatedData.type, updatedData.status],
+        tags: buildContactTags(updatedData, contactToEdit.tags || []),
       };
       if (updatedData.email) payload.email = updatedData.email;
       if (updatedData.phone) payload.phone = formatPhoneNumber(updatedData.phone, "");
@@ -534,6 +612,26 @@ export function ContactDirectory() {
   };
 
   const activeListView = listViews.find((listView) => listView.id === activeListViewId) || listViews[0];
+  const contactTypeOptions = useMemo(
+    () => [...new Set([...accountTypeOptions, ...contacts.map((contact) => contact.type).filter(Boolean)])],
+    [accountTypeOptions, contacts],
+  );
+  const contactPracticeAreaOptions = useMemo(
+    () => [
+      ...new Set([
+        ...PRACTICE_AREAS,
+        ...practiceAreaOptions,
+        ...contacts.map((contact) => contact.caseType).filter(Boolean),
+      ]),
+    ],
+    [contacts, practiceAreaOptions],
+  );
+  const activeFilterCount = [
+    typeFilter,
+    statusFilter,
+    caseTypeFilter,
+    attorneyFilter,
+  ].filter((value) => value !== "All").length;
 
   const filteredContacts = useMemo(() => {
     return contacts.filter((contact) => {
@@ -542,6 +640,13 @@ export function ContactDirectory() {
         contact.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
         contact.caseType.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesType = typeFilter === "All" || contact.type === typeFilter;
+      const matchesStatus = statusFilter === "All" || contact.status === statusFilter;
+      const matchesCaseType = caseTypeFilter === "All" || contact.caseType === caseTypeFilter;
+      const matchesAttorney =
+        attorneyFilter === "All" ||
+        (attorneyFilter === "Unassigned"
+          ? !contact.attorneyAssignedId && contact.attorneyAssigned === "Unassigned"
+          : contact.attorneyAssignedId === attorneyFilter);
       let matchesListView = true;
 
       if (activeListView?.id !== "all") {
@@ -558,9 +663,9 @@ export function ContactDirectory() {
         }
       }
 
-      return matchesSearch && matchesType && matchesListView;
+      return matchesSearch && matchesType && matchesStatus && matchesCaseType && matchesAttorney && matchesListView;
     });
-  }, [activeListView, contacts, searchTerm, typeFilter]);
+  }, [activeListView, attorneyFilter, caseTypeFilter, contacts, searchTerm, statusFilter, typeFilter]);
 
   const sortedContacts = useMemo(() => {
     return [...filteredContacts].sort((a, b) => {
@@ -603,7 +708,7 @@ export function ContactDirectory() {
 
   return (
     <div className="flex flex-col space-y-6 p-6">
-      <div className="flex w-full flex-col items-start justify-between gap-4 overflow-hidden xl:flex-row xl:items-center">
+      <div className="flex w-full flex-col items-start justify-between gap-4 overflow-visible xl:flex-row xl:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
           <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">Contacts</h2>
           <Tabs
@@ -708,24 +813,123 @@ export function ContactDirectory() {
                 />
               </div>
 
-              <Select
-                value={typeFilter}
-                onValueChange={(value) => {
-                  setTypeFilter(value);
-                  setCurrentPage(1);
-                }}
-              >
-                <SelectTrigger className="flex h-10 w-10 items-center justify-center rounded-full border border-input bg-background p-0 [&>svg:last-child]:hidden">
-                  <Filter className="h-4 w-4" />
-                </SelectTrigger>
-                <SelectContent align="end">
-                  <SelectItem value="All">All Types</SelectItem>
-                  <SelectItem value="Client">Clients</SelectItem>
-                  <SelectItem value="Attorney">Attorneys</SelectItem>
-                  <SelectItem value="Expert Witness">Expert Witnesses</SelectItem>
-                  <SelectItem value="Opposing Counsel">Opposing Counsel</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={cn(
+                      "relative h-10 w-10 shrink-0 rounded-full",
+                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                    )}
+                  >
+                    <Filter className="h-4 w-4" />
+                    {activeFilterCount > 0 && (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="right-0 w-80 p-4">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">Filter Contacts</div>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setTypeFilter("All");
+                          setStatusFilter("All");
+                          setCaseTypeFilter("All");
+                          setAttorneyFilter("All");
+                          setCurrentPage(1);
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Status</Label>
+                      <Select value={statusFilter} onValueChange={(value) => {
+                        setStatusFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any status" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150]">
+                          <SelectItem value="All">Any Status</SelectItem>
+                          <SelectItem value="Active">Active</SelectItem>
+                          <SelectItem value="Pending">Pending</SelectItem>
+                          <SelectItem value="Closed">Closed</SelectItem>
+                          <SelectItem value="Consultation">Consultation</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Account Type</Label>
+                      <Select value={typeFilter} onValueChange={(value) => {
+                        setTypeFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any account type" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150]">
+                          <SelectItem value="All">Any Account Type</SelectItem>
+                          {contactTypeOptions.map((option) => (
+                            <SelectItem key={option} value={option}>
+                              {option}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Practice Area</Label>
+                      <SearchableSelect
+                        value={caseTypeFilter}
+                        onValueChange={(value) => {
+                          setCaseTypeFilter(value);
+                          setCurrentPage(1);
+                        }}
+                        options={["All", ...contactPracticeAreaOptions]}
+                        placeholder="Any practice area"
+                        searchPlaceholder="Search practice areas..."
+                        emptyMessage="No practice areas found."
+                        getOptionLabel={(value) => (value === "All" ? "Any Practice Area" : value)}
+                        contentClassName="z-[150]"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label>Assigned Attorney</Label>
+                      <Select value={attorneyFilter} onValueChange={(value) => {
+                        setAttorneyFilter(value);
+                        setCurrentPage(1);
+                      }}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Any attorney" />
+                        </SelectTrigger>
+                        <SelectContent className="z-[150] max-h-72 overflow-y-auto">
+                          <SelectItem value="All">Any Attorney</SelectItem>
+                          <SelectItem value="Unassigned">Unassigned</SelectItem>
+                          {systemUsers.map((user) => (
+                            <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                              {getUserName(user)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
 
               <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "grid" | "list")} className="hidden sm:block">
                 <TabsList className="h-10 rounded-full">
@@ -781,8 +985,6 @@ export function ContactDirectory() {
                   }}
                   onDelete={() => {
                     setContactToDelete(contact);
-                    setDeleteConfirmationText("");
-                    setIsDeleteDialogOpen(true);
                   }}
                 />
               ))}
@@ -799,8 +1001,6 @@ export function ContactDirectory() {
               }}
               onDelete={(contact) => {
                 setContactToDelete(contact);
-                setDeleteConfirmationText("");
-                setIsDeleteDialogOpen(true);
               }}
             />
           )}
@@ -910,8 +1110,10 @@ export function ContactDirectory() {
         onAddContact={handleAddContact}
         locationId={locationId}
         accountTypeOptions={accountTypeOptions}
-        practiceAreaOptions={practiceAreaOptions}
+        practiceAreaOptions={contactPracticeAreaOptions}
         languageOptions={languageOptions}
+        tagOptions={tagOptions.map((tag) => tag.name)}
+        onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
       />
 
@@ -921,49 +1123,31 @@ export function ContactDirectory() {
         onEditContact={handleEditContact}
         contact={contactToEdit}
         accountTypeOptions={accountTypeOptions}
-        practiceAreaOptions={practiceAreaOptions}
+        practiceAreaOptions={contactPracticeAreaOptions}
         languageOptions={languageOptions}
+        tagOptions={tagOptions.map((tag) => tag.name)}
+        onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
       />
 
-      <Dialog open={isDeleteDialogOpen} onOpenChange={setIsDeleteDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Are you absolutely sure?</DialogTitle>
-            <DialogDescription>
-              This action cannot be undone. This will permanently delete{" "}
-              <strong className="text-foreground">{contactToDelete?.name}</strong> from CRM.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-2">
-            <p className="mb-3 text-sm text-muted-foreground">
-              Please type <strong className="text-foreground">DELETE</strong> to confirm.
-            </p>
-            <Input
-              value={deleteConfirmationText}
-              onChange={(event) => setDeleteConfirmationText(event.target.value)}
-              placeholder="Type DELETE"
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDeleteDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              disabled={deleteConfirmationText !== "DELETE"}
-              onClick={async () => {
-                if (contactToDelete) {
-                  await handleDeleteContact(contactToDelete.id);
-                  setIsDeleteDialogOpen(false);
-                }
-              }}
-            >
-              Delete Contact
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <DeleteConfirmationDialog
+        open={Boolean(contactToDelete)}
+        onOpenChange={(open) => !open && setContactToDelete(null)}
+        title="Permanently delete contact?"
+        recordType="contact"
+        recordName={contactToDelete?.name}
+        isDeleting={isDeletingContact}
+        onConfirm={async () => {
+          if (!contactToDelete) return;
+          setIsDeletingContact(true);
+          try {
+            await handleDeleteContact(contactToDelete.id);
+            setContactToDelete(null);
+          } finally {
+            setIsDeletingContact(false);
+          }
+        }}
+      />
 
       <CreateListViewSheet
         open={isListViewPanelOpen}
@@ -982,7 +1166,7 @@ export function ContactDirectory() {
         }}
         systemUsers={systemUsers}
         accountTypeOptions={accountTypeOptions}
-        practiceAreaOptions={practiceAreaOptions}
+        practiceAreaOptions={contactPracticeAreaOptions}
       />
     </div>
   );

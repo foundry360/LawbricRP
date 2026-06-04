@@ -25,6 +25,13 @@ export type AppLocationContext = {
   };
 };
 
+export type GhlTag = {
+  id: string;
+  name: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export async function getAppLocationContext(): Promise<AppLocationContext> {
   const { data, error } = await supabase.functions.invoke("app-location-context", {
     body: {},
@@ -124,6 +131,69 @@ export async function updateContact(contactId: string, payload: Record<string, u
 export async function deleteContact(contactId: string) {
   return apiClient<{ ok: boolean }>(`/contacts/${encodeURIComponent(contactId)}`, {
     method: "DELETE",
+  });
+}
+
+function normalizeTag(rawTag: any): GhlTag {
+  return {
+    id: String(rawTag?.id || rawTag?._id || rawTag?.tagId || rawTag?.name || ""),
+    name: String(rawTag?.name || rawTag?.tag || ""),
+    createdAt: rawTag?.createdAt || rawTag?.dateAdded || rawTag?.created_at || null,
+    updatedAt: rawTag?.updatedAt || rawTag?.dateUpdated || rawTag?.updated_at || null,
+  };
+}
+
+function getTagCollection(response: any) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.tags)) return response.tags;
+  if (Array.isArray(response?.data?.tags)) return response.data.tags;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
+export async function getLocationTags(locationId: string) {
+  const response = await apiClient<unknown>(`/locations/${encodeURIComponent(locationId)}/tags`);
+  return getTagCollection(response)
+    .map((tag: unknown) => normalizeTag(tag))
+    .filter((tag: GhlTag) => tag.id && tag.name);
+}
+
+export async function createLocationTag(locationId: string, name: string) {
+  const response = await apiClient<any>(`/locations/${encodeURIComponent(locationId)}/tags`, {
+    method: "POST",
+    body: JSON.stringify({ name }),
+  });
+  return normalizeTag(response?.tag || response?.data?.tag || response?.data || response);
+}
+
+export async function updateLocationTag(locationId: string, tagId: string, name: string) {
+  const response = await apiClient<any>(
+    `/locations/${encodeURIComponent(locationId)}/tags/${encodeURIComponent(tagId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ name }),
+    },
+  );
+  return normalizeTag(response?.tag || response?.data?.tag || response?.data || response);
+}
+
+export async function deleteLocationTag(locationId: string, tagId: string) {
+  return apiClient<{ ok?: boolean }>(`/locations/${encodeURIComponent(locationId)}/tags/${encodeURIComponent(tagId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function addContactTags(contactId: string, tags: string[]) {
+  return apiClient<{ tags?: string[] }>(`/contacts/${encodeURIComponent(contactId)}/tags`, {
+    method: "POST",
+    body: JSON.stringify({ tags }),
+  });
+}
+
+export async function removeContactTags(contactId: string, tags: string[]) {
+  return apiClient<{ tags?: string[] }>(`/contacts/${encodeURIComponent(contactId)}/tags`, {
+    method: "DELETE",
+    body: JSON.stringify({ tags }),
   });
 }
 

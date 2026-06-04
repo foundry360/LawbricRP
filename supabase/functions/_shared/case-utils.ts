@@ -368,6 +368,35 @@ export async function syncTaskToGhl(context: RequestContext, taskRow: any) {
   };
 }
 
+export async function deleteTaskFromGhl(context: RequestContext, taskRow: any) {
+  const metadata = taskRow.metadata && typeof taskRow.metadata === "object" ? taskRow.metadata : {};
+  const ghlTaskId = metadata.ghl_task_id;
+
+  if (!taskRow.ghl_contact_id || !ghlTaskId) {
+    return {
+      deleted: false,
+      skippedReason: !taskRow.ghl_contact_id
+        ? "Task is not linked to a GHL contact."
+        : "Task does not have a synced GHL task ID.",
+    };
+  }
+
+  try {
+    await ghlRequestOrThrow(
+      context,
+      `/contacts/${encodeURIComponent(taskRow.ghl_contact_id)}/tasks/${encodeURIComponent(ghlTaskId)}`,
+      { method: "DELETE" },
+    );
+    return { deleted: true, ghlTaskId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not delete GHL task";
+    if (message.toLowerCase().includes("not found") || message.includes("404")) {
+      return { deleted: false, ghlTaskId, skippedReason: "GHL task was already deleted." };
+    }
+    throw error;
+  }
+}
+
 export async function syncCaseReference(context: RequestContext, caseRow: any) {
   const objectKey = Deno.env.get("GHL_CASE_OBJECT_KEY") || "custom_objects.cases";
   const assignedUser = caseRow.assigned_user_id
@@ -408,6 +437,30 @@ export async function syncCaseReference(context: RequestContext, caseRow: any) {
       .update({ ghl_case_record_id: recordId })
       .eq("id", caseRow.id)
       .eq("location_id", context.location.id);
+  }
+}
+
+export async function deleteCaseFromGhl(context: RequestContext, caseRow: any) {
+  const objectKey = Deno.env.get("GHL_CASE_OBJECT_KEY") || "custom_objects.cases";
+  const recordId = caseRow.ghl_case_record_id;
+
+  if (!recordId) {
+    return { deleted: false, skippedReason: "Case does not have a synced GHL case record ID." };
+  }
+
+  try {
+    await ghlRequestOrThrow(
+      context,
+      `/objects/${encodeURIComponent(objectKey)}/records/${encodeURIComponent(recordId)}?locationId=${encodeURIComponent(context.location.ghlLocationId)}`,
+      { method: "DELETE" },
+    );
+    return { deleted: true, ghlCaseRecordId: recordId };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Could not delete GHL case record";
+    if (message.toLowerCase().includes("not found") || message.includes("404")) {
+      return { deleted: false, ghlCaseRecordId: recordId, skippedReason: "GHL case record was already deleted." };
+    }
+    throw error;
   }
 }
 

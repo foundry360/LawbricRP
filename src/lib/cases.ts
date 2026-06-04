@@ -95,6 +95,10 @@ export async function updateCase(payload: Record<string, unknown>) {
   return data.case;
 }
 
+export async function deleteCase(payload: Record<string, unknown>) {
+  return invokeCaseFunction<{ ok: boolean; caseId: string }>("delete_case", payload);
+}
+
 export async function addCaseParty(payload: Record<string, unknown>) {
   const data = await invokeCaseFunction<{ party: any }>("add_case_party", payload);
   return data.party;

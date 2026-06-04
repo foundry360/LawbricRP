@@ -20,6 +20,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
@@ -44,15 +46,16 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getContacts } from "@/lib/api";
-import { type CaseRecord, createCase, listCases } from "@/lib/cases";
+import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneNumber } from "@/lib/phone";
+import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
 const CASE_STATUSES = ["open", "pending", "closed", "archived"];
-const CASE_TYPES = ["General", "Litigation", "Family", "Immigration", "Estate", "Criminal"];
+const CASE_TYPES = PRACTICE_AREAS;
 type CaseListView = {
   id: string;
   name: string;
@@ -157,6 +160,9 @@ export function CasesPage() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [loading, setLoading] = useState(true);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const [caseToEdit, setCaseToEdit] = useState<CaseRecord | null>(null);
+  const [caseToDelete, setCaseToDelete] = useState<CaseRecord | null>(null);
+  const [isDeletingCase, setIsDeletingCase] = useState(false);
 
   useEffect(() => {
     const loadListViews = async () => {
@@ -319,6 +325,30 @@ export function CasesPage() {
     navigate(`/case/${caseRecord.id}`);
   };
 
+  const handleCaseSaved = (caseRecord: CaseRecord) => {
+    setCases((current) => current.map((item) => (item.id === caseRecord.id ? { ...item, ...caseRecord } : item)));
+    setCaseToEdit(null);
+  };
+
+  const handleDeleteCase = async () => {
+    if (!caseToDelete) return;
+    setIsDeletingCase(true);
+    try {
+      await deleteCase({ locationId, caseId: caseToDelete.id });
+      setCases((current) => current.filter((caseRecord) => caseRecord.id !== caseToDelete.id));
+      toast({ title: "Case Deleted", description: `${caseToDelete.case_name} was permanently deleted.` });
+      setCaseToDelete(null);
+    } catch (error) {
+      toast({
+        title: "Case Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this case. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeletingCase(false);
+    }
+  };
+
   return (
     <div className="flex flex-col space-y-6 p-6">
       <CreateCaseSheet
@@ -328,6 +358,22 @@ export function CasesPage() {
         users={users}
         locationId={locationId}
         onCreated={handleCaseCreated}
+      />
+      <EditCaseSheet
+        open={Boolean(caseToEdit)}
+        onOpenChange={(open) => !open && setCaseToEdit(null)}
+        caseRecord={caseToEdit}
+        users={users}
+        onSaved={handleCaseSaved}
+      />
+      <DeleteConfirmationDialog
+        open={Boolean(caseToDelete)}
+        onOpenChange={(open) => !open && setCaseToDelete(null)}
+        title="Permanently delete case?"
+        recordType="case"
+        recordName={caseToDelete?.case_name}
+        isDeleting={isDeletingCase}
+        onConfirm={handleDeleteCase}
       />
       <CaseListViewSheet
         open={isListViewPanelOpen}
@@ -500,22 +546,19 @@ export function CasesPage() {
 
                     <div className="space-y-2">
                       <Label>Practice Area</Label>
-                      <Select value={typeFilter} onValueChange={(value) => {
-                        setTypeFilter(value);
-                        setCurrentPage(1);
-                      }}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Any practice area" />
-                        </SelectTrigger>
-                        <SelectContent className="z-[150]">
-                          <SelectItem value="All">Any Practice Area</SelectItem>
-                          {caseTypeOptions.map((caseType) => (
-                            <SelectItem key={caseType} value={caseType}>
-                              {caseType}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchableSelect
+                        value={typeFilter}
+                        onValueChange={(value) => {
+                          setTypeFilter(value);
+                          setCurrentPage(1);
+                        }}
+                        options={["All", ...caseTypeOptions]}
+                        placeholder="Any practice area"
+                        searchPlaceholder="Search practice areas..."
+                        emptyMessage="No practice areas found."
+                        getOptionLabel={(value) => (value === "All" ? "Any Practice Area" : value)}
+                        contentClassName="z-[150]"
+                      />
                     </div>
 
                     <div className="space-y-2">
@@ -633,7 +676,13 @@ export function CasesPage() {
           {viewMode === "grid" ? (
             <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
               {paginatedCases.map((caseRecord) => (
-                <CaseCard key={caseRecord.id} caseRecord={caseRecord} onNavigate={() => navigate(`/case/${caseRecord.id}`)} />
+              <CaseCard
+                key={caseRecord.id}
+                caseRecord={caseRecord}
+                onNavigate={() => navigate(`/case/${caseRecord.id}`)}
+                onEdit={() => setCaseToEdit(caseRecord)}
+                onDelete={() => setCaseToDelete(caseRecord)}
+              />
               ))}
             </div>
           ) : (
@@ -642,6 +691,8 @@ export function CasesPage() {
               navigate={navigate}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
+            onEdit={setCaseToEdit}
+            onDelete={setCaseToDelete}
             />
           )}
 
@@ -747,7 +798,17 @@ export function CasesPage() {
   );
 }
 
-function CaseCard({ caseRecord, onNavigate }: { caseRecord: CaseRecord; onNavigate: () => void }) {
+function CaseCard({
+  caseRecord,
+  onNavigate,
+  onEdit,
+  onDelete,
+}: {
+  caseRecord: CaseRecord;
+  onNavigate: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
       <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
@@ -759,7 +820,7 @@ function CaseCard({ caseRecord, onNavigate }: { caseRecord: CaseRecord; onNaviga
           </h3>
           <div className="text-sm text-muted-foreground">{caseRecord.case_number}</div>
         </div>
-        <CaseActions onView={onNavigate} />
+        <CaseActions onView={onNavigate} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
       <CardContent className="pt-4">
         <div className="space-y-3">
@@ -787,7 +848,15 @@ function CaseMeta({ label, value }: { label: string; value: string }) {
   );
 }
 
-function CaseActions({ onView }: { onView: () => void }) {
+function CaseActions({
+  onView,
+  onEdit,
+  onDelete,
+}: {
+  onView: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -804,6 +873,23 @@ function CaseActions({ onView }: { onView: () => void }) {
         >
           View
         </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={(event) => {
+            event.stopPropagation();
+            onEdit();
+          }}
+        >
+          Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="text-destructive"
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+          }}
+        >
+          Delete
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -814,11 +900,15 @@ function CaseTable({
   navigate,
   handleSort,
   renderSortIcon,
+  onEdit,
+  onDelete,
 }: {
   cases: CaseRecord[];
   navigate: (path: string) => void;
   handleSort: (column: keyof CaseRecord) => void;
   renderSortIcon: (column: keyof CaseRecord) => ReactNode;
+  onEdit: (caseRecord: CaseRecord) => void;
+  onDelete: (caseRecord: CaseRecord) => void;
 }) {
   const columns: Array<[keyof CaseRecord, string]> = [
     ["case_name", "Case"],
@@ -888,7 +978,11 @@ function CaseTable({
                 </div>
               </td>
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
-                <CaseActions onView={() => navigate(`/case/${caseRecord.id}`)} />
+                <CaseActions
+                  onView={() => navigate(`/case/${caseRecord.id}`)}
+                  onEdit={() => onEdit(caseRecord)}
+                  onDelete={() => onDelete(caseRecord)}
+                />
               </td>
             </tr>
           ))}
@@ -1002,19 +1096,15 @@ function CaseListViewSheet({
 
             <div className="space-y-2">
               <Label>Practice Area</Label>
-              <Select value={caseType} onValueChange={setCaseType}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Any Practice Area" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">Any Practice Area</SelectItem>
-                  {caseTypes.map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={caseType}
+                onValueChange={setCaseType}
+                options={["All", ...caseTypes]}
+                placeholder="Any Practice Area"
+                searchPlaceholder="Search practice areas..."
+                emptyMessage="No practice areas found."
+                getOptionLabel={(value) => (value === "All" ? "Any Practice Area" : value)}
+              />
             </div>
 
             <div className="space-y-2">
@@ -1101,7 +1191,7 @@ function CreateCaseSheet({
   const [form, setForm] = useState({
     caseNumber: "",
     caseName: "",
-    caseType: "General",
+    caseType: CASE_TYPES[0],
     stage: "intake",
     status: "open",
     contactId: "",
@@ -1116,7 +1206,7 @@ function CreateCaseSheet({
     setForm({
       caseNumber: "",
       caseName: "",
-      caseType: "General",
+      caseType: CASE_TYPES[0],
       stage: "intake",
       status: "open",
       contactId: "",
@@ -1218,19 +1308,15 @@ function CreateCaseSheet({
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label>Case Type</Label>
-              <Select value={form.caseType} onValueChange={(caseType) => setForm({ ...form, caseType })}>
-                <SelectTrigger>
-                  <span>{form.caseType}</span>
-                </SelectTrigger>
-                <SelectContent>
-                  {CASE_TYPES.map((caseType) => (
-                    <SelectItem key={caseType} value={caseType}>
-                      {caseType}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>Practice Area</Label>
+              <SearchableSelect
+                value={form.caseType}
+                onValueChange={(caseType) => setForm({ ...form, caseType })}
+                options={CASE_TYPES}
+                placeholder="Select practice area"
+                searchPlaceholder="Search practice areas..."
+                emptyMessage="No practice areas found."
+              />
             </div>
             <div className="space-y-2">
               <Label>Stage</Label>
@@ -1274,6 +1360,168 @@ function CreateCaseSheet({
             <Button type="submit" className="flex-1" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Create Case
+            </Button>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function EditCaseSheet({
+  open,
+  onOpenChange,
+  caseRecord,
+  users,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  caseRecord: CaseRecord | null;
+  users: AssignableUser[];
+  onSaved: (caseRecord: CaseRecord) => void;
+}) {
+  const { toast } = useToast();
+  const [submitting, setSubmitting] = useState(false);
+  const [form, setForm] = useState({
+    caseNumber: "",
+    caseName: "",
+    caseType: CASE_TYPES[0],
+    stage: "intake",
+    status: "open",
+    assignedUserId: "",
+  });
+
+  useEffect(() => {
+    if (!caseRecord || !open) return;
+    setForm({
+      caseNumber: caseRecord.case_number || "",
+      caseName: caseRecord.case_name || "",
+      caseType: caseRecord.case_type || CASE_TYPES[0],
+      stage: caseRecord.stage || "intake",
+      status: caseRecord.status || "open",
+      assignedUserId: caseRecord.assigned_user_id || "",
+    });
+  }, [caseRecord, open]);
+
+  const caseTypeOptions = CASE_TYPES.includes(form.caseType) ? CASE_TYPES : [form.caseType, ...CASE_TYPES];
+  const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+
+  const handleSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!caseRecord) return;
+
+    setSubmitting(true);
+    try {
+      const updatedCase = await updateCase({
+        caseId: caseRecord.id,
+        caseNumber: form.caseNumber,
+        caseName: form.caseName,
+        caseType: form.caseType,
+        status: form.status,
+        stage: form.stage,
+        assignedUserId: form.assignedUserId || null,
+      });
+      onSaved(updatedCase);
+      toast({ title: "Case Updated", description: `${updatedCase.case_name} has been saved.` });
+    } catch (error) {
+      toast({
+        title: "Case Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update this case. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Edit Case</SheetTitle>
+        </SheetHeader>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label>Case Number</Label>
+            <Input
+              value={form.caseNumber}
+              onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Case Name</Label>
+            <Input
+              value={form.caseName}
+              onChange={(event) => setForm({ ...form, caseName: event.target.value })}
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Practice Area</Label>
+            <SearchableSelect
+              value={form.caseType}
+              onValueChange={(caseType) => setForm({ ...form, caseType })}
+              options={caseTypeOptions}
+              placeholder="Select practice area"
+              searchPlaceholder="Search practice areas..."
+              emptyMessage="No practice areas found."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Primary Attorney</Label>
+            <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
+              <SelectTrigger>
+                <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
+                  {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Unassigned</SelectItem>
+                {users.map((user) => (
+                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                    {getUserName(user)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Status</Label>
+              <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
+                <SelectTrigger>
+                  <span className="capitalize">{form.status}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  {CASE_STATUSES.map((status) => (
+                    <SelectItem key={status} value={status}>
+                      <span className="capitalize">{status}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label>Stage</Label>
+              <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+            </div>
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1" disabled={submitting}>
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save Changes
             </Button>
           </div>
         </form>

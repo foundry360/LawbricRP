@@ -86,3 +86,7 @@ export async function updateTask(payload: Record<string, unknown>) {
   const data = await invokeTaskFunction<{ task: TaskRecord }>("update_task", payload);
   return data.task;
 }
+
+export async function deleteTask(payload: Record<string, unknown>) {
+  return invokeTaskFunction<{ ok: boolean; taskId: string }>("delete_task", payload);
+}

@@ -323,7 +323,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <Sidebar collapsible="icon" className="z-40 border-r bg-[#EFF6FF] pt-16">
+      <Sidebar collapsible="icon" className="z-40 border-r bg-sidebar pt-16">
         <SidebarContent>
           <SidebarGroup className="pt-4">
             <SidebarGroupContent>
@@ -332,24 +332,36 @@ export function Layout({ children }: { children: ReactNode }) {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <SidebarMenuButton className="h-10 justify-start font-medium hover:bg-transparent focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
-                        <div className="relative right-px top-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                        <div className="relative right-0.5 top-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
                           <Plus className="h-4 w-4" strokeWidth={1.8} />
                         </div>
-                        <span className="text-[13px] group-data-[collapsible=icon]:hidden">
+                        <span className="min-w-0 truncate whitespace-nowrap text-[13px] group-data-[collapsible=icon]:hidden">
                           Quick Add
                         </span>
                       </SidebarMenuButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="right" align="start" className="w-48 text-[13px]">
-                      <DropdownMenuItem className="text-[13px]">
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/")}>
                         <Users className="mr-2 h-4 w-4" strokeWidth={1.5} />
                         <span>Contact</span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-[13px]">
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/cases")}>
                         <Briefcase className="mr-2 h-4 w-4" strokeWidth={1.5} />
                         <span>Cases</span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-[13px]">
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/tasks")}>
+                        <CheckSquare className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                        <span>Tasks</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/calendar")}>
+                        <Calendar className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                        <span>Calendars</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/users")}>
+                        <UserCog className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                        <span>Users</span>
+                      </DropdownMenuItem>
+                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/leads")}>
                         <Scale className="mr-2 h-4 w-4" strokeWidth={1.5} />
                         <span>Lead</span>
                       </DropdownMenuItem>
@@ -372,7 +384,7 @@ export function Layout({ children }: { children: ReactNode }) {
             </SidebarGroupContent>
           </SidebarGroup>
         </SidebarContent>
-        <SidebarFooter className="border-t bg-[#EFF6FF] p-4">
+        <SidebarFooter className="border-t bg-sidebar p-4">
           <SidebarTrigger />
         </SidebarFooter>
       </Sidebar>
@@ -422,8 +434,8 @@ function NavItem({
     <SidebarMenuItem>
       <SidebarMenuButton asChild isActive={active} className="h-10">
         <Link to={to}>
-          <Icon className="!h-5 !w-5" strokeWidth={1.5} />
-          <span className="text-[13px] group-data-[collapsible=icon]:hidden">{label}</span>
+          <Icon className="!h-5 !w-5 shrink-0" strokeWidth={1.5} />
+          <span className="min-w-0 truncate whitespace-nowrap text-[13px] group-data-[collapsible=icon]:hidden">{label}</span>
         </Link>
       </SidebarMenuButton>
     </SidebarMenuItem>

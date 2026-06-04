@@ -1,4 +1,15 @@
-import { cloneElement, createContext, isValidElement, ReactElement, ReactNode, useContext, useState } from "react";
+import {
+  cloneElement,
+  createContext,
+  isValidElement,
+  MouseEvent,
+  ReactElement,
+  ReactNode,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { cn } from "@/lib/utils";
 
 type PopoverContextValue = {
@@ -24,15 +35,35 @@ export function Popover({
   onOpenChange?: (open: boolean) => void;
 }) {
   const [internalOpen, setInternalOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement>(null);
   const open = controlledOpen ?? internalOpen;
   const setOpen = (nextOpen: boolean) => {
     setInternalOpen(nextOpen);
     onOpenChange?.(nextOpen);
   };
 
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: globalThis.MouseEvent) => {
+      if (containerRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   return (
     <PopoverContext.Provider value={{ open, setOpen }}>
-      <div className="relative">{children}</div>
+      <div ref={containerRef} className="relative">{children}</div>
     </PopoverContext.Provider>
   );
 }
@@ -41,10 +72,10 @@ export function PopoverTrigger({ children, asChild }: { children: ReactNode; asC
   const { open, setOpen } = usePopover();
 
   if (asChild && isValidElement(children)) {
-    const child = children as ReactElement<{ onClick?: () => void }>;
+    const child = children as ReactElement<{ onClick?: (event: MouseEvent<HTMLElement>) => void }>;
     return cloneElement(child, {
-      onClick: () => {
-        child.props.onClick?.();
+      onClick: (event: MouseEvent<HTMLElement>) => {
+        child.props.onClick?.(event);
         setOpen(!open);
       },
     });

@@ -66,6 +66,9 @@ verify_jwt = false
 [functions.update_case]
 verify_jwt = false
 
+[functions.delete_case]
+verify_jwt = false
+
 [functions.get_case]
 verify_jwt = false
 
@@ -82,6 +85,9 @@ verify_jwt = false
 verify_jwt = false
 
 [functions.update_task]
+verify_jwt = false
+
+[functions.delete_task]
 verify_jwt = false
 
 [functions.create_event]

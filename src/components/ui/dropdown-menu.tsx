@@ -7,6 +7,8 @@ import {
   ReactElement,
   ReactNode,
   useContext,
+  useEffect,
+  useRef,
   useState,
 } from "react";
 import { cn } from "@/lib/utils";
@@ -29,10 +31,30 @@ function useDropdown() {
 export function DropdownMenu({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [triggerRect, setTriggerRect] = useState<DOMRect | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const handlePointerDown = (event: globalThis.MouseEvent) => {
+      if (containerRef.current?.contains(event.target as Node)) return;
+      setOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
 
   return (
     <DropdownContext.Provider value={{ open, setOpen, triggerRect, setTriggerRect }}>
-      <div className="inline-block">{children}</div>
+      <div ref={containerRef} className="inline-block">{children}</div>
     </DropdownContext.Provider>
   );
 }

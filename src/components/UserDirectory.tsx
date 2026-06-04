@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Loader2, Mail, MoreVertical, Phone, Search } from "lucide-react";
 import { AddUserSheet } from "@/components/AddUserSheet";
+import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { EditUserSheet } from "@/components/EditUserSheet";
 import {
   AlertDialog,
@@ -15,6 +16,13 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -96,7 +104,10 @@ export function UserDirectory() {
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [locationId, setLocationId] = useState("");
   const [editingUser, setEditingUser] = useState<any>(null);
+  const [userToView, setUserToView] = useState<any>(null);
   const [userToResetPassword, setUserToResetPassword] = useState<any>(null);
+  const [userToDelete, setUserToDelete] = useState<any>(null);
+  const [isDeletingUser, setIsDeletingUser] = useState(false);
 
   const fetchUsers = async () => {
     setIsLoading(true);
@@ -217,6 +228,32 @@ export function UserDirectory() {
       const message = getUserFriendlyErrorMessage(error, "Failed to reactivate user. Please try again.");
       console.error(error);
       toast({ variant: "destructive", title: "User Not Reactivated", description: message });
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    if (!userToDelete) return;
+    setIsDeletingUser(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("admin-users", {
+        body: {
+          action: "delete",
+          userId: userToDelete.id,
+        },
+      });
+
+      if (error) throw error;
+      if (data?.error) throw new Error(data.error);
+
+      toast({ title: "User deleted successfully" });
+      setUsers((current) => current.filter((user) => user.id !== userToDelete.id));
+      setUserToDelete(null);
+    } catch (error) {
+      const message = getUserFriendlyErrorMessage(error, "Failed to delete user. Please try again.");
+      console.error(error);
+      toast({ variant: "destructive", title: "User Not Deleted", description: message });
+    } finally {
+      setIsDeletingUser(false);
     }
   };
 
@@ -355,8 +392,14 @@ export function UserDirectory() {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem className="cursor-pointer" onClick={() => setUserToView(user)}>
+                          View
+                        </DropdownMenuItem>
                         <DropdownMenuItem className="cursor-pointer" onClick={() => setEditingUser(user)}>
                           Edit
+                        </DropdownMenuItem>
+                        <DropdownMenuItem className="cursor-pointer text-destructive" onClick={() => setUserToDelete(user)}>
+                          Delete
                         </DropdownMenuItem>
                         <DropdownMenuItem className="cursor-pointer" onClick={() => setUserToResetPassword(user)}>
                           Reset Password
@@ -482,6 +525,32 @@ export function UserDirectory() {
         onSuccess={fetchUsers}
       />
 
+      <Dialog open={Boolean(userToView)} onOpenChange={(open) => !open && setUserToView(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>User Details</DialogTitle>
+            <DialogDescription>View user account details.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 text-sm">
+            <UserDetailRow label="Name" value={userToView ? getDisplayName(userToView) : ""} />
+            <UserDetailRow label="Email" value={userToView?.email || "N/A"} />
+            <UserDetailRow label="Phone" value={formatPhoneNumber(userToView?.phone)} />
+            <UserDetailRow label="Role" value={userToView?.role === "admin" ? "Admin" : "User"} />
+            <UserDetailRow label="Status" value={userToView?.is_active === false ? "Deactivated" : "Active"} />
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <DeleteConfirmationDialog
+        open={Boolean(userToDelete)}
+        onOpenChange={(open) => !open && setUserToDelete(null)}
+        title="Permanently delete user?"
+        recordType="user"
+        recordName={userToDelete ? getDisplayName(userToDelete) : undefined}
+        isDeleting={isDeletingUser}
+        onConfirm={handleDeleteUser}
+      />
+
       <AlertDialog
         open={Boolean(userToResetPassword)}
         onOpenChange={(open) => !open && setUserToResetPassword(null)}
@@ -499,6 +568,15 @@ export function UserDirectory() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+    </div>
+  );
+}
+
+function UserDetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-4 border-b border-border pb-2 last:border-0">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="text-right font-medium text-foreground">{value}</span>
     </div>
   );
 }

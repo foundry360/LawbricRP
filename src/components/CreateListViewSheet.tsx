@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -182,19 +183,15 @@ export function CreateListViewSheet({
 
             <div className="space-y-2">
               <Label>Practice Area</Label>
-              <Select value={caseType} onValueChange={setCaseType}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Any Practice Area" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">Any Practice Area</SelectItem>
-                  {practiceAreaOptions.map((option) => (
-                    <SelectItem key={option} value={option}>
-                      {option}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={caseType}
+                onValueChange={setCaseType}
+                options={["All", ...practiceAreaOptions]}
+                placeholder="Any Practice Area"
+                searchPlaceholder="Search practice areas..."
+                emptyMessage="No practice areas found."
+                getOptionLabel={(value) => (value === "All" ? "Any Practice Area" : value)}
+              />
             </div>
 
             <div className="space-y-2">
