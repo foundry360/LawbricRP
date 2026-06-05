@@ -17,8 +17,19 @@ type SettingsDialogProps = {
   onOpenChange: (open: boolean) => void;
 };
 
+function isProfileAvatarMirrorError(error: unknown) {
+  if (!error || typeof error !== "object" || !("message" in error) || typeof error.message !== "string") return false;
+  const message = error.message.toLowerCase();
+  return (
+    message.includes("avatar_url") ||
+    message.includes("schema cache") ||
+    message.includes("column") && message.includes("does not exist")
+  );
+}
+
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [email, setEmail] = useState("");
+  const [userId, setUserId] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
@@ -35,6 +46,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         } = await supabase.auth.getUser();
 
         if (user) {
+          setUserId(user.id);
           setEmail(user.email || "");
           setFirstName(user.user_metadata?.first_name || "");
           setLastName(user.user_metadata?.last_name || "");
@@ -126,12 +138,26 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         last_name: lastName,
       },
     });
+
+    const fullName = `${firstName} ${lastName}`.trim();
+    const profileError = !error && userId
+      ? (await supabase.from("profiles").update({ full_name: fullName }).eq("id", userId)).error
+      : null;
+    const avatarMirrorError = !error && !profileError && userId
+      ? (await supabase.from("profiles").update({ avatar_url: avatarUrl || null }).eq("id", userId)).error
+      : null;
     setIsLoading(false);
 
-    if (error) {
+    if (avatarMirrorError && isProfileAvatarMirrorError(avatarMirrorError)) {
+      console.warn("Profile avatar mirror skipped while database updates are pending", avatarMirrorError);
+    }
+
+    const blockingError = error || profileError || (avatarMirrorError && !isProfileAvatarMirrorError(avatarMirrorError));
+
+    if (blockingError) {
       toast({
         title: "Profile Not Saved",
-        description: getUserFriendlyErrorMessage(error, "Profile could not be saved. Please try again."),
+        description: getUserFriendlyErrorMessage(blockingError, "Profile could not be saved. Please try again."),
         variant: "destructive",
       });
     } else {

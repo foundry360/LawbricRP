@@ -280,7 +280,7 @@ serve(async (req) => {
   if (body.action === "listAssignableUsers") {
     const { data: profiles, error: profilesError } = await supabase
       .from("profiles")
-      .select("id, email, full_name, role, is_active")
+      .select("id, email, full_name, role, is_active, avatar_url")
       .eq("is_active", true)
       .order("full_name", { ascending: true });
 
@@ -302,6 +302,7 @@ serve(async (req) => {
         name: profile.full_name || profile.email || profile.id,
         role: profile.role,
         is_active: profile.is_active,
+        avatar_url: profile.avatar_url,
       })),
     });
   }

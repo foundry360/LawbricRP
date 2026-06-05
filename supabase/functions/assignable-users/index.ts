@@ -21,6 +21,20 @@ function getBearerToken(req: Request) {
   return req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? null;
 }
 
+function getAvatarUrlFromMetadata(metadata?: Record<string, unknown> | null) {
+  const possibleValues = [
+    metadata?.avatar_url,
+    metadata?.avatarUrl,
+    metadata?.profilePhoto,
+    metadata?.profile_photo,
+    metadata?.profilePicture,
+    metadata?.profile_picture,
+    metadata?.picture,
+  ];
+  const avatarUrl = possibleValues.find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof avatarUrl === "string" ? avatarUrl.trim() : "";
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -71,7 +85,7 @@ serve(async (req) => {
 
   const { data: profiles, error: profilesError } = await supabase
     .from("profiles")
-    .select("id, email, full_name, role, is_active")
+    .select("id, email, full_name, role, is_active, avatar_url")
     .eq("is_active", true)
     .order("full_name", { ascending: true });
 
@@ -79,15 +93,31 @@ serve(async (req) => {
     return jsonResponse({ error: "Could not load assignable users" }, 500);
   }
 
+  const users = await Promise.all(
+    (profiles ?? []).map(async (profile) => {
+      let avatarUrl = profile.avatar_url || "";
+      if (!avatarUrl) {
+        const { data } = await supabase.auth.admin.getUserById(profile.id);
+        avatarUrl = getAvatarUrlFromMetadata(data?.user?.user_metadata as Record<string, unknown> | null);
+        if (avatarUrl) {
+          await supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("id", profile.id);
+        }
+      }
+
+      return {
+        id: profile.id,
+        email: profile.email,
+        full_name: profile.full_name,
+        name: profile.full_name || profile.email || profile.id,
+        role: profile.role,
+        is_active: profile.is_active,
+        avatar_url: avatarUrl,
+      };
+    }),
+  );
+
   return jsonResponse({
     ok: true,
-    users: (profiles ?? []).map((profile) => ({
-      id: profile.id,
-      email: profile.email,
-      full_name: profile.full_name,
-      name: profile.full_name || profile.email || profile.id,
-      role: profile.role,
-      is_active: profile.is_active,
-    })),
+    users,
   });
 });

@@ -16,9 +16,12 @@ import {
   Briefcase,
   Calendar,
   CheckSquare,
+  ChevronRight,
   CreditCard,
+  Database,
   DollarSign,
   FileText,
+  GitBranch,
   Info,
   LayoutGrid,
   LogOut,
@@ -28,6 +31,7 @@ import {
   Scale,
   Settings,
   Target,
+  Wrench,
   UserCog,
   Users,
 } from "lucide-react";
@@ -347,7 +351,7 @@ export function Layout({ children }: { children: ReactNode }) {
                       </DropdownMenuItem>
                       <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/cases")}>
                         <Briefcase className="mr-2 h-4 w-4" strokeWidth={1.5} />
-                        <span>Cases</span>
+                        <span>Matters</span>
                       </DropdownMenuItem>
                       <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/tasks")}>
                         <CheckSquare className="mr-2 h-4 w-4" strokeWidth={1.5} />
@@ -370,8 +374,8 @@ export function Layout({ children }: { children: ReactNode }) {
                 </SidebarMenuItem>
                 <div className="mx-4 mb-2 mt-6 h-px bg-border group-data-[collapsible=icon]:mx-2" />
                 <NavItem icon={LayoutGrid} label="Dashboard" to="/dashboard" active={location.pathname === "/dashboard"} />
-                <NavItem icon={Users} label="Contacts" to="/" active={location.pathname === "/" || location.pathname.startsWith("/contact")} />
-                <NavItem icon={Briefcase} label="Cases" to="/cases" active={location.pathname === "/cases" || location.pathname.startsWith("/case/")} />
+                <NavItem icon={Users} label="Contacts" to="/" active={location.pathname === "/" || location.pathname.startsWith("/contact") || location.pathname.startsWith("/company")} />
+                <NavItem icon={Briefcase} label="Matters" to="/cases" active={location.pathname === "/cases" || location.pathname.startsWith("/case/")} />
                 <NavItem icon={Calendar} label="Calendar" to="/calendar" active={location.pathname === "/calendar"} />
                 <NavItem icon={CheckSquare} label="Tasks" to="/tasks" active={location.pathname === "/tasks"} />
                 <NavItem icon={UserCog} label="User Management" to="/users" active={location.pathname === "/users"} />
@@ -380,6 +384,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 <NavItem icon={CreditCard} label="Billing" to="/billing" active={location.pathname === "/billing"} />
                 <NavItem icon={FileText} label="Documents" to="/documents" active={location.pathname === "/documents"} />
                 <NavItem icon={DollarSign} label="Payments" to="/payments" active={location.pathname === "/payments"} />
+                <ToolsNavItem active={location.pathname.startsWith("/tools")} />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -438,6 +443,56 @@ function NavItem({
           <span className="min-w-0 truncate whitespace-nowrap text-[13px] group-data-[collapsible=icon]:hidden">{label}</span>
         </Link>
       </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+function ToolsNavItem({ active }: { active: boolean }) {
+  const location = useLocation();
+  const [open, setOpen] = useState(active);
+
+  useEffect(() => {
+    if (active) setOpen(true);
+  }, [active]);
+
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild isActive={active} className="h-10">
+        <button type="button" onClick={() => setOpen((current) => !current)}>
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <Wrench className="!h-5 !w-5 shrink-0" strokeWidth={1.5} />
+            <span className="min-w-0 truncate whitespace-nowrap text-[13px] group-data-[collapsible=icon]:hidden">
+              Tools
+            </span>
+          </div>
+          <ChevronRight
+            className={`h-4 w-4 shrink-0 transition-transform group-data-[collapsible=icon]:hidden ${open ? "rotate-90" : ""}`}
+            strokeWidth={1.5}
+          />
+        </button>
+      </SidebarMenuButton>
+      {open && (
+        <div className="ml-9 mt-1 space-y-1 group-data-[collapsible=icon]:hidden">
+          <Link
+            to="/tools/data"
+            className={`flex h-8 items-center gap-2 rounded-md px-3 text-[13px] transition-colors hover:bg-primary/10 hover:text-primary ${
+              location.pathname === "/tools/data" ? "bg-primary/10 font-medium text-primary" : "text-sidebar-foreground"
+            }`}
+          >
+            <Database className="mr-2 h-4 w-4" strokeWidth={1.5} />
+            <span>Data</span>
+          </Link>
+          <Link
+            to="/tools/pipelines"
+            className={`flex h-8 items-center gap-2 rounded-md px-3 text-[13px] transition-colors hover:bg-primary/10 hover:text-primary ${
+              location.pathname === "/tools/pipelines" ? "bg-primary/10 font-medium text-primary" : "text-sidebar-foreground"
+            }`}
+          >
+            <GitBranch className="mr-2 h-4 w-4" strokeWidth={1.5} />
+            <span>Pipelines</span>
+          </Link>
+        </div>
+      )}
     </SidebarMenuItem>
   );
 }

@@ -4,6 +4,7 @@ import {
   getCaseOrThrow,
   getRequestContext,
   handleError,
+  hydrateTaskAssigneeAvatars,
   jsonResponse,
   readJsonBody,
   syncTaskToGhl,
@@ -64,7 +65,7 @@ serve(async (req) => {
       .select(`
         *,
         case:cases(id, case_number, case_name, primary_contact_name),
-        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email)
+        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
       `)
       .single();
 
@@ -81,7 +82,7 @@ serve(async (req) => {
         .select(`
           *,
           case:cases(id, case_number, case_name, primary_contact_name),
-          assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email)
+          assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
         `)
         .single();
 
@@ -100,7 +101,8 @@ serve(async (req) => {
         .eq("location_id", context.location.id);
     }
 
-    return jsonResponse({ ok: true, task });
+    const [hydratedTask] = await hydrateTaskAssigneeAvatars(context, [task]);
+    return jsonResponse({ ok: true, task: hydratedTask });
   } catch (error) {
     return handleError(error);
   }

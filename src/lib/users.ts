@@ -9,6 +9,8 @@ export type AssignableUser = {
   name?: string | null;
   is_active?: boolean | null;
   role?: string | null;
+  avatar_url?: string | null;
+  profilePhoto?: string | null;
 };
 
 export function getUserId(user: any) {
@@ -40,7 +42,7 @@ export async function getAssignableUsers() {
 
   const { data, error } = await supabase
     .from("profiles")
-    .select("id, email, full_name, role, is_active")
+    .select("id, email, full_name, role, is_active, avatar_url")
     .order("full_name", { ascending: true });
 
   if (error) throw error;

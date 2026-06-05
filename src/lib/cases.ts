@@ -58,7 +58,7 @@ async function getFunctionErrorMessage(error: unknown) {
 
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
-  return "Case request failed";
+  return "Matter request failed";
 }
 
 async function invokeCaseFunction<T>(name: string, body: Record<string, unknown>) {

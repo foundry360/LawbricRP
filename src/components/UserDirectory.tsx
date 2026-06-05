@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Mail, MoreVertical, Phone, Search } from "lucide-react";
+import { Eye, Loader2, Mail, MoreVertical, Pencil, Phone, Search, Trash2 } from "lucide-react";
 import { AddUserSheet } from "@/components/AddUserSheet";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { EditUserSheet } from "@/components/EditUserSheet";
@@ -393,12 +393,15 @@ export function UserDirectory() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         <DropdownMenuItem className="cursor-pointer" onClick={() => setUserToView(user)}>
+                          <Eye className="mr-2 h-4 w-4" />
                           View
                         </DropdownMenuItem>
                         <DropdownMenuItem className="cursor-pointer" onClick={() => setEditingUser(user)}>
+                          <Pencil className="mr-2 h-4 w-4" />
                           Edit
                         </DropdownMenuItem>
-                        <DropdownMenuItem className="cursor-pointer text-destructive" onClick={() => setUserToDelete(user)}>
+                        <DropdownMenuItem className="cursor-pointer" onClick={() => setUserToDelete(user)}>
+                          <Trash2 className="mr-2 h-4 w-4" />
                           Delete
                         </DropdownMenuItem>
                         <DropdownMenuItem className="cursor-pointer" onClick={() => setUserToResetPassword(user)}>

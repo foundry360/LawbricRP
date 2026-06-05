@@ -4,6 +4,7 @@ import {
   getCaseOrThrow,
   getRequestContext,
   handleError,
+  hydrateTaskAssigneeAvatars,
   jsonResponse,
   readJsonBody,
   syncTaskToGhl,
@@ -48,7 +49,11 @@ serve(async (req) => {
         metadata: body.metadata || {},
         created_by: context.user.id,
       })
-      .select("*")
+      .select(`
+        *,
+        case:cases(id, case_number, case_name, primary_contact_name),
+        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
+      `)
       .single();
 
     if (error) throw new Error(error.message);
@@ -61,7 +66,11 @@ serve(async (req) => {
         .update({ metadata })
         .eq("id", task.id)
         .eq("location_id", context.location.id)
-        .select("*")
+        .select(`
+          *,
+          case:cases(id, case_number, case_name, primary_contact_name),
+          assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
+        `)
         .single();
 
       if (metadataError) throw new Error(metadataError.message);
@@ -79,7 +88,8 @@ serve(async (req) => {
         .eq("location_id", context.location.id);
     }
 
-    return jsonResponse({ ok: true, task }, 201);
+    const [hydratedTask] = await hydrateTaskAssigneeAvatars(context, [task]);
+    return jsonResponse({ ok: true, task: hydratedTask }, 201);
   } catch (error) {
     return handleError(error);
   }

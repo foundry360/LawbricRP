@@ -2,9 +2,12 @@ import { ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
+  Building2,
   Briefcase,
   ChevronDown,
   ChevronUp,
+  CircleUserRound,
+  Eye,
   Filter,
   LayoutGrid,
   List,
@@ -16,6 +19,7 @@ import {
   Phone,
   Plus,
   Search,
+  Trash2,
   Users,
 } from "lucide-react";
 import { AddContactDialog, type ContactFormValues } from "@/components/AddContactDialog";
@@ -49,13 +53,17 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
+  createBusiness,
   createContact,
   createLocationTag,
+  deleteBusiness,
   deleteContact,
   getAppLocationContext,
+  getBusinesses,
   getContacts,
   getCustomFields,
   getLocationTags,
+  type GhlBusiness,
   type GhlTag,
   updateContact,
 } from "@/lib/api";
@@ -73,6 +81,7 @@ type ContactType = "Client" | "Attorney" | "Expert Witness" | "Opposing Counsel"
 
 type Contact = {
   id: string;
+  recordKind: "contact" | "company";
   name: string;
   email: string;
   phone: string;
@@ -87,6 +96,7 @@ type Contact = {
   gender?: string;
   language?: string;
   tags: string[];
+  companyDetails?: GhlBusiness;
 };
 
 const defaultListViews: ListView[] = [{ id: "all", name: "All Contacts", filters: {} }];
@@ -133,6 +143,24 @@ function getFieldOptions(field: any) {
   );
 }
 
+function getUserAvatarUrl(user: any) {
+  return user?.avatar_url || user?.profilePhoto || user?.avatarUrl || user?.profile_photo || "";
+}
+
+function getAvatarUrlFromMetadata(metadata?: Record<string, unknown> | null) {
+  const possibleValues = [
+    metadata?.avatar_url,
+    metadata?.avatarUrl,
+    metadata?.profilePhoto,
+    metadata?.profile_photo,
+    metadata?.profilePicture,
+    metadata?.profile_picture,
+    metadata?.picture,
+  ];
+  const avatarUrl = possibleValues.find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof avatarUrl === "string" ? avatarUrl.trim() : "";
+}
+
 function getArrayFromResponse(response: any, key: string) {
   if (Array.isArray(response)) return response;
   if (Array.isArray(response?.[key])) return response[key];
@@ -151,6 +179,11 @@ function buildContactCustomFields(customFields: any[], data: ContactFormValues) 
     ["account type", data.type],
     ["language", data.language],
     ["gender", data.gender],
+    ["primary contact", data.primaryContactName],
+    ["website", data.website],
+    ["company website", data.website],
+    ["industry", data.industry],
+    ["company address", data.companyAddress],
   ]
     .map(([name, value]) => {
       const id = getCustomFieldId(customFields, String(name));
@@ -210,6 +243,7 @@ export function ContactDirectory() {
   const [crmCustomFields, setCrmCustomFields] = useState<any[]>([]);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [systemUsers, setSystemUsers] = useState<any[]>([]);
+  const [userAvatarMap, setUserAvatarMap] = useState<Record<string, string>>({});
   const [listViews, setListViews] = useState<ListView[]>(defaultListViews);
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
@@ -236,6 +270,46 @@ export function ContactDirectory() {
       console.error("Failed to save list views to Supabase", error);
     });
   };
+
+  useEffect(() => {
+    const nextAvatarMap: Record<string, string> = {};
+    systemUsers.forEach((user) => {
+      const userId = getUserId(user);
+      const avatarUrl = getUserAvatarUrl(user);
+      if (userId && avatarUrl) nextAvatarMap[userId] = avatarUrl;
+    });
+
+    const loadProfileAvatars = async () => {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const currentUserAvatar = getAvatarUrlFromMetadata(user?.user_metadata as Record<string, unknown> | null);
+      if (user?.id && currentUserAvatar) nextAvatarMap[user.id] = currentUserAvatar;
+
+      const assignedUserIds = Array.from(
+        new Set(contacts.map((contact) => contact.attorneyAssignedId).filter((userId): userId is string => Boolean(userId))),
+      );
+
+      if (assignedUserIds.length > 0) {
+        const { data, error } = await supabase
+          .from("profiles")
+          .select("id, avatar_url")
+          .in("id", assignedUserIds);
+
+        if (!error) {
+          (data ?? []).forEach((profile) => {
+            if (profile.id && profile.avatar_url) nextAvatarMap[profile.id] = profile.avatar_url;
+          });
+        } else {
+          console.warn("Contact assigned attorney avatar lookup skipped", error);
+        }
+      }
+
+      setUserAvatarMap(nextAvatarMap);
+    };
+
+    void loadProfileAvatars();
+  }, [contacts, systemUsers]);
 
   const saveContactAssignment = async (ghlContactId: string, assignedUserId: string) => {
     if (!locationRecordId || !ghlContactId) return;
@@ -314,6 +388,17 @@ export function ContactDirectory() {
         }
 
         const response: any = await getContacts(locId);
+        let businessesResponse: any = { businesses: [] };
+        try {
+          businessesResponse = locId ? await getBusinesses(locId) : { businesses: [] };
+        } catch (error) {
+          console.error("Failed to fetch CRM companies", error);
+          toast({
+            variant: "destructive",
+            title: "Company Sync Failed",
+            description: "Could not load GHL company records. Check the private integration business scopes.",
+          });
+        }
         const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
         setCrmCustomFields(customFieldsList);
 
@@ -365,6 +450,9 @@ export function ContactDirectory() {
 
         const mappedContacts = getArrayFromResponse(response, "contacts").map((contact: any): Contact => {
           const tags = contact.tags || [];
+          const isCompanyContact = tags.some((tag: string) => tag.toLowerCase() === "company");
+          const personName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim();
+          const companyName = contact.companyName || "";
           const accountTypeValue =
             getCustomFieldValue(contact, customFieldsMap, "account type") ||
             tags.find((tag: string) =>
@@ -397,7 +485,8 @@ export function ContactDirectory() {
 
           return {
             id: contact.id,
-            name: `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.email || "Unknown",
+            recordKind: "contact",
+            name: (isCompanyContact ? companyName || personName : personName || companyName) || contact.email || "Unknown",
             email: contact.email || "N/A",
             phone: formatPhoneNumber(contact.phone),
             type,
@@ -413,7 +502,32 @@ export function ContactDirectory() {
           };
         });
 
-        setContacts(mappedContacts);
+        const mappedBusinesses = getArrayFromResponse(businessesResponse, "businesses").map((business: any): Contact => {
+          const dateValue = business.updatedAt || business.createdAt;
+          const date = dateValue ? new Date(dateValue) : null;
+          const assignedUserId = assignmentMap.get(business.id) || "";
+          const assignedUser = assignedUserId
+            ? fetchedUsers.find((user) => getUserId(user) === assignedUserId)
+            : null;
+
+          return {
+            id: business.id,
+            recordKind: "company",
+            name: business.name || business.email || "Unknown Company",
+            email: business.email || "N/A",
+            phone: formatPhoneNumber(business.phone),
+            type: "Company",
+            status: "Active",
+            caseType: "General",
+            attorneyAssigned: assignedUser ? getUserName(assignedUser) : "Unassigned",
+            attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
+            lastContact: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "Recently",
+            tags: ["Company"],
+            companyDetails: business,
+          };
+        });
+
+        setContacts([...mappedBusinesses, ...mappedContacts]);
       } catch (error) {
         const message = getUserFriendlyErrorMessage(error, "We couldn't load your contacts right now.");
         console.error("Failed to fetch CRM contacts:", error);
@@ -442,7 +556,10 @@ export function ContactDirectory() {
       return !appTagNames.has(normalized) && !systemTagNames.has(normalized);
     });
 
-    return Array.from(new Set([...preservedTags, data.type, data.status, ...(data.tags || [])].filter(Boolean)));
+    const contactKindTags = data.contactKind === "company" ? ["Company"] : [];
+    return Array.from(
+      new Set([...preservedTags, ...contactKindTags, data.type, data.status, ...(data.tags || [])].filter(Boolean)),
+    );
   };
 
   const handleCreateTag = async (name: string) => {
@@ -488,13 +605,70 @@ export function ContactDirectory() {
 
   const handleAddContact = async (newContactData: ContactFormValues) => {
     try {
-      const [firstName, ...rest] = newContactData.name.trim().split(" ");
+      const isCompany = newContactData.contactKind === "company";
+      const displayName = (isCompany ? newContactData.companyName : newContactData.name)?.trim() || "";
+      const primaryName = (isCompany ? newContactData.primaryContactName : newContactData.name)?.trim() || displayName;
+      const [firstName, ...rest] = primaryName.split(/\s+/);
+      const assignedUser = systemUsers.find((user) => getUserId(user) === newContactData.attorneyAssigned);
+
+      if (isCompany) {
+        const companyDescription = [
+          newContactData.primaryContactName?.trim() ? `Primary Contact: ${newContactData.primaryContactName.trim()}` : "",
+          newContactData.industry?.trim() ? `Industry: ${newContactData.industry.trim()}` : "",
+          newContactData.caseType?.trim() ? `Practice Area: ${newContactData.caseType.trim()}` : "",
+          newContactData.status?.trim() ? `Status: ${newContactData.status.trim()}` : "",
+        ].filter(Boolean).join("\n");
+
+        const businessPayload: Record<string, any> = {
+          locationId,
+          name: displayName,
+        };
+
+        if (newContactData.email && newContactData.email !== "N/A") businessPayload.email = newContactData.email;
+        if (newContactData.phone && newContactData.phone !== "N/A") {
+          businessPayload.phone = formatPhoneNumber(newContactData.phone, "");
+        }
+        if (newContactData.website?.trim()) businessPayload.website = newContactData.website.trim();
+        if (newContactData.companyAddress?.trim()) businessPayload.address = newContactData.companyAddress.trim();
+        if (companyDescription) businessPayload.description = companyDescription;
+
+        const response: any = await createBusiness(businessPayload);
+        const createdBusiness = response.business || response.buiseness || response.data?.business || response.data?.buiseness || response.data || response;
+        const createdBusinessId = createdBusiness.id || crypto.randomUUID();
+
+        if (assignedUser) {
+          await saveContactAssignment(createdBusinessId, getUserId(assignedUser));
+        }
+
+        const newCompany: Contact = {
+          id: createdBusinessId,
+          recordKind: "company",
+          name: createdBusiness.name || displayName,
+          email: createdBusiness.email || newContactData.email || "N/A",
+          phone: formatPhoneNumber(createdBusiness.phone || newContactData.phone),
+          type: "Company",
+          status: newContactData.status as ContactStatus,
+          caseType: newContactData.caseType || "General",
+          attorneyAssigned: assignedUser ? getUserName(assignedUser) : "Unassigned",
+          attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
+          lastContact: "Just now",
+          tags: ["Company"],
+        };
+
+        setContacts((current) => [newCompany, ...current]);
+        toast({ title: "Company Added", description: `${newCompany.name} has been added to Companies.` });
+        return;
+      }
+
       const payload: Record<string, any> = {
         locationId,
-        firstName,
-        lastName: rest.join(" "),
         tags: buildContactTags(newContactData),
       };
+
+      if (primaryName) {
+        payload.firstName = firstName;
+        payload.lastName = rest.join(" ");
+      }
 
       if (newContactData.email && newContactData.email !== "N/A") payload.email = newContactData.email;
       if (newContactData.phone && newContactData.phone !== "N/A") {
@@ -506,8 +680,6 @@ export function ContactDirectory() {
 
       if (customFields.length > 0) payload.customFields = customFields;
 
-      const assignedUser = systemUsers.find((user) => getUserId(user) === newContactData.attorneyAssigned);
-
       const response: any = await createContact(payload);
       const createdContact = response.contact || response.data?.contact || response.data || response;
       const createdContactId = createdContact.id || crypto.randomUUID();
@@ -518,7 +690,8 @@ export function ContactDirectory() {
 
       const newContact: Contact = {
         id: createdContactId,
-        name: newContactData.name,
+        recordKind: "contact",
+        name: displayName,
         email: newContactData.email,
         phone: formatPhoneNumber(newContactData.phone),
         type: newContactData.type,
@@ -550,9 +723,11 @@ export function ContactDirectory() {
     if (!contactToEdit) return;
     const previousContacts = contacts;
     const selectedAssignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
+    const updatedName = updatedData.name?.trim() || contactToEdit.name;
     const updatedContact: Contact = {
       ...contactToEdit,
       ...updatedData,
+      name: updatedName,
       phone: formatPhoneNumber(updatedData.phone),
       status: updatedData.status as ContactStatus,
       attorneyAssigned: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
@@ -564,7 +739,7 @@ export function ContactDirectory() {
     );
 
     try {
-      const [firstName, ...rest] = updatedData.name.trim().split(" ");
+      const [firstName, ...rest] = updatedName.split(/\s+/);
       const payload: Record<string, any> = {
         firstName,
         lastName: rest.join(" "),
@@ -594,14 +769,21 @@ export function ContactDirectory() {
     }
   };
 
-  const handleDeleteContact = async (contactId: string) => {
+  const handleDeleteContact = async (record: Contact) => {
     try {
-      await deleteContact(contactId);
-      await saveContactAssignment(contactId, "");
-      setContacts((current) => current.filter((contact) => contact.id !== contactId));
-      toast({ title: "Contact Deleted", description: "The contact has been removed from CRM." });
+      if (record.recordKind === "company") {
+        await deleteBusiness(record.id);
+      } else {
+        await deleteContact(record.id);
+      }
+      await saveContactAssignment(record.id, "");
+      setContacts((current) => current.filter((contact) => contact.id !== record.id));
+      toast({
+        title: record.recordKind === "company" ? "Company Deleted" : "Contact Deleted",
+        description: `The ${record.recordKind === "company" ? "company" : "contact"} has been removed from CRM.`,
+      });
     } catch (error) {
-      const message = getUserFriendlyErrorMessage(error, "Failed to delete the contact. Please try again.");
+      const message = getUserFriendlyErrorMessage(error, "Failed to delete the record. Please try again.");
       toast({
         variant: "destructive",
         title: "Delete Failed",
@@ -680,6 +862,33 @@ export function ContactDirectory() {
       return 0;
     });
   }, [filteredContacts, sortColumn, sortDirection]);
+
+  const handleViewRecord = (contact: Contact) => {
+    if (contact.recordKind === "company") {
+      const companyDetails: GhlBusiness = contact.companyDetails || {
+        id: contact.id,
+        name: contact.name,
+        email: contact.email === "N/A" ? null : contact.email,
+        phone: contact.phone === "N/A" ? null : contact.phone,
+      };
+
+      window.sessionStorage.setItem(`company:${contact.id}`, JSON.stringify(companyDetails));
+      navigate(`/company/${contact.id}`, { state: { company: companyDetails } });
+      return;
+    }
+
+    navigate(`/contact/${contact.id}`);
+  };
+
+  const handleEditRecord = (contact: Contact) => {
+    if (contact.recordKind === "company") {
+      toast({ title: "Company Editing Coming Soon", description: "Company records can be managed in GHL Companies for now." });
+      return;
+    }
+
+    setContactToEdit(contact);
+    setIsEditModalOpen(true);
+  };
 
   const totalPages = Math.ceil(sortedContacts.length / itemsPerPage);
   const safeTotalPages = Math.max(1, totalPages);
@@ -978,11 +1187,8 @@ export function ContactDirectory() {
                 <ContactCard
                   key={contact.id}
                   contact={contact}
-                  onNavigate={() => navigate(`/contact/${contact.id}`)}
-                  onEdit={() => {
-                    setContactToEdit(contact);
-                    setIsEditModalOpen(true);
-                  }}
+                  onNavigate={() => handleViewRecord(contact)}
+                  onEdit={() => handleEditRecord(contact)}
                   onDelete={() => {
                     setContactToDelete(contact);
                   }}
@@ -992,13 +1198,12 @@ export function ContactDirectory() {
           ) : (
             <ContactTable
               contacts={paginatedContacts}
-              navigate={navigate}
+              systemUsers={systemUsers}
+              userAvatarMap={userAvatarMap}
+              onView={handleViewRecord}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
-              onEdit={(contact) => {
-                setContactToEdit(contact);
-                setIsEditModalOpen(true);
-              }}
+              onEdit={handleEditRecord}
               onDelete={(contact) => {
                 setContactToDelete(contact);
               }}
@@ -1133,15 +1338,15 @@ export function ContactDirectory() {
       <DeleteConfirmationDialog
         open={Boolean(contactToDelete)}
         onOpenChange={(open) => !open && setContactToDelete(null)}
-        title="Permanently delete contact?"
-        recordType="contact"
+        title={`Permanently delete ${contactToDelete?.recordKind === "company" ? "company" : "contact"}?`}
+        recordType={contactToDelete?.recordKind === "company" ? "company" : "contact"}
         recordName={contactToDelete?.name}
         isDeleting={isDeletingContact}
         onConfirm={async () => {
           if (!contactToDelete) return;
           setIsDeletingContact(true);
           try {
-            await handleDeleteContact(contactToDelete.id);
+            await handleDeleteContact(contactToDelete);
             setContactToDelete(null);
           } finally {
             setIsDeletingContact(false);
@@ -1184,22 +1389,35 @@ function ContactCard({
   onDelete: () => void;
 }) {
   const contactInitials = getAvatarInitials({ fullName: contact.name, email: contact.email }, "C");
+  const isCompany = contact.recordKind === "company";
 
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
       <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
         <div className="flex items-center space-x-4">
           <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-            <AvatarImage src={contact.avatarUrl} alt={`${contactInitials} avatar`} />
-            <AvatarFallback className="bg-blue-50 font-semibold text-primary">
-              {contactInitials}
+            {!isCompany ? <AvatarImage src={contact.avatarUrl} alt={`${contactInitials} avatar`} /> : null}
+            <AvatarFallback className={isCompany ? "border border-amber-200 bg-amber-50 text-amber-700" : "bg-blue-50 font-semibold text-primary"}>
+              {isCompany ? <Building2 className="h-5 w-5" /> : contactInitials}
             </AvatarFallback>
           </Avatar>
           <div>
             <h3 className="mb-1.5 text-lg capitalize leading-none text-[#2384CA] hover:underline">
-              <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()}>
-                {contact.name}
-              </Link>
+              {contact.recordKind === "company" ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onNavigate();
+                  }}
+                >
+                  {contact.name}
+                </button>
+              ) : (
+                <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()}>
+                  {contact.name}
+                </Link>
+              )}
             </h3>
             <div className="text-sm text-muted-foreground">{contact.type}</div>
           </div>
@@ -1222,7 +1440,7 @@ function ContactCard({
             </div>
           </div>
           <div className="mt-3 space-y-2 border-t pt-3">
-            <ContactMeta label="Case Type" value={contact.caseType} />
+            <ContactMeta label="Practice Area" value={contact.caseType} />
             <ContactMeta label="Assigned To" value={contact.attorneyAssigned} />
             <ContactMeta label="Last Contact" value={contact.lastContact} />
           </div>
@@ -1264,6 +1482,7 @@ function ContactActions({
             onView();
           }}
         >
+          <Eye className="mr-2 h-4 w-4" />
           View
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -1272,15 +1491,16 @@ function ContactActions({
             onEdit();
           }}
         >
+          <Pencil className="mr-2 h-4 w-4" />
           Edit
         </DropdownMenuItem>
         <DropdownMenuItem
-          className="text-destructive"
           onClick={(event) => {
             event.stopPropagation();
             onDelete();
           }}
         >
+          <Trash2 className="mr-2 h-4 w-4" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -1290,14 +1510,18 @@ function ContactActions({
 
 function ContactTable({
   contacts,
-  navigate,
+  systemUsers,
+  userAvatarMap,
+  onView,
   handleSort,
   renderSortIcon,
   onEdit,
   onDelete,
 }: {
   contacts: Contact[];
-  navigate: (path: string) => void;
+  systemUsers: any[];
+  userAvatarMap: Record<string, string>;
+  onView: (contact: Contact) => void;
   handleSort: (column: keyof Contact) => void;
   renderSortIcon: (column: keyof Contact) => ReactNode;
   onEdit: (contact: Contact) => void;
@@ -1333,26 +1557,47 @@ function ContactTable({
           </tr>
         </thead>
         <tbody>
-          {contacts.map((contact) => (
+          {contacts.map((contact) => {
+            const assignedUser = contact.attorneyAssignedId
+              ? systemUsers.find((user) => getUserId(user) === contact.attorneyAssignedId)
+              : null;
+            const assignedName = assignedUser ? getUserName(assignedUser) : contact.attorneyAssigned;
+            const assignedAvatarUrl =
+              getUserAvatarUrl(assignedUser) ||
+              (contact.attorneyAssignedId ? userAvatarMap[contact.attorneyAssignedId] : "") ||
+              "";
+            const assignedInitials = getAvatarInitials({ fullName: assignedName }, "U");
+            const isCompany = contact.recordKind === "company";
+
+            return (
             <tr
               key={contact.id}
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
-              onClick={() => navigate(`/contact/${contact.id}`)}
+              onClick={() => onView(contact)}
             >
               <td className="px-4 py-2">
                 <div className="flex items-center space-x-3">
                   <Avatar className="h-8 w-8">
-                    <AvatarImage
-                      src={contact.avatarUrl}
-                      alt={`${getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")} avatar`}
-                    />
-                    <AvatarFallback className="bg-blue-50 text-xs text-primary">
-                      {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
+                    <AvatarFallback className={isCompany ? "border border-amber-200 bg-amber-50 text-amber-700" : "border border-blue-200 bg-blue-50 text-[#344256]"}>
+                      {isCompany ? <Building2 className="h-4 w-4" /> : <CircleUserRound className="h-4 w-4" />}
                     </AvatarFallback>
                   </Avatar>
-                  <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
-                    {contact.name}
-                  </Link>
+                  {contact.recordKind === "company" ? (
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onView(contact);
+                      }}
+                      className="capitalize text-[#2384CA] hover:underline"
+                    >
+                      {contact.name}
+                    </button>
+                  ) : (
+                    <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
+                      {contact.name}
+                    </Link>
+                  )}
                 </div>
               </td>
               <td className="px-4 py-2 text-foreground/70">
@@ -1374,16 +1619,29 @@ function ContactTable({
               </td>
               <td className="px-4 py-2 text-foreground/70">{contact.type}</td>
               <td className="px-4 py-2 text-foreground/80">{contact.caseType}</td>
-              <td className="px-4 py-2 text-foreground/80">{contact.attorneyAssigned}</td>
+              <td className="px-4 py-2 text-foreground/80">
+                <div className="flex items-center gap-2">
+                  <Avatar className="h-8 w-8">
+                    {assignedAvatarUrl ? (
+                      <AvatarImage src={assignedAvatarUrl} alt={`${assignedInitials} avatar`} />
+                    ) : null}
+                    <AvatarFallback className="bg-primary/10 text-xs font-medium text-primary">
+                      {assignedInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span>{assignedName}</span>
+                </div>
+              </td>
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <ContactActions
-                  onView={() => navigate(`/contact/${contact.id}`)}
+                  onView={() => onView(contact)}
                   onEdit={() => onEdit(contact)}
                   onDelete={() => onDelete(contact)}
                 />
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

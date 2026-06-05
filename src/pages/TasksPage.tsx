@@ -6,6 +6,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronUp,
+  Eye,
   Filter,
   LayoutGrid,
   List,
@@ -21,6 +22,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { DateTimePicker } from "@/components/DatePicker";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import {
   DropdownMenu,
@@ -55,6 +57,10 @@ import { cn } from "@/lib/utils";
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
 const RELATED_TYPES = ["general", "case", "contact", "opportunity"];
+
+function getRelatedTypeLabel(type: string) {
+  return type === "case" ? "Matter" : type;
+}
 type TaskListView = {
   id: string;
   name: string;
@@ -928,6 +934,7 @@ function TaskActions({
             onView();
           }}
         >
+          <Eye className="mr-2 h-4 w-4" />
           View
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -936,15 +943,16 @@ function TaskActions({
             onEdit();
           }}
         >
+          <Pencil className="mr-2 h-4 w-4" />
           Edit
         </DropdownMenuItem>
         <DropdownMenuItem
-          className="text-destructive"
           onClick={(event) => {
             event.stopPropagation();
             onDelete();
           }}
         >
+          <Trash2 className="mr-2 h-4 w-4" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -1308,7 +1316,7 @@ function TaskSheet({
       return;
     }
     if (form.relatedType === "case" && form.caseId === "none") {
-      toast({ title: "Case Required", description: "Please select a case for this task.", variant: "destructive" });
+      toast({ title: "Matter Required", description: "Please select a matter for this task.", variant: "destructive" });
       return;
     }
     if (form.relatedType === "contact" && form.contactId === "none") {
@@ -1417,12 +1425,12 @@ function TaskSheet({
                 }
               >
                 <SelectTrigger>
-                  <span className="capitalize">{form.relatedType}</span>
+                  <span className="capitalize">{getRelatedTypeLabel(form.relatedType)}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {RELATED_TYPES.map((type) => (
                     <SelectItem key={type} value={type}>
-                      <span className="capitalize">{type}</span>
+                      <span className="capitalize">{getRelatedTypeLabel(type)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1448,15 +1456,15 @@ function TaskSheet({
 
           {form.relatedType === "case" && (
             <div className="space-y-2">
-              <Label>Case</Label>
+              <Label>Matter</Label>
               <Select value={form.caseId} onValueChange={(caseId) => setForm({ ...form, caseId })}>
                 <SelectTrigger>
                   <span className={cn(form.caseId === "none" && "text-muted-foreground")}>
-                    {selectedCase ? selectedCase.case_name : "Select case"}
+                    {selectedCase ? selectedCase.case_name : "Select matter"}
                   </span>
                 </SelectTrigger>
                 <SelectContent className="max-h-72 overflow-y-auto">
-                  <SelectItem value="none">Select case</SelectItem>
+                  <SelectItem value="none">Select matter</SelectItem>
                   {cases.map((caseRecord) => (
                     <SelectItem key={caseRecord.id} value={caseRecord.id}>
                       {caseRecord.case_name}
@@ -1519,16 +1527,20 @@ function TaskSheet({
             </div>
             <div className="space-y-2">
               <Label>Due Date</Label>
-              <Input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} />
+              <DateTimePicker
+                value={form.dueAt}
+                onValueChange={(dueAt) => setForm({ ...form, dueAt })}
+                placeholder="Select due date"
+              />
             </div>
           </div>
 
           <div className="space-y-2">
             <Label>Reminder Date</Label>
-            <Input
-              type="datetime-local"
+            <DateTimePicker
               value={form.reminderAt}
-              onChange={(event) => setForm({ ...form, reminderAt: event.target.value })}
+              onValueChange={(reminderAt) => setForm({ ...form, reminderAt })}
+              placeholder="Select reminder date"
             />
           </div>
 

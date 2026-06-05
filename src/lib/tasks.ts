@@ -28,6 +28,8 @@ export type TaskRecord = {
     id: string;
     full_name?: string | null;
     email?: string | null;
+    avatar_url?: string | null;
+    profilePhoto?: string | null;
   } | null;
 };
 

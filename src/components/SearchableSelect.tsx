@@ -70,7 +70,9 @@ export function SearchableSelect({
 
     setMenuStyle({
       left,
-      top: openAbove ? Math.max(viewportPadding, rect.top - maxHeight - gap) : rect.bottom + gap,
+      ...(openAbove
+        ? { bottom: window.innerHeight - rect.top + gap }
+        : { top: rect.bottom + gap }),
       width: rect.width,
       maxHeight,
     });

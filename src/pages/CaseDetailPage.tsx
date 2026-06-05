@@ -21,6 +21,7 @@ import {
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DateTimePicker } from "@/components/DatePicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -134,8 +135,8 @@ export function CaseDetailPage() {
       }
     } catch (error) {
       toast({
-        title: "Case Not Loaded",
-        description: getUserFriendlyErrorMessage(error, "Could not load this case. Please try again."),
+        title: "Matter Not Loaded",
+        description: getUserFriendlyErrorMessage(error, "Could not load this matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -159,12 +160,12 @@ export function CaseDetailPage() {
     try {
       const caseRecord = await updateCase({ caseId: detail.case.id, ...updates });
       setDetail({ ...detail, case: caseRecord });
-      toast({ title: "Case Updated", description: "Case details have been saved." });
+      toast({ title: "Matter Updated", description: "Matter details have been saved." });
       await loadCase();
     } catch (error) {
       toast({
-        title: "Case Not Updated",
-        description: getUserFriendlyErrorMessage(error, "Could not update this case. Please try again."),
+        title: "Matter Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update this matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -187,12 +188,12 @@ export function CaseDetailPage() {
           <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-primary/10">
             <Briefcase className="h-8 w-8 text-primary" />
           </div>
-          <h3 className="mb-2 text-xl font-semibold text-foreground">Case not found</h3>
+          <h3 className="mb-2 text-xl font-semibold text-foreground">Matter not found</h3>
           <p className="mb-6 max-w-md text-muted-foreground">
-            The case you are looking for might have been deleted or does not exist.
+            The matter you are looking for might have been deleted or does not exist.
           </p>
           <Link to="/cases" className="text-sm text-primary hover:underline">
-            Back to cases
+            Back to matters
           </Link>
         </div>
       </div>
@@ -253,28 +254,37 @@ export function CaseDetailPage() {
           </div>
           <div className="flex w-full gap-3 md:w-auto md:justify-self-end">
             <Button
-              className="flex-1 md:flex-none"
+              size="icon"
+              className="h-10 w-10 rounded-full p-0"
               disabled={!contactEmail}
+              title="Email"
+              aria-label="Email"
               onClick={() => {
                 if (contactEmail) window.location.href = `mailto:${contactEmail}`;
               }}
             >
-              <Mail className="mr-2 h-4 w-4" /> Email
+              <Mail className="h-4 w-4" />
             </Button>
             <Button
-              className="flex-1 border-0 bg-primary text-white hover:bg-primary/90 md:flex-none"
+              size="icon"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
               disabled={!contactPhone}
+              title="Call"
+              aria-label="Call"
               onClick={() => {
                 if (contactPhone) window.location.href = `tel:${contactPhone}`;
               }}
             >
-              <Phone className="mr-2 h-4 w-4" /> Call
+              <Phone className="h-4 w-4" />
             </Button>
             <Button
-              className="flex-1 border-0 bg-primary text-white hover:bg-primary/90 md:flex-none"
+              size="icon"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
+              title="Edit"
+              aria-label="Edit"
               onClick={() => setIsEditOpen(true)}
             >
-              <Pencil className="mr-2 h-4 w-4" /> Edit
+              <Pencil className="h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -289,18 +299,18 @@ export function CaseDetailPage() {
         <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pr-6">
           <div className="mb-2 border-b border-border pb-3">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <Link to="/cases" className="text-muted-foreground transition-colors hover:text-foreground" title="Back to cases">
+              <Link to="/cases" className="text-muted-foreground transition-colors hover:text-foreground" title="Back to matters">
                 <ArrowLeft className="h-5 w-5" />
               </Link>
-              Case Details
+              Matter Details
             </h2>
           </div>
           <Accordion type="multiple" defaultValue={["case", "client", "system"]} className="w-full">
             <AccordionItem value="case">
-              <AccordionTrigger>Case Information</AccordionTrigger>
+              <AccordionTrigger>Matter Information</AccordionTrigger>
               <AccordionContent>
                 <div className="space-y-3 pt-2">
-                  <DetailRow label="Case Number" value={detail.case.case_number} />
+                  <DetailRow label="Matter Number" value={detail.case.case_number} />
                   <DetailRow label="Practice Area" value={detail.case.case_type} />
                   <DetailRow label="Primary Attorney" value={assignedUserName} />
                   <DetailRow label="Status" value={detail.case.status} className="capitalize" />
@@ -446,8 +456,8 @@ function EditCaseSheet({
     event.preventDefault();
     if (!form.caseName.trim() || !form.caseNumber.trim()) {
       toast({
-        title: "Case Details Required",
-        description: "Please enter both a case number and case name.",
+        title: "Matter Details Required",
+        description: "Please enter both a matter number and matter name.",
         variant: "destructive",
       });
       return;
@@ -466,11 +476,11 @@ function EditCaseSheet({
       });
       onSaved(caseRecord);
       onOpenChange(false);
-      toast({ title: "Case Updated", description: "Case details have been saved." });
+      toast({ title: "Matter Updated", description: "Matter details have been saved." });
     } catch (error) {
       toast({
-        title: "Case Not Updated",
-        description: getUserFriendlyErrorMessage(error, "Could not update this case. Please try again."),
+        title: "Matter Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update this matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -485,12 +495,12 @@ function EditCaseSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>Edit Case Details</SheetTitle>
+          <SheetTitle>Edit Matter Details</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
-            <Label>Case Number</Label>
+            <Label>Matter Number</Label>
             <Input
               value={form.caseNumber}
               onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
@@ -499,7 +509,7 @@ function EditCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Case Name</Label>
+            <Label>Matter Name</Label>
             <Input
               value={form.caseName}
               onChange={(event) => setForm({ ...form, caseName: event.target.value })}
@@ -598,7 +608,7 @@ function OverviewTab({
   return (
     <>
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Case Overview</h3>
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Matter Overview</h3>
         <Button
           type="button"
           variant="ghost"
@@ -685,7 +695,7 @@ function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={5} placeholder="Add a case note" />
+          <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={5} placeholder="Add a matter note" />
           <Button className="w-full" disabled={submitting || !note.trim()} onClick={handleAddNote}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
             Add Note
@@ -778,7 +788,11 @@ function TasksTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => 
       <div className="space-y-3">
         <Input placeholder="Task title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input type="datetime-local" value={form.dueAt} onChange={(event) => setForm({ ...form, dueAt: event.target.value })} />
+          <DateTimePicker
+            value={form.dueAt}
+            onValueChange={(dueAt) => setForm({ ...form, dueAt })}
+            placeholder="Select due date"
+          />
           <Select value={form.priority} onValueChange={(priority) => setForm({ ...form, priority })}>
             <SelectTrigger><span className="capitalize">{form.priority}</span></SelectTrigger>
             <SelectContent>
@@ -824,8 +838,16 @@ function EventsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () =>
       <div className="space-y-3">
         <Input placeholder="Event title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
         <div className="grid gap-3 sm:grid-cols-2">
-          <Input type="datetime-local" value={form.startAt} onChange={(event) => setForm({ ...form, startAt: event.target.value })} />
-          <Input type="datetime-local" value={form.endAt} onChange={(event) => setForm({ ...form, endAt: event.target.value })} />
+          <DateTimePicker
+            value={form.startAt}
+            onValueChange={(startAt) => setForm({ ...form, startAt })}
+            placeholder="Select start date"
+          />
+          <DateTimePicker
+            value={form.endAt}
+            onValueChange={(endAt) => setForm({ ...form, endAt })}
+            placeholder="Select end date"
+          />
         </div>
         <Input placeholder="Event type" value={form.eventType} onChange={(event) => setForm({ ...form, eventType: event.target.value })} />
         <Textarea placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />

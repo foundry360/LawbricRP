@@ -32,6 +32,24 @@ export type GhlTag = {
   updatedAt?: string | null;
 };
 
+export type GhlBusiness = {
+  id: string;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  country?: string | null;
+  description?: string | null;
+  locationId?: string | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  tags?: string[] | null;
+};
+
 export async function getAppLocationContext(): Promise<AppLocationContext> {
   const { data, error } = await supabase.functions.invoke("app-location-context", {
     body: {},
@@ -47,6 +65,15 @@ export async function getAppLocationContext(): Promise<AppLocationContext> {
 export async function getActiveGhlLocationId(): Promise<string> {
   const context = await getAppLocationContext();
   return context.location?.ghlLocationId ?? "";
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
+}
+
+function isRateLimitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /too many requests|rate.?limit|429/i.test(message);
 }
 
 async function invokeGhlHandoff<T>(action: string, payload?: unknown): Promise<T> {
@@ -100,17 +127,34 @@ async function invokeGhlHandoff<T>(action: string, payload?: unknown): Promise<T
 }
 
 export async function apiClient<T = unknown>(endpoint: string, init?: GhlRequestInit): Promise<T> {
-  return invokeGhlHandoff<T>("api", {
+  const requestPayload = {
     endpoint,
     method: init?.method ?? "GET",
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
     version: init?.ghlVersion,
-  });
+  };
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await invokeGhlHandoff<T>("api", requestPayload);
+    } catch (error) {
+      if (!isRateLimitError(error) || attempt === 2) throw error;
+      await sleep(900 * (attempt + 1));
+    }
+  }
+
+  return invokeGhlHandoff<T>("api", requestPayload);
 }
 
 export async function getContacts(locationId: string) {
   return apiClient<{ contacts?: unknown[]; data?: unknown[] }>(
     `/contacts/?locationId=${encodeURIComponent(locationId)}&limit=100`,
+  );
+}
+
+export async function getContactsByBusinessId(businessId: string) {
+  return apiClient<{ contacts?: unknown[]; data?: unknown[] }>(
+    `/contacts/business/${encodeURIComponent(businessId)}`,
   );
 }
 
@@ -130,6 +174,52 @@ export async function updateContact(contactId: string, payload: Record<string, u
 
 export async function deleteContact(contactId: string) {
   return apiClient<{ ok: boolean }>(`/contacts/${encodeURIComponent(contactId)}`, {
+    method: "DELETE",
+  });
+}
+
+export async function addContactsToBusiness(locationId: string, contactIds: string[], businessId: string | null) {
+  return apiClient<{ success?: boolean; ids?: string[] }>("/contacts/bulk/business", {
+    method: "POST",
+    body: JSON.stringify({
+      locationId,
+      ids: contactIds,
+      businessId,
+    }),
+  });
+}
+
+export async function getBusinesses(locationId: string) {
+  return apiClient<{ businesses?: GhlBusiness[]; data?: { businesses?: GhlBusiness[] } }>(
+    `/businesses/?locationId=${encodeURIComponent(locationId)}&limit=100`,
+  );
+}
+
+export async function getBusiness(businessId: string) {
+  return apiClient<{ business?: GhlBusiness; buiseness?: GhlBusiness; data?: GhlBusiness }>(
+    `/businesses/${encodeURIComponent(businessId)}`,
+  );
+}
+
+export async function createBusiness(payload: Record<string, unknown>) {
+  return apiClient<{ business?: GhlBusiness; buiseness?: GhlBusiness; data?: GhlBusiness }>("/businesses/", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateBusiness(businessId: string, payload: Record<string, unknown>) {
+  return apiClient<{ business?: GhlBusiness; buiseness?: GhlBusiness; data?: GhlBusiness }>(
+    `/businesses/${encodeURIComponent(businessId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export async function deleteBusiness(businessId: string) {
+  return apiClient<{ ok?: boolean; success?: boolean }>(`/businesses/${encodeURIComponent(businessId)}`, {
     method: "DELETE",
   });
 }

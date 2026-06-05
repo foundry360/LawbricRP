@@ -1,5 +1,12 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { corsHeaders, getRequestContext, handleError, jsonResponse, readJsonBody } from "../_shared/case-utils.ts";
+import {
+  corsHeaders,
+  getRequestContext,
+  handleError,
+  hydrateTaskAssigneeAvatars,
+  jsonResponse,
+  readJsonBody,
+} from "../_shared/case-utils.ts";
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -15,7 +22,7 @@ serve(async (req) => {
       .select(`
         *,
         case:cases(id, case_number, case_name, primary_contact_name),
-        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email)
+        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
       `)
       .eq("location_id", context.location.id)
       .order("due_at", { ascending: true, nullsFirst: false })
@@ -37,7 +44,8 @@ serve(async (req) => {
     const { data, error } = await query;
     if (error) throw new Error(error.message);
 
-    return jsonResponse({ ok: true, tasks: data ?? [] });
+    const tasks = await hydrateTaskAssigneeAvatars(context, data ?? []);
+    return jsonResponse({ ok: true, tasks });
   } catch (error) {
     return handleError(error);
   }

@@ -29,6 +29,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Checkbox } from "@/components/ui/checkbox";
+import { DatePicker } from "@/components/DatePicker";
 import {
   Command,
   CommandEmpty,
@@ -1777,14 +1778,14 @@ function BookingSheet(props: BookingSheetProps) {
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-2">
                 <Label>Date</Label>
-                <Input
-                  type="date"
-                  required
-                  min={format(new Date(), "yyyy-MM-dd")}
+                <DatePicker
                   value={props.bookingDate ? format(props.bookingDate, "yyyy-MM-dd") : ""}
-                  onChange={(event) => {
-                    if (event.target.value) props.setBookingDate(new Date(`${event.target.value}T12:00:00`));
+                  onValueChange={(value) => {
+                    if (value) props.setBookingDate(new Date(`${value}T12:00:00`));
                   }}
+                  placeholder="Select date"
+                  minDate={startOfDay(new Date())}
+                  clearable={false}
                 />
               </div>
               <div className="space-y-2">
@@ -2068,11 +2069,13 @@ function EditEventForm(props: any) {
       <div className="grid grid-cols-2 gap-4">
         <div className="space-y-2">
           <Label>Date</Label>
-          <Input
-            type="date"
-            required
+          <DatePicker
             value={props.editFormData.date ? format(props.editFormData.date, "yyyy-MM-dd") : ""}
-            onChange={(event) => event.target.value && props.setEditFormData({ ...props.editFormData, date: new Date(`${event.target.value}T12:00:00`), slot: "" })}
+            onValueChange={(value) => {
+              if (value) props.setEditFormData({ ...props.editFormData, date: new Date(`${value}T12:00:00`), slot: "" });
+            }}
+            placeholder="Select date"
+            clearable={false}
           />
         </div>
         <div className="space-y-2">

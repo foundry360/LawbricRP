@@ -36,6 +36,75 @@ export async function readJsonBody(req: Request) {
   }
 }
 
+function getAvatarUrlFromMetadata(metadata?: Record<string, unknown> | null) {
+  const possibleValues = [
+    metadata?.avatar_url,
+    metadata?.avatarUrl,
+    metadata?.profilePhoto,
+    metadata?.profile_photo,
+    metadata?.profilePicture,
+    metadata?.profile_picture,
+    metadata?.picture,
+  ];
+  const avatarUrl = possibleValues.find((value) => typeof value === "string" && value.trim().length > 0);
+  return typeof avatarUrl === "string" ? avatarUrl.trim() : "";
+}
+
+async function getAuthAvatarUrl(context: RequestContext, userId: string) {
+  try {
+    const { data, error } = await context.supabase.auth.admin.getUserById(userId);
+    if (error || !data?.user) return "";
+    return getAvatarUrlFromMetadata(data.user.user_metadata as Record<string, unknown> | null);
+  } catch {
+    return "";
+  }
+}
+
+export async function hydrateTaskAssigneeAvatars<T extends { assigned_user_id?: string | null; assigned_user?: any }>(
+  context: RequestContext,
+  tasks: T[],
+) {
+  const missingAvatarUserIds = Array.from(
+    new Set(
+      tasks
+        .map((task) => task.assigned_user?.id || task.assigned_user_id)
+        .filter((userId) => typeof userId === "string" && userId)
+        .filter((userId) => {
+          const task = tasks.find((item) => (item.assigned_user?.id || item.assigned_user_id) === userId);
+          return task?.assigned_user && !task.assigned_user.avatar_url;
+        }) as string[],
+    ),
+  );
+
+  if (missingAvatarUserIds.length === 0) return tasks;
+
+  const avatarEntries = await Promise.all(
+    missingAvatarUserIds.map(async (userId) => [userId, await getAuthAvatarUrl(context, userId)] as const),
+  );
+  const avatarMap = new Map(avatarEntries.filter(([, avatarUrl]) => Boolean(avatarUrl)));
+
+  if (avatarMap.size === 0) return tasks;
+
+  await Promise.all(
+    Array.from(avatarMap.entries()).map(([userId, avatarUrl]) =>
+      context.supabase.from("profiles").update({ avatar_url: avatarUrl }).eq("id", userId),
+    ),
+  );
+
+  return tasks.map((task) => {
+    const userId = task.assigned_user?.id || task.assigned_user_id;
+    const avatarUrl = userId ? avatarMap.get(userId) : "";
+    if (!avatarUrl || !task.assigned_user) return task;
+    return {
+      ...task,
+      assigned_user: {
+        ...task.assigned_user,
+        avatar_url: avatarUrl,
+      },
+    };
+  });
+}
+
 function getBearerToken(req: Request) {
   return req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
 }

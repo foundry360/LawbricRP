@@ -6,6 +6,7 @@ import {
   Calendar,
   ChevronDown,
   ChevronUp,
+  Eye,
   Filter,
   LayoutGrid,
   List,
@@ -16,8 +17,8 @@ import {
   Plus,
   Search,
   Trash2,
-  User,
 } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
@@ -46,6 +47,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getContacts } from "@/lib/api";
+import { getAvatarInitials } from "@/lib/avatar";
 import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -69,7 +71,7 @@ type CaseListView = {
 };
 
 const defaultCaseListViews: CaseListView[] = [
-  { id: "all", name: "All Cases", system: true, filters: {} },
+  { id: "all", name: "All Matters", system: true, filters: {} },
   { id: "open", name: "Open", system: true, filters: { status: "open" } },
   { id: "pending", name: "Pending", system: true, filters: { status: "pending" } },
   { id: "closed", name: "Closed", system: true, filters: { status: "closed" } },
@@ -136,6 +138,26 @@ function formatDate(value?: string) {
   return Number.isNaN(date.getTime()) ? "Recently" : date.toLocaleDateString();
 }
 
+function formatContactDisplayName(value?: string | null) {
+  const name = value?.trim();
+  if (!name) return "";
+  return name
+    .split(/\s+/)
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function getContactAvatarUrl(contact: any) {
+  return (
+    contact?.avatarUrl ||
+    contact?.profilePhoto ||
+    contact?.profilePicture ||
+    contact?.photo ||
+    contact?.imageUrl ||
+    ""
+  );
+}
+
 export function CasesPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -195,8 +217,8 @@ export function CasesPage() {
       setCases(rows);
     } catch (error) {
       toast({
-        title: "Cases Not Loaded",
-        description: getUserFriendlyErrorMessage(error, "Could not load cases. Please try again."),
+        title: "Matters Not Loaded",
+        description: getUserFriendlyErrorMessage(error, "Could not load matters. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -223,8 +245,8 @@ export function CasesPage() {
         setUsers(assignableUsers);
       } catch (error) {
         toast({
-          title: "Cases Not Loaded",
-          description: getUserFriendlyErrorMessage(error, "Could not load case data. Please try again."),
+          title: "Matters Not Loaded",
+          description: getUserFriendlyErrorMessage(error, "Could not load matter data. Please try again."),
           variant: "destructive",
         });
       } finally {
@@ -336,12 +358,12 @@ export function CasesPage() {
     try {
       await deleteCase({ locationId, caseId: caseToDelete.id });
       setCases((current) => current.filter((caseRecord) => caseRecord.id !== caseToDelete.id));
-      toast({ title: "Case Deleted", description: `${caseToDelete.case_name} was permanently deleted.` });
+      toast({ title: "Matter Deleted", description: `${caseToDelete.case_name} was permanently deleted.` });
       setCaseToDelete(null);
     } catch (error) {
       toast({
-        title: "Case Not Deleted",
-        description: getUserFriendlyErrorMessage(error, "Could not delete this case. Please try again."),
+        title: "Matter Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -369,8 +391,8 @@ export function CasesPage() {
       <DeleteConfirmationDialog
         open={Boolean(caseToDelete)}
         onOpenChange={(open) => !open && setCaseToDelete(null)}
-        title="Permanently delete case?"
-        recordType="case"
+        title="Permanently delete matter?"
+        recordType="matter"
         recordName={caseToDelete?.case_name}
         isDeleting={isDeletingCase}
         onConfirm={handleDeleteCase}
@@ -397,7 +419,7 @@ export function CasesPage() {
 
       <div className="flex w-full flex-col items-start justify-between gap-4 overflow-visible xl:flex-row xl:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
-          <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">Cases</h2>
+          <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">Matters</h2>
           <Tabs
             value={activeListViewId}
             onValueChange={(value) => {
@@ -491,7 +513,7 @@ export function CasesPage() {
                 </Button>
                 <Input
                   id="case-search"
-                  placeholder="Search cases..."
+                  placeholder="Search matters..."
                   className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
                     isSearchExpanded || searchTerm ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
                   }`}
@@ -527,7 +549,7 @@ export function CasesPage() {
                 <PopoverContent className="right-0 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold">Filter Cases</div>
+                      <div className="text-sm font-semibold">Filter Matters</div>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -658,15 +680,15 @@ export function CasesPage() {
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <span className="ml-3 text-muted-foreground">Loading cases...</span>
+          <span className="ml-3 text-muted-foreground">Loading matters...</span>
         </div>
       ) : cases.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/40 bg-muted/5 px-4 py-20 text-center">
           <div className="mb-4 rounded-full bg-muted/30 p-4 text-muted-foreground/50">
             <Briefcase className="h-8 w-8" />
           </div>
-          <h3 className="mb-1 text-lg font-medium text-muted-foreground">No cases found</h3>
-          <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by creating your first case.</p>
+          <h3 className="mb-1 text-lg font-medium text-muted-foreground">No matters found</h3>
+          <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by creating your first matter.</p>
           <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm">
             <Plus className="h-6 w-6" />
           </Button>
@@ -688,6 +710,7 @@ export function CasesPage() {
           ) : (
             <CaseTable
               cases={paginatedCases}
+              contacts={contacts}
               navigate={navigate}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
@@ -699,7 +722,7 @@ export function CasesPage() {
           {filteredCases.length === 0 && (
             <div className="rounded-lg border-2 border-dashed border-muted-foreground/40 bg-card py-12 text-center">
               <Briefcase className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-              <h3 className="text-lg font-medium text-foreground">No cases found</h3>
+              <h3 className="text-lg font-medium text-foreground">No matters found</h3>
               <p className="mt-1 text-muted-foreground">Try adjusting your search or filters.</p>
             </div>
           )}
@@ -710,7 +733,7 @@ export function CasesPage() {
               {" - "}
               <span className="font-medium text-foreground">{lastVisibleRow}</span>
               {" of "}
-              <span className="font-medium text-foreground">{sortedCases.length}</span> cases
+              <span className="font-medium text-foreground">{sortedCases.length}</span> matters
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -871,6 +894,7 @@ function CaseActions({
             onView();
           }}
         >
+          <Eye className="mr-2 h-4 w-4" />
           View
         </DropdownMenuItem>
         <DropdownMenuItem
@@ -879,15 +903,16 @@ function CaseActions({
             onEdit();
           }}
         >
+          <Pencil className="mr-2 h-4 w-4" />
           Edit
         </DropdownMenuItem>
         <DropdownMenuItem
-          className="text-destructive"
           onClick={(event) => {
             event.stopPropagation();
             onDelete();
           }}
         >
+          <Trash2 className="mr-2 h-4 w-4" />
           Delete
         </DropdownMenuItem>
       </DropdownMenuContent>
@@ -897,6 +922,7 @@ function CaseActions({
 
 function CaseTable({
   cases,
+  contacts,
   navigate,
   handleSort,
   renderSortIcon,
@@ -904,6 +930,7 @@ function CaseTable({
   onDelete,
 }: {
   cases: CaseRecord[];
+  contacts: any[];
   navigate: (path: string) => void;
   handleSort: (column: keyof CaseRecord) => void;
   renderSortIcon: (column: keyof CaseRecord) => ReactNode;
@@ -911,7 +938,7 @@ function CaseTable({
   onDelete: (caseRecord: CaseRecord) => void;
 }) {
   const columns: Array<[keyof CaseRecord, string]> = [
-    ["case_name", "Case"],
+    ["case_name", "Matter"],
     ["primary_contact_name", "Client"],
     ["status", "Status"],
     ["case_type", "Practice Area"],
@@ -939,7 +966,24 @@ function CaseTable({
           </tr>
         </thead>
         <tbody>
-          {cases.map((caseRecord) => (
+          {cases.map((caseRecord) => {
+            const matchedContact = contacts.find((contact) => {
+              const contactName = formatContactName(contact);
+              return (
+                contact.id === caseRecord.ghl_contact_id ||
+                contact.email && contact.email === caseRecord.primary_contact_email ||
+                contactName && caseRecord.primary_contact_name &&
+                  contactName.toLowerCase() === caseRecord.primary_contact_name.toLowerCase()
+              );
+            });
+            const clientName = formatContactDisplayName(caseRecord.primary_contact_name) || caseRecord.ghl_contact_id;
+            const clientAvatarUrl = getContactAvatarUrl(matchedContact);
+            const clientInitials = getAvatarInitials(
+              { fullName: clientName, email: caseRecord.primary_contact_email || matchedContact?.email },
+              "C",
+            );
+
+            return (
             <tr
               key={caseRecord.id}
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
@@ -959,9 +1003,16 @@ function CaseTable({
                 </div>
               </td>
               <td className="px-4 py-2 text-foreground/70">
-                <div className="flex items-center">
-                  <User className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span>{caseRecord.primary_contact_name || caseRecord.ghl_contact_id}</span>
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-8 w-8">
+                    {clientAvatarUrl ? (
+                      <AvatarImage src={clientAvatarUrl} alt={`${clientInitials} avatar`} />
+                    ) : null}
+                    <AvatarFallback className="bg-blue-50 text-xs text-primary">
+                      {clientInitials}
+                    </AvatarFallback>
+                  </Avatar>
+                  <span>{clientName}</span>
                 </div>
               </td>
               <td className="px-4 py-2">
@@ -985,7 +1036,8 @@ function CaseTable({
                 />
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1032,7 +1084,7 @@ function CaseListViewSheet({
     if (!name.trim()) {
       toast({
         title: "List Name Required",
-        description: "Please enter a name for this case list view.",
+        description: "Please enter a name for this matter list view.",
         variant: "destructive",
       });
       return;
@@ -1057,7 +1109,7 @@ function CaseListViewSheet({
         <SheetHeader>
           <SheetTitle>{editingListView ? "Edit List View" : "Create List View"}</SheetTitle>
           <SheetDescription>
-            {editingListView ? "Update the filters for this case list view." : "Define filters to save a custom view of your cases."}
+            {editingListView ? "Update the filters for this matter list view." : "Define filters to save a custom view of your matters."}
           </SheetDescription>
         </SheetHeader>
 
@@ -1241,13 +1293,13 @@ function CreateCaseSheet({
           assigned_user_name: selectedUser ? getUserName(selectedUser) : "",
         },
       });
-      toast({ title: "Case Created", description: `${caseRecord.case_name} has been created.` });
+      toast({ title: "Matter Created", description: `${caseRecord.case_name} has been created.` });
       resetForm();
       onCreated(caseRecord);
     } catch (error) {
       toast({
-        title: "Case Not Created",
-        description: getUserFriendlyErrorMessage(error, "Could not create the case. Please try again."),
+        title: "Matter Not Created",
+        description: getUserFriendlyErrorMessage(error, "Could not create the matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -1259,12 +1311,12 @@ function CreateCaseSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="overflow-y-auto p-6 sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>Create Case</SheetTitle>
+          <SheetTitle>Create Matter</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
-            <Label>Case Number</Label>
+            <Label>Matter Number</Label>
             <Input
               value={form.caseNumber}
               onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
@@ -1273,7 +1325,7 @@ function CreateCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Case Name</Label>
+            <Label>Matter Name</Label>
             <Input
               value={form.caseName}
               onChange={(event) => setForm({ ...form, caseName: event.target.value })}
@@ -1348,7 +1400,7 @@ function CreateCaseSheet({
             <Textarea
               value={form.notes}
               onChange={(event) => setForm({ ...form, notes: event.target.value })}
-              placeholder="Optional context for this case"
+              placeholder="Optional context for this matter"
               rows={3}
             />
           </div>
@@ -1359,7 +1411,7 @@ function CreateCaseSheet({
             </Button>
             <Button type="submit" className="flex-1" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Create Case
+              Create Matter
             </Button>
           </div>
         </form>
@@ -1423,11 +1475,11 @@ function EditCaseSheet({
         assignedUserId: form.assignedUserId || null,
       });
       onSaved(updatedCase);
-      toast({ title: "Case Updated", description: `${updatedCase.case_name} has been saved.` });
+      toast({ title: "Matter Updated", description: `${updatedCase.case_name} has been saved.` });
     } catch (error) {
       toast({
-        title: "Case Not Updated",
-        description: getUserFriendlyErrorMessage(error, "Could not update this case. Please try again."),
+        title: "Matter Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update this matter. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -1439,12 +1491,12 @@ function EditCaseSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>Edit Case</SheetTitle>
+          <SheetTitle>Edit Matter</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
-            <Label>Case Number</Label>
+            <Label>Matter Number</Label>
             <Input
               value={form.caseNumber}
               onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
@@ -1453,7 +1505,7 @@ function EditCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Case Name</Label>
+            <Label>Matter Name</Label>
             <Input
               value={form.caseName}
               onChange={(event) => setForm({ ...form, caseName: event.target.value })}

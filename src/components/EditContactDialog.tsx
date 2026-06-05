@@ -3,6 +3,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/DatePicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { TagMultiSelect } from "@/components/TagMultiSelect";
 import {
@@ -339,7 +340,11 @@ export function EditContactDialog({
                   <FormItem>
                     <FormLabel>Date of Birth</FormLabel>
                     <FormControl>
-                      <Input type="date" {...field} value={field.value !== "N/A" ? field.value : ""} />
+                      <DatePicker
+                        value={field.value && field.value !== "N/A" ? field.value : ""}
+                        onValueChange={field.onChange}
+                        placeholder="Select date of birth"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>

@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { CalendarPage } from "@/pages/CalendarPage";
 import { CaseDetailPage } from "@/pages/CaseDetailPage";
 import { CasesPage } from "@/pages/CasesPage";
+import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
 import { ContactDetailPage } from "@/pages/ContactDetailPage";
 import { Layout } from "@/components/Layout";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -37,6 +38,16 @@ function ContactDetailShell() {
     <RequireAuth>
       <Layout>
         <ContactDetailPage />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
+function CompanyDetailShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <CompanyDetailPage />
       </Layout>
     </RequireAuth>
   );
@@ -98,6 +109,7 @@ export function App() {
         <Route path="/reset-password" element={<ResetPassword />} />
         <Route path="/" element={<IndexShell />} />
         <Route path="/contact/:contactId" element={<ContactDetailShell />} />
+        <Route path="/company/:companyId" element={<CompanyDetailShell />} />
         <Route path="/dashboard" element={<AppShell title="Dashboard" />} />
         <Route path="/cases" element={<CasesShell />} />
         <Route path="/case/:caseId" element={<CaseDetailShell />} />
@@ -105,6 +117,8 @@ export function App() {
         <Route path="/tasks" element={<TasksShell />} />
         <Route path="/users" element={<UsersShell />} />
         <Route path="/leads" element={<AppShell title="Leads" />} />
+        <Route path="/tools/data" element={<AppShell title="Data" />} />
+        <Route path="/tools/pipelines" element={<AppShell title="Pipelines" />} />
         <Route path="/billing" element={<AppShell title="Billing" />} />
         <Route path="/documents" element={<AppShell title="Documents" />} />
         <Route path="/payments" element={<AppShell title="Payments" />} />

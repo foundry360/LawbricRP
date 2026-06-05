@@ -1,7 +1,9 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { Building2, UserRound } from "lucide-react";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/DatePicker";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { TagMultiSelect } from "@/components/TagMultiSelect";
 import {
@@ -17,24 +19,42 @@ import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import {
   Sheet,
   SheetContent,
-  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
-const contactSchema = z.object({
-  name: z.string().min(2, "Name is required"),
-  email: z.string().email("Invalid email address").or(z.literal("")),
-  phone: z.string().min(10, "Phone number is required").or(z.literal("")),
-  type: z.string().min(1, "Account type is required"),
-  status: z.string().min(1, "Status is required"),
-  caseType: z.string().min(1, "Practice area is required"),
-  attorneyAssigned: z.string().min(1, "Attorney name is required"),
-  dob: z.string().optional(),
-  gender: z.string().optional(),
-  language: z.string().optional(),
-  tags: z.array(z.string()).optional(),
-});
+const contactSchema = z
+  .object({
+    contactKind: z.enum(["person", "company"]).optional(),
+    name: z.string().optional(),
+    companyName: z.string().optional(),
+    primaryContactName: z.string().optional(),
+    website: z.string().optional(),
+    industry: z.string().optional(),
+    companyAddress: z.string().optional(),
+    email: z.string().email("Invalid email address").or(z.literal("")),
+    phone: z.string().min(10, "Phone number is required").or(z.literal("")),
+    type: z.string().min(1, "Account type is required"),
+    status: z.string().min(1, "Status is required"),
+    caseType: z.string().min(1, "Practice area is required"),
+    attorneyAssigned: z.string().min(1, "Attorney name is required"),
+    dob: z.string().optional(),
+    gender: z.string().optional(),
+    language: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+  })
+  .superRefine((data, context) => {
+    const contactKind = data.contactKind || "person";
+
+    if (contactKind === "person" && !data.name?.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["name"], message: "Name is required" });
+    }
+
+    if (contactKind === "company" && !data.companyName?.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["companyName"], message: "Company name is required" });
+    }
+  });
 
 const CONTACT_STATUS_OPTIONS = ["Active", "Pending", "Consultation", "Closed"];
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
@@ -90,7 +110,13 @@ export function AddContactDialog({
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
     defaultValues: {
+      contactKind: "person",
       name: "",
+      companyName: "",
+      primaryContactName: "",
+      website: "",
+      industry: "",
+      companyAddress: "",
       email: "",
       phone: "",
       type: "Client",
@@ -107,13 +133,16 @@ export function AddContactDialog({
   const onSubmit = async (data: ContactFormValues) => {
     await onAddContact(data);
 
+    const formContactKind = data.contactKind || "person";
+    const fullName = formContactKind === "company" ? data.primaryContactName || data.companyName || "" : data.name || "";
     const trackingPayload = {
       type: "external_form_submission",
       timestamp: Date.now(),
       formId: "Add Contact Form",
       formData: {
-        first_name: data.name.split(" ")[0] || data.name,
-        last_name: data.name.split(" ").slice(1).join(" "),
+        first_name: fullName.split(" ")[0] || fullName,
+        last_name: fullName.split(" ").slice(1).join(" "),
+        company_name: formContactKind === "company" ? data.companyName : "",
         email: data.email,
         phone: formatPhoneNumber(data.phone, ""),
         "contact.contact_type": data.type,
@@ -123,11 +152,12 @@ export function AddContactDialog({
       formLabels: {
         first_name: "First Name",
         last_name: "Last Name",
+        company_name: "Company Name",
         email: "Email",
         phone: "Phone",
         "contact.contact_type": "Contact Type",
         "contact.status": "Status",
-        "contact.case_type": "Case Type",
+        "contact.case_type": "Practice Area",
       },
       url: window.location.href,
       title: document.title,
@@ -153,6 +183,7 @@ export function AddContactDialog({
     form.reset();
     onOpenChange(false);
   };
+  const contactKind = form.watch("contactKind") || "person";
 
   return (
     <Sheet
@@ -165,35 +196,187 @@ export function AddContactDialog({
       <SheetContent className="flex h-screen w-full flex-col overflow-hidden p-0 sm:max-w-md">
         <SheetHeader className="shrink-0 space-y-1 px-6 pb-4 pt-6">
           <SheetTitle className="text-lg font-semibold">Add New Contact</SheetTitle>
-          <SheetDescription>
-            Enter the details of the new contact here. Click save when you're done.
-          </SheetDescription>
         </SheetHeader>
         <Form {...form}>
           <form onSubmit={form.handleSubmit(onSubmit)} className="flex min-h-0 flex-1 flex-col">
             <div className="hover-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6">
+            <Tabs
+              value={contactKind}
+              onValueChange={(value) => form.setValue("contactKind", value as NonNullable<ContactFormValues["contactKind"]>)}
+              className="w-full"
+            >
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger
+                  value="person"
+                  className="gap-2 rounded-md data-[state=active]:bg-[#344256] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                >
+                  <UserRound className="h-4 w-4" />
+                  Person
+                </TabsTrigger>
+                <TabsTrigger
+                  value="company"
+                  className="gap-2 rounded-md data-[state=active]:bg-[#344256] data-[state=active]:text-white data-[state=active]:shadow-sm"
+                >
+                  <Building2 className="h-4 w-4" />
+                  Company
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="person" className="mt-4 space-y-4">
+                <FormField
+                  control={form.control}
+                  name="name"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Full Name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Jane Doe" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="dob"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Date of Birth</FormLabel>
+                      <FormControl>
+                        <DatePicker
+                          value={field.value || ""}
+                          onValueChange={field.onChange}
+                          placeholder="Select date of birth"
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="gender"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Gender</FormLabel>
+                      <FormControl>
+                        <SearchableSelect
+                          value={field.value || ""}
+                          onValueChange={field.onChange}
+                          options={GENDER_OPTIONS}
+                          placeholder="Select gender"
+                          searchPlaceholder="Search genders..."
+                          emptyMessage="No genders found."
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="language"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Language</FormLabel>
+                      {languageOptions.length > 0 ? (
+                        <FormControl>
+                          <SearchableSelect
+                            value={field.value || ""}
+                            onValueChange={field.onChange}
+                            options={languageOptions}
+                            placeholder="Select language"
+                            searchPlaceholder="Search languages..."
+                            emptyMessage="No languages found."
+                          />
+                        </FormControl>
+                      ) : (
+                        <FormControl>
+                          <Input placeholder="e.g. English" {...field} />
+                        </FormControl>
+                      )}
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </TabsContent>
+              <TabsContent value="company" className="mt-4 space-y-4">
+                <FormField
+                  control={form.control}
+                  name="companyName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Company Name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Acme Legal Group" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="primaryContactName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Primary Contact</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Jane Doe" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="website"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Website</FormLabel>
+                      <FormControl>
+                        <Input placeholder="https://example.com" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="industry"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Industry</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g. Real Estate" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={form.control}
+                  name="companyAddress"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Company Address</FormLabel>
+                      <FormControl>
+                        <Input placeholder="Street, City, State ZIP" {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              </TabsContent>
+            </Tabs>
+
             <div className="grid grid-cols-1 gap-4">
-              <FormField
-                control={form.control}
-                name="name"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Full Name</FormLabel>
-                    <FormControl>
-                      <Input placeholder="Jane Doe" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
               <FormField
                 control={form.control}
                 name="email"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Email</FormLabel>
+                    <FormLabel>{contactKind === "company" ? "Company Email" : "Email"}</FormLabel>
                     <FormControl>
-                      <Input placeholder="jane@example.com" {...field} />
+                      <Input placeholder={contactKind === "company" ? "info@example.com" : "jane@example.com"} {...field} />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -342,67 +525,6 @@ export function AddContactDialog({
               )}
             />
 
-            <div className="grid grid-cols-1 gap-4">
-              <FormField
-                control={form.control}
-                name="dob"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Date of Birth</FormLabel>
-                    <FormControl>
-                      <Input type="date" {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="gender"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Gender</FormLabel>
-                    <FormControl>
-                      <SearchableSelect
-                        value={field.value || ""}
-                        onValueChange={field.onChange}
-                        options={GENDER_OPTIONS}
-                        placeholder="Select gender"
-                        searchPlaceholder="Search genders..."
-                        emptyMessage="No genders found."
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="language"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Language</FormLabel>
-                    {languageOptions.length > 0 ? (
-                      <FormControl>
-                        <SearchableSelect
-                          value={field.value || ""}
-                          onValueChange={field.onChange}
-                          options={languageOptions}
-                          placeholder="Select language"
-                          searchPlaceholder="Search languages..."
-                          emptyMessage="No languages found."
-                        />
-                      </FormControl>
-                    ) : (
-                      <FormControl>
-                        <Input placeholder="e.g. English" {...field} />
-                      </FormControl>
-                    )}
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </div>
             </div>
 
             <div className="flex shrink-0 justify-end gap-2 border-t bg-background px-6 py-4">
