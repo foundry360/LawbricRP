@@ -2,15 +2,26 @@ import { ReactNode, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { supabase } from "@/lib/supabase";
 
+let cachedIsAuthed: boolean | null = null;
+
 export function RequireAuth({ children }: { children: ReactNode }) {
-  const [isLoading, setIsLoading] = useState(true);
-  const [isAuthed, setIsAuthed] = useState(false);
+  const [isLoading, setIsLoading] = useState(cachedIsAuthed === null);
+  const [isAuthed, setIsAuthed] = useState(cachedIsAuthed ?? false);
 
   useEffect(() => {
+    let isMounted = true;
+
     supabase.auth.getSession().then(({ data }) => {
-      setIsAuthed(Boolean(data.session));
+      if (!isMounted) return;
+
+      cachedIsAuthed = Boolean(data.session);
+      setIsAuthed(cachedIsAuthed);
       setIsLoading(false);
     });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   if (isLoading) {

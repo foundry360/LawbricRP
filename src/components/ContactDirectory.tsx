@@ -53,6 +53,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
+  addContactsToBusiness,
   createBusiness,
   createContact,
   createLocationTag,
@@ -76,8 +77,23 @@ import { createTagMetadata, loadTagsWithMetadata } from "@/lib/tag-metadata";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
-type ContactStatus = "Active" | "Pending" | "Closed" | "Consultation";
-type ContactType = "Client" | "Attorney" | "Expert Witness" | "Opposing Counsel" | "Lead" | string;
+type ContactStatus = "Active" | "Inactive";
+type ContactType = string;
+const CONTACT_STATUS_OPTIONS: ContactStatus[] = ["Active", "Inactive"];
+const ACCOUNT_TYPE_OPTIONS = [
+  "Prospect",
+  "Client (Active)",
+  "Client (Former)",
+  "Referral Partner",
+  "Partner",
+  "Vendor",
+  "Opposing Party",
+  "Expert / Witness",
+  "Court / Agency",
+  "Internal",
+];
+const LEGACY_ACCOUNT_TYPE_TAGS = ["Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
+const DEFAULT_ACCOUNT_TYPE = ACCOUNT_TYPE_OPTIONS[0];
 
 type Contact = {
   id: string;
@@ -105,33 +121,69 @@ function getStatusColor(status: ContactStatus) {
   switch (status) {
     case "Active":
       return "bg-green-100 text-green-800";
-    case "Pending":
-      return "bg-yellow-100 text-yellow-800";
-    case "Closed":
+    case "Inactive":
       return "bg-gray-100 text-gray-800";
-    case "Consultation":
-      return "bg-blue-100 text-blue-800";
     default:
       return "bg-gray-100 text-gray-800";
   }
 }
 
-function getCustomFieldValue(contact: any, customFieldsMap: Map<string, string>, name: string) {
-  let field = contact.customFields?.find(
-    (customField: any) =>
-      customField.name?.toLowerCase() === name.toLowerCase() || customField.id === name,
-  );
+function normalizeCustomFieldName(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
 
-  if (field) return field.value || field.field_value;
+function normalizeCustomFieldLookup(value: unknown) {
+  return normalizeCustomFieldName(value).replace(/[._-]+/g, " ");
+}
+
+function customFieldMatchesName(field: any, name: string) {
+  const normalizedName = normalizeCustomFieldLookup(name);
+  return [field?.name, field?.label, field?.fieldName, field?.fieldKey, field?.key]
+    .map((value) => normalizeCustomFieldLookup(value))
+    .some((value) => value === normalizedName || value.endsWith(` ${normalizedName}`));
+}
+
+function buildCustomFieldsMap(customFields: any[]) {
+  const entries = customFields.flatMap((customField: any) => {
+    const fieldName = normalizeCustomFieldLookup(customField.name || customField.fieldKey || customField.key);
+    return [customField.id, customField.fieldKey]
+      .filter(Boolean)
+      .map((fieldId) => [String(fieldId), fieldName] as const);
+  });
+
+  return new Map(entries);
+}
+
+function getCustomField(customFields: any[], name: string) {
+  return customFields.find((field) => customFieldMatchesName(field, name));
+}
+
+function getCustomFieldValue(contact: any, customFieldsMap: Map<string, string>, name: string) {
+  const normalizedName = normalizeCustomFieldLookup(name);
+  let field = contact.customFields?.find((customField: any) => {
+    const fieldId = String(customField.id || customField.fieldId || customField.customFieldId || customField.fieldKey || "");
+    const mappedName = customFieldsMap.get(fieldId) || "";
+    return (
+      customFieldMatchesName(customField, name) ||
+      mappedName === normalizedName ||
+      mappedName.endsWith(` ${normalizedName}`)
+    );
+  });
+
+  if (field) return field.value ?? field.field_value ?? field.fieldValue;
 
   const fieldId = [...customFieldsMap.entries()].find(
-    ([, fieldName]) => fieldName === name.toLowerCase(),
+    ([, fieldName]) => fieldName === normalizedName || fieldName.endsWith(` ${normalizedName}`),
   )?.[0];
 
   if (!fieldId) return null;
 
-  field = contact.customFields?.find((customField: any) => customField.id === fieldId);
-  return field ? field.value || field.field_value : null;
+  field = contact.customFields?.find((customField: any) =>
+    [customField.id, customField.fieldId, customField.customFieldId, customField.fieldKey].some(
+      (candidate) => String(candidate || "") === fieldId,
+    ),
+  );
+  return field ? field.value ?? field.field_value ?? field.fieldValue : null;
 }
 
 function getFieldOptions(field: any) {
@@ -170,13 +222,20 @@ function getArrayFromResponse(response: any, key: string) {
 }
 
 function getCustomFieldId(customFields: any[], name: string) {
-  return customFields.find((field) => field.name?.trim().toLowerCase() === name)?.id;
+  return getCustomField(customFields, name)?.id;
+}
+
+function normalizeContactStatus(value: unknown): ContactStatus | null {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  return CONTACT_STATUS_OPTIONS.find((status) => status.toLowerCase() === normalized) || null;
 }
 
 function buildContactCustomFields(customFields: any[], data: ContactFormValues) {
   return [
     ["practice area", data.caseType],
     ["account type", data.type],
+    ["status", data.status],
     ["language", data.language],
     ["gender", data.gender],
     ["primary contact", data.primaryContactName],
@@ -186,8 +245,13 @@ function buildContactCustomFields(customFields: any[], data: ContactFormValues) 
     ["company address", data.companyAddress],
   ]
     .map(([name, value]) => {
-      const id = getCustomFieldId(customFields, String(name));
-      return id && value ? { id, field_value: value } : null;
+      const field = getCustomField(customFields, String(name));
+      if (!field || !value) return null;
+      return {
+        ...(field.id ? { id: field.id } : {}),
+        ...(field.fieldKey ? { key: field.fieldKey } : {}),
+        field_value: value,
+      };
     })
     .filter(Boolean);
 }
@@ -364,6 +428,8 @@ export function ContactDirectory() {
             description: "Could not load custom fields. Check the private integration scopes.",
           });
         }
+        const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
+        setCrmCustomFields(customFieldsList);
 
         let fetchedTags: GhlTag[] = [];
         try {
@@ -399,15 +465,8 @@ export function ContactDirectory() {
             description: "Could not load GHL company records. Check the private integration business scopes.",
           });
         }
-        const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
-        setCrmCustomFields(customFieldsList);
 
-        const customFieldsMap = new Map<string, string>(
-          customFieldsList.map((customField: any) => [
-            String(customField.id),
-            customField.name?.toLowerCase() || "",
-          ]),
-        );
+        const customFieldsMap = buildCustomFieldsMap(customFieldsList);
 
         const findField = (exactName: string, fallbackTerms: string[] = []) => {
           return customFieldsList.find(
@@ -426,7 +485,7 @@ export function ContactDirectory() {
         const paOptions = getFieldOptions(practiceAreaField);
         const langOptions = getFieldOptions(languageField);
 
-        if (accOptions.length > 0) setAccountTypeOptions(accOptions);
+        setAccountTypeOptions(accOptions.length > 0 ? accOptions : ACCOUNT_TYPE_OPTIONS);
         if (paOptions.length > 0) setPracticeAreaOptions(paOptions);
         if (langOptions.length > 0) setLanguageOptions(langOptions);
 
@@ -456,16 +515,15 @@ export function ContactDirectory() {
           const accountTypeValue =
             getCustomFieldValue(contact, customFieldsMap, "account type") ||
             tags.find((tag: string) =>
-              ["client", "attorney", "expert witness", "opposing counsel", "lead"].includes(tag.toLowerCase()),
+              [...ACCOUNT_TYPE_OPTIONS, ...LEGACY_ACCOUNT_TYPE_TAGS]
+                .map((option) => option.toLowerCase())
+                .includes(tag.toLowerCase()),
             );
           const type = Array.isArray(accountTypeValue)
             ? accountTypeValue.join(", ")
-            : accountTypeValue || "Client";
+            : accountTypeValue || DEFAULT_ACCOUNT_TYPE;
 
-          let status: ContactStatus = "Active";
-          if (tags.some((tag: string) => tag.toLowerCase().includes("pending"))) status = "Pending";
-          else if (tags.some((tag: string) => tag.toLowerCase().includes("closed"))) status = "Closed";
-          else if (tags.some((tag: string) => tag.toLowerCase().includes("consultation"))) status = "Consultation";
+          const status = normalizeContactStatus(getCustomFieldValue(contact, customFieldsMap, "status")) || "Active";
 
           const caseTypeValue =
             getCustomFieldValue(contact, customFieldsMap, "practice area") ||
@@ -547,7 +605,7 @@ export function ContactDirectory() {
   const buildContactTags = (data: ContactFormValues, existingTags: string[] = []) => {
     const appTagNames = new Set(tagOptions.map((tag) => tag.name.toLowerCase()));
     const systemTagNames = new Set(
-      [...accountTypeOptions, "Active", "Pending", "Consultation", "Closed", "Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"]
+      [...accountTypeOptions, ...ACCOUNT_TYPE_OPTIONS, ...LEGACY_ACCOUNT_TYPE_TAGS, ...CONTACT_STATUS_OPTIONS]
         .filter(Boolean)
         .map((tag) => tag.toLowerCase()),
     );
@@ -558,8 +616,17 @@ export function ContactDirectory() {
 
     const contactKindTags = data.contactKind === "company" ? ["Company"] : [];
     return Array.from(
-      new Set([...preservedTags, ...contactKindTags, data.type, data.status, ...(data.tags || [])].filter(Boolean)),
+      new Set([...preservedTags, ...contactKindTags, data.type, ...(data.tags || [])].filter(Boolean)),
     );
+  };
+
+  const loadLatestCustomFields = async () => {
+    if (!locationId) return crmCustomFields;
+
+    const fieldsResponse: any = await getCustomFields(locationId);
+    const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
+    setCrmCustomFields(customFieldsList);
+    return customFieldsList;
   };
 
   const handleCreateTag = async (name: string) => {
@@ -607,13 +674,20 @@ export function ContactDirectory() {
     try {
       const isCompany = newContactData.contactKind === "company";
       const displayName = (isCompany ? newContactData.companyName : newContactData.name)?.trim() || "";
-      const primaryName = (isCompany ? newContactData.primaryContactName : newContactData.name)?.trim() || displayName;
+      const selectedPrimaryContact = isCompany && newContactData.existingContactId
+        ? contacts.find((contact) => contact.id === newContactData.existingContactId && contact.recordKind === "contact")
+        : null;
+      const primaryName = (
+        isCompany
+          ? selectedPrimaryContact?.name || newContactData.primaryContactName
+          : newContactData.name
+      )?.trim() || displayName;
       const [firstName, ...rest] = primaryName.split(/\s+/);
       const assignedUser = systemUsers.find((user) => getUserId(user) === newContactData.attorneyAssigned);
 
       if (isCompany) {
         const companyDescription = [
-          newContactData.primaryContactName?.trim() ? `Primary Contact: ${newContactData.primaryContactName.trim()}` : "",
+          primaryName ? `Primary Contact: ${primaryName}` : "",
           newContactData.industry?.trim() ? `Industry: ${newContactData.industry.trim()}` : "",
           newContactData.caseType?.trim() ? `Practice Area: ${newContactData.caseType.trim()}` : "",
           newContactData.status?.trim() ? `Status: ${newContactData.status.trim()}` : "",
@@ -635,6 +709,58 @@ export function ContactDirectory() {
         const response: any = await createBusiness(businessPayload);
         const createdBusiness = response.business || response.buiseness || response.data?.business || response.data?.buiseness || response.data || response;
         const createdBusinessId = createdBusiness.id || crypto.randomUUID();
+        let linkedContactId = newContactData.existingContactId || "";
+        let createdCompanyContact: Contact | null = null;
+
+        if ((newContactData.primaryContactMode || "create") === "create") {
+          const contactPayload: Record<string, any> = {
+            locationId,
+            firstName,
+            lastName: rest.join(" "),
+            name: primaryName,
+            email: newContactData.primaryContactEmail?.trim(),
+            companyName: displayName,
+            businessId: createdBusinessId,
+            tags: ["Company Contact"],
+          };
+
+          if (newContactData.primaryContactPhone?.trim()) {
+            contactPayload.phone = formatPhoneNumber(newContactData.primaryContactPhone, "");
+          }
+          if (newContactData.primaryContactTitle?.trim()) {
+            contactPayload.title = newContactData.primaryContactTitle.trim();
+            contactPayload.jobTitle = newContactData.primaryContactTitle.trim();
+          }
+
+          const titleFieldId =
+            getCustomFieldId(crmCustomFields, "title") ||
+            getCustomFieldId(crmCustomFields, "job title") ||
+            getCustomFieldId(crmCustomFields, "contact title");
+          if (titleFieldId && newContactData.primaryContactTitle?.trim()) {
+            contactPayload.customFields = [{ id: titleFieldId, field_value: newContactData.primaryContactTitle.trim() }];
+          }
+
+          const contactResponse: any = await createContact(contactPayload);
+          const createdContact = contactResponse.contact || contactResponse.data?.contact || contactResponse.data || contactResponse;
+          linkedContactId = createdContact.id || crypto.randomUUID();
+          createdCompanyContact = {
+            id: linkedContactId,
+            recordKind: "contact",
+            name: primaryName,
+            email: newContactData.primaryContactEmail || "N/A",
+            phone: formatPhoneNumber(newContactData.primaryContactPhone || ""),
+            type: DEFAULT_ACCOUNT_TYPE,
+            status: "Active",
+            caseType: newContactData.caseType || "General",
+            attorneyAssigned: "Unassigned",
+            lastContact: "Just now",
+            tags: ["Company Contact"],
+          };
+        }
+
+        if (linkedContactId) {
+          await addContactsToBusiness(locationId, [linkedContactId], createdBusinessId);
+        }
 
         if (assignedUser) {
           await saveContactAssignment(createdBusinessId, getUserId(assignedUser));
@@ -655,7 +781,11 @@ export function ContactDirectory() {
           tags: ["Company"],
         };
 
-        setContacts((current) => [newCompany, ...current]);
+        setContacts((current) => [
+          newCompany,
+          ...(createdCompanyContact ? [createdCompanyContact] : []),
+          ...current,
+        ]);
         toast({ title: "Company Added", description: `${newCompany.name} has been added to Companies.` });
         return;
       }
@@ -676,7 +806,8 @@ export function ContactDirectory() {
       }
       if (newContactData.dob?.trim()) payload.dateOfBirth = newContactData.dob;
 
-      const customFields = buildContactCustomFields(crmCustomFields, newContactData);
+      const latestCustomFields = await loadLatestCustomFields();
+      const customFields = buildContactCustomFields(latestCustomFields, newContactData);
 
       if (customFields.length > 0) payload.customFields = customFields;
 
@@ -749,7 +880,8 @@ export function ContactDirectory() {
       if (updatedData.phone) payload.phone = formatPhoneNumber(updatedData.phone, "");
       if (updatedData.dob?.trim()) payload.dateOfBirth = updatedData.dob;
 
-      const customFields = buildContactCustomFields(crmCustomFields, updatedData);
+      const latestCustomFields = await loadLatestCustomFields();
+      const customFields = buildContactCustomFields(latestCustomFields, updatedData);
       if (customFields.length > 0) payload.customFields = customFields;
 
       const assignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
@@ -1072,9 +1204,7 @@ export function ContactDirectory() {
                         <SelectContent className="z-[150]">
                           <SelectItem value="All">Any Status</SelectItem>
                           <SelectItem value="Active">Active</SelectItem>
-                          <SelectItem value="Pending">Pending</SelectItem>
-                          <SelectItem value="Closed">Closed</SelectItem>
-                          <SelectItem value="Consultation">Consultation</SelectItem>
+                          <SelectItem value="Inactive">Inactive</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1320,6 +1450,9 @@ export function ContactDirectory() {
         tagOptions={tagOptions.map((tag) => tag.name)}
         onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
+        companyContactOptions={contacts
+          .filter((contact) => contact.recordKind === "contact")
+          .map((contact) => ({ id: contact.id, name: contact.name, email: contact.email }))}
       />
 
       <EditContactDialog

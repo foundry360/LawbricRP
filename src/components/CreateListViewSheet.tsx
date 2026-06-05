@@ -45,6 +45,19 @@ type CreateListViewSheetProps = {
   practiceAreaOptions?: string[];
 };
 
+const DEFAULT_ACCOUNT_TYPE_OPTIONS = [
+  "Prospect",
+  "Client (Active)",
+  "Client (Former)",
+  "Referral Partner",
+  "Partner",
+  "Vendor",
+  "Opposing Party",
+  "Expert / Witness",
+  "Court / Agency",
+  "Internal",
+];
+
 export function CreateListViewSheet({
   open,
   onOpenChange,
@@ -56,6 +69,7 @@ export function CreateListViewSheet({
   practiceAreaOptions = [],
 }: CreateListViewSheetProps) {
   const { toast } = useToast();
+  const effectiveAccountTypeOptions = accountTypeOptions.length > 0 ? accountTypeOptions : DEFAULT_ACCOUNT_TYPE_OPTIONS;
   const [name, setName] = useState("");
   const [status, setStatus] = useState<string>("All");
   const [type, setType] = useState<string>("All");
@@ -148,9 +162,7 @@ export function CreateListViewSheet({
                 <SelectContent>
                   <SelectItem value="All">Any Status</SelectItem>
                   <SelectItem value="Active">Active</SelectItem>
-                  <SelectItem value="Pending">Pending</SelectItem>
-                  <SelectItem value="Closed">Closed</SelectItem>
-                  <SelectItem value="Consultation">Consultation</SelectItem>
+                  <SelectItem value="Inactive">Inactive</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -163,14 +175,7 @@ export function CreateListViewSheet({
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="All">Any Account Type</SelectItem>
-                  <SelectItem value="Client">Client</SelectItem>
-                  <SelectItem value="Attorney">Attorney</SelectItem>
-                  <SelectItem value="Expert Witness">Expert Witness</SelectItem>
-                  <SelectItem value="Opposing Counsel">Opposing Counsel</SelectItem>
-                  {accountTypeOptions.map((option) => {
-                    if (["Client", "Attorney", "Expert Witness", "Opposing Counsel"].includes(option)) {
-                      return null;
-                    }
+                  {effectiveAccountTypeOptions.map((option) => {
                     return (
                       <SelectItem key={option} value={option}>
                         {option}

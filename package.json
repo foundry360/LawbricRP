@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc -b --pretty false",
+    "provision:account-type-field": "node scripts/provision-ghl-account-type-field.mjs",
+    "provision:contact-status-field": "node scripts/provision-ghl-contact-status-field.mjs",
     "provision:cases-object": "node scripts/provision-ghl-cases-object.mjs"
   },
   "dependencies": {

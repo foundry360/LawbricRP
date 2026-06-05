@@ -32,7 +32,8 @@ const contactSchema = z.object({
   tags: z.array(z.string()).optional(),
 });
 
-const CONTACT_STATUS_OPTIONS = ["Active", "Pending", "Consultation", "Closed"];
+const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"];
+const DEFAULT_ACCOUNT_TYPE = "Prospect";
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 export type ContactFormValues = z.infer<typeof contactSchema>;
@@ -104,8 +105,8 @@ export function EditContactDialog({
       name: "",
       email: "",
       phone: "",
-      type: "Client",
-      status: "Consultation",
+      type: DEFAULT_ACCOUNT_TYPE,
+      status: "Active",
       caseType: "",
       attorneyAssigned: "Unassigned",
       dob: "",
@@ -131,8 +132,8 @@ export function EditContactDialog({
         name: String(trimValue(contact.name) || ""),
         email: contact.email === "N/A" ? "" : String(trimValue(contact.email) || ""),
         phone: contact.phone === "N/A" ? "" : formatPhoneNumber(String(trimValue(contact.phone) || ""), ""),
-        type: String(findMatchingOption(contact.type, accountTypeOptions) || "Client"),
-        status: String(trimValue(contact.status) || "Consultation"),
+        type: String(findMatchingOption(contact.type, accountTypeOptions) || DEFAULT_ACCOUNT_TYPE),
+        status: String(findMatchingOption(contact.status, CONTACT_STATUS_OPTIONS) || "Active"),
         caseType: String(findMatchingOption(contact.caseType, practiceAreaOptions) || ""),
         attorneyAssigned: assignedUser?.id || "Unassigned",
         dob: contact.dob === "N/A" ? "" : String(trimValue(contact.dob) || ""),

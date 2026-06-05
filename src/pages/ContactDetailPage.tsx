@@ -38,12 +38,8 @@ const getStatusColor = (status: string) => {
   switch (status) {
     case "Active":
       return "bg-green-50 text-green-900";
-    case "Pending":
-      return "bg-yellow-50 text-yellow-900";
-    case "Closed":
+    case "Inactive":
       return "bg-gray-100 text-gray-900";
-    case "Consultation":
-      return "bg-blue-50 text-blue-900";
     default:
       return "bg-gray-100 text-gray-900";
   }
@@ -51,6 +47,21 @@ const getStatusColor = (status: string) => {
 
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
+const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"] as const;
+const ACCOUNT_TYPE_OPTIONS = [
+  "Prospect",
+  "Client (Active)",
+  "Client (Former)",
+  "Referral Partner",
+  "Partner",
+  "Vendor",
+  "Opposing Party",
+  "Expert / Witness",
+  "Court / Agency",
+  "Internal",
+];
+const LEGACY_ACCOUNT_TYPE_TAGS = ["Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
+const DEFAULT_ACCOUNT_TYPE = ACCOUNT_TYPE_OPTIONS[0];
 
 function getAvatarUrlFromMetadata(metadata?: Record<string, unknown> | null) {
   const possibleValues = [
@@ -89,13 +100,55 @@ function getFieldOptions(field: any) {
   return [];
 }
 
-function getCustomFieldValue(contact: any, fieldName: string) {
-  const field = contact.customFields?.find((customField: any) => {
-    const name = customField.name?.toLowerCase() || "";
-    return name === fieldName || customField.id === fieldName;
+function normalizeCustomFieldName(value: unknown) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeCustomFieldLookup(value: unknown) {
+  return normalizeCustomFieldName(value).replace(/[._-]+/g, " ");
+}
+
+function customFieldMatchesName(field: any, name: string) {
+  const normalizedName = normalizeCustomFieldLookup(name);
+  return [field?.name, field?.label, field?.fieldName, field?.fieldKey, field?.key]
+    .map((value) => normalizeCustomFieldLookup(value))
+    .some((value) => value === normalizedName || value.endsWith(` ${normalizedName}`));
+}
+
+function buildCustomFieldsMap(customFields: any[]) {
+  const entries = customFields.flatMap((customField: any) => {
+    const fieldName = normalizeCustomFieldLookup(customField.name || customField.fieldKey || customField.key);
+    return [customField.id, customField.fieldKey]
+      .filter(Boolean)
+      .map((fieldId) => [String(fieldId), fieldName] as const);
   });
 
-  return field?.value || field?.field_value;
+  return new Map(entries);
+}
+
+function getCustomField(customFields: any[], name: string) {
+  return customFields.find((field) => customFieldMatchesName(field, name));
+}
+
+function getCustomFieldValue(contact: any, customFieldsMap: Map<string, string>, fieldName: string) {
+  const normalizedFieldName = normalizeCustomFieldLookup(fieldName);
+  const field = contact.customFields?.find((customField: any) => {
+    const fieldId = String(customField.id || customField.fieldId || customField.customFieldId || customField.fieldKey || "");
+    const mappedName = customFieldsMap.get(fieldId) || "";
+    return (
+      customFieldMatchesName(customField, fieldName) ||
+      mappedName === normalizedFieldName ||
+      mappedName.endsWith(` ${normalizedFieldName}`)
+    );
+  });
+
+  return field?.value ?? field?.field_value ?? field?.fieldValue;
+}
+
+function normalizeContactStatus(value: unknown) {
+  const rawValue = Array.isArray(value) ? value[0] : value;
+  const normalized = String(rawValue || "").trim().toLowerCase();
+  return CONTACT_STATUS_OPTIONS.find((status) => status.toLowerCase() === normalized) || null;
 }
 
 function formatTaskDate(value?: string | null) {
@@ -1076,7 +1129,8 @@ export function ContactDetailPage() {
           );
         };
 
-        setAccountTypeOptions(getFieldOptions(findField("account type")));
+        const nextAccountTypeOptions = getFieldOptions(findField("account type"));
+        setAccountTypeOptions(nextAccountTypeOptions.length > 0 ? nextAccountTypeOptions : ACCOUNT_TYPE_OPTIONS);
         setPracticeAreaOptions(getFieldOptions(findField("practice area")));
         setLanguageOptions(getFieldOptions(findField("language")));
       } catch (error) {
@@ -1098,7 +1152,7 @@ export function ContactDetailPage() {
       phone: formatPhoneNumber(updatedData.phone),
       assignedAttorney: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
       assignedAttorneyId: selectedAssignedUser ? getUserId(selectedAssignedUser) : "",
-      tags: Array.from(new Set([updatedData.type, updatedData.status, ...(updatedData.tags || [])].filter(Boolean))),
+      tags: Array.from(new Set([updatedData.type, ...(updatedData.tags || [])].filter(Boolean))),
     });
 
     try {
@@ -1107,7 +1161,7 @@ export function ContactDetailPage() {
         firstName,
         lastName: rest.join(" "),
         email: updatedData.email,
-        tags: Array.from(new Set([updatedData.type, updatedData.status, ...(updatedData.tags || [])].filter(Boolean))),
+        tags: Array.from(new Set([updatedData.type, ...(updatedData.tags || [])].filter(Boolean))),
       };
 
       if (updatedData.phone && updatedData.phone !== "N/A") payload.phone = formatPhoneNumber(updatedData.phone, "");
@@ -1115,34 +1169,40 @@ export function ContactDetailPage() {
         payload.dateOfBirth = updatedData.dob;
       }
 
-      const getFieldId = (name: string) =>
-        crmCustomFields.find((customField) => customField.name?.trim().toLowerCase() === name)?.id;
-      const genderFieldId = getFieldId("gender");
+      let latestCustomFields = crmCustomFields;
+      if (locationId) {
+        const fieldsResponse: any = await getCustomFields(locationId);
+        latestCustomFields = getArrayFromResponse(fieldsResponse, "customFields");
+        setCrmCustomFields(latestCustomFields);
+      }
 
-      if (!genderFieldId && updatedData.gender && updatedData.gender !== "N/A") {
+      const getFieldValuePayload = (name: string, value: unknown) => {
+        const field = getCustomField(latestCustomFields, name);
+        if (!field) return null;
+        return {
+          ...(field.id ? { id: field.id } : {}),
+          ...(field.fieldKey ? { key: field.fieldKey } : {}),
+          field_value: value,
+        };
+      };
+      const getFirstFieldValuePayload = (names: string[], value: unknown) => {
+        const fieldName = names.find((name) => getCustomField(latestCustomFields, name));
+        return fieldName ? getFieldValuePayload(fieldName, value) : null;
+      };
+      const genderField = getCustomField(latestCustomFields, "gender");
+
+      if (!genderField?.id && updatedData.gender && updatedData.gender !== "N/A") {
         const lowerGender = updatedData.gender.toLowerCase();
         if (["male", "female", "other"].includes(lowerGender)) payload.gender = lowerGender;
       }
 
-      const caseTypeFieldId = getFieldId("practice area") || getFieldId("case type") || getFieldId("case");
-      const accountTypeFieldId = getFieldId("account type");
-      const languageFieldId = getFieldId("language");
-      const customFields = [];
-
-      if (caseTypeFieldId) customFields.push({ id: caseTypeFieldId, field_value: updatedData.caseType || "" });
-      if (accountTypeFieldId) customFields.push({ id: accountTypeFieldId, field_value: updatedData.type || "" });
-      if (languageFieldId) {
-        customFields.push({
-          id: languageFieldId,
-          field_value: updatedData.language && updatedData.language !== "N/A" ? updatedData.language : "",
-        });
-      }
-      if (genderFieldId) {
-        customFields.push({
-          id: genderFieldId,
-          field_value: updatedData.gender && updatedData.gender !== "N/A" ? updatedData.gender : "",
-        });
-      }
+      const customFields = [
+        getFirstFieldValuePayload(["practice area", "case type", "case"], updatedData.caseType || ""),
+        getFieldValuePayload("account type", updatedData.type || ""),
+        getFieldValuePayload("status", updatedData.status || ""),
+        getFieldValuePayload("language", updatedData.language && updatedData.language !== "N/A" ? updatedData.language : ""),
+        getFieldValuePayload("gender", updatedData.gender && updatedData.gender !== "N/A" ? updatedData.gender : ""),
+      ].filter(Boolean);
 
       if (customFields.length > 0) payload.customFields = customFields;
 
@@ -1176,6 +1236,17 @@ export function ContactDetailPage() {
         const locRecordId = context.location?.id || locationRecordId;
         if (context.location?.id) setLocationRecordId(context.location.id);
         if (context.location?.ghlLocationId) setLocationId(context.location.ghlLocationId);
+        let contactCustomFields = crmCustomFields;
+        if (contactCustomFields.length === 0 && context.location?.ghlLocationId) {
+          try {
+            const fieldsResponse: any = await getCustomFields(context.location.ghlLocationId);
+            contactCustomFields = getArrayFromResponse(fieldsResponse, "customFields");
+            setCrmCustomFields(contactCustomFields);
+          } catch (error) {
+            console.error("Failed to fetch custom fields for contact detail", error);
+          }
+        }
+        const customFieldsMap = buildCustomFieldsMap(contactCustomFields);
         setContactTasks([]);
         if (locRecordId && rawContact.id) {
           setTasksLoading(true);
@@ -1230,14 +1301,16 @@ export function ContactDetailPage() {
           .join(" ");
         const tags = rawContact.tags || [];
         const accountTypeValue =
-          getCustomFieldValue(rawContact, "account type") ||
+          getCustomFieldValue(rawContact, customFieldsMap, "account type") ||
           tags.find((tag: string) =>
-            ["client", "attorney", "expert witness", "opposing counsel"].includes(tag.toLowerCase()),
+            [...ACCOUNT_TYPE_OPTIONS, ...LEGACY_ACCOUNT_TYPE_TAGS]
+              .map((option) => option.toLowerCase())
+              .includes(tag.toLowerCase()),
           );
         const caseTypeValue =
-          getCustomFieldValue(rawContact, "practice area") ||
-          getCustomFieldValue(rawContact, "case type") ||
-          getCustomFieldValue(rawContact, "case") ||
+          getCustomFieldValue(rawContact, customFieldsMap, "practice area") ||
+          getCustomFieldValue(rawContact, customFieldsMap, "case type") ||
+          getCustomFieldValue(rawContact, customFieldsMap, "case") ||
           tags.find(
             (tag: string) =>
               !["client", "attorney", "expert", "opposing", "active", "pending", "closed", "consultation"].includes(
@@ -1251,13 +1324,8 @@ export function ContactDetailPage() {
           name: formattedName || rawContact.email || "Unknown",
           email: rawContact.email || "N/A",
           phone: formatPhoneNumber(rawContact.phone),
-          status: (() => {
-            if (tags.some((tag: string) => tag.toLowerCase().includes("pending"))) return "Pending";
-            if (tags.some((tag: string) => tag.toLowerCase().includes("closed"))) return "Closed";
-            if (tags.some((tag: string) => tag.toLowerCase().includes("consultation"))) return "Consultation";
-            return "Active";
-          })(),
-          type: Array.isArray(accountTypeValue) ? accountTypeValue.join(", ") : accountTypeValue || "Client",
+          status: normalizeContactStatus(getCustomFieldValue(rawContact, customFieldsMap, "status")) || "Active",
+          type: Array.isArray(accountTypeValue) ? accountTypeValue.join(", ") : accountTypeValue || DEFAULT_ACCOUNT_TYPE,
           caseType: Array.isArray(caseTypeValue) ? caseTypeValue.join(", ") : caseTypeValue || "General",
           assignedAttorney: Array.isArray(assignedAttorneyValue)
             ? assignedAttorneyValue[0]
@@ -1276,8 +1344,8 @@ export function ContactDetailPage() {
           dob: rawContact.dateOfBirth ? new Date(rawContact.dateOfBirth).toISOString().split("T")[0] : "N/A",
           gender: rawContact.gender
             ? rawContact.gender.charAt(0).toUpperCase() + rawContact.gender.slice(1)
-            : getCustomFieldValue(rawContact, "gender") || "N/A",
-          language: getCustomFieldValue(rawContact, "language") || "English",
+            : getCustomFieldValue(rawContact, customFieldsMap, "gender") || "N/A",
+          language: getCustomFieldValue(rawContact, customFieldsMap, "language") || "English",
           tags,
           notes: "No notes available.",
           lastContact: "Recently",

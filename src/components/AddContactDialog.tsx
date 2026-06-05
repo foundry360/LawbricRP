@@ -29,7 +29,12 @@ const contactSchema = z
     contactKind: z.enum(["person", "company"]).optional(),
     name: z.string().optional(),
     companyName: z.string().optional(),
+    primaryContactMode: z.enum(["existing", "create"]).optional(),
+    existingContactId: z.string().optional(),
     primaryContactName: z.string().optional(),
+    primaryContactEmail: z.string().email("Invalid email address").or(z.literal("")).optional(),
+    primaryContactPhone: z.string().optional(),
+    primaryContactTitle: z.string().optional(),
     website: z.string().optional(),
     industry: z.string().optional(),
     companyAddress: z.string().optional(),
@@ -54,9 +59,23 @@ const contactSchema = z
     if (contactKind === "company" && !data.companyName?.trim()) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ["companyName"], message: "Company name is required" });
     }
+
+    if (contactKind === "company" && data.primaryContactMode === "existing" && !data.existingContactId?.trim()) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ["existingContactId"], message: "Select a contact" });
+    }
+
+    if (contactKind === "company" && (data.primaryContactMode || "create") === "create") {
+      if (!data.primaryContactName?.trim()) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["primaryContactName"], message: "Contact name is required" });
+      }
+      if (!data.primaryContactEmail?.trim()) {
+        context.addIssue({ code: z.ZodIssueCode.custom, path: ["primaryContactEmail"], message: "Contact email is required" });
+      }
+    }
   });
 
-const CONTACT_STATUS_OPTIONS = ["Active", "Pending", "Consultation", "Closed"];
+const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"];
+const DEFAULT_ACCOUNT_TYPE = "Prospect";
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 export type ContactFormValues = z.infer<typeof contactSchema>;
@@ -72,6 +91,12 @@ type SystemUser = {
   email?: string;
 };
 
+export type CompanyContactOption = {
+  id: string;
+  name: string;
+  email?: string;
+};
+
 type AddContactDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -83,6 +108,7 @@ type AddContactDialogProps = {
   tagOptions?: string[];
   onCreateTag?: (name: string) => Promise<string | void> | string | void;
   systemUsers?: SystemUser[];
+  companyContactOptions?: CompanyContactOption[];
 };
 
 function getUserName(user: SystemUser) {
@@ -106,6 +132,7 @@ export function AddContactDialog({
   tagOptions = [],
   onCreateTag,
   systemUsers = [],
+  companyContactOptions = [],
 }: AddContactDialogProps) {
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
@@ -113,14 +140,19 @@ export function AddContactDialog({
       contactKind: "person",
       name: "",
       companyName: "",
+      primaryContactMode: "create",
+      existingContactId: "",
       primaryContactName: "",
+      primaryContactEmail: "",
+      primaryContactPhone: "",
+      primaryContactTitle: "",
       website: "",
       industry: "",
       companyAddress: "",
       email: "",
       phone: "",
-      type: "Client",
-      status: "Consultation",
+      type: DEFAULT_ACCOUNT_TYPE,
+      status: "Active",
       caseType: "",
       attorneyAssigned: "Unassigned",
       dob: "",
@@ -146,7 +178,6 @@ export function AddContactDialog({
         email: data.email,
         phone: formatPhoneNumber(data.phone, ""),
         "contact.contact_type": data.type,
-        "contact.status": data.status,
         "contact.case_type": data.caseType,
       },
       formLabels: {
@@ -156,7 +187,6 @@ export function AddContactDialog({
         email: "Email",
         phone: "Phone",
         "contact.contact_type": "Contact Type",
-        "contact.status": "Status",
         "contact.case_type": "Practice Area",
       },
       url: window.location.href,
@@ -184,6 +214,7 @@ export function AddContactDialog({
     onOpenChange(false);
   };
   const contactKind = form.watch("contactKind") || "person";
+  const primaryContactMode = form.watch("primaryContactMode") || "create";
 
   return (
     <Sheet
@@ -313,19 +344,107 @@ export function AddContactDialog({
                     </FormItem>
                   )}
                 />
-                <FormField
-                  control={form.control}
-                  name="primaryContactName"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Primary Contact</FormLabel>
-                      <FormControl>
-                        <Input placeholder="Jane Doe" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                <div className="rounded-lg border border-border p-3">
+                  <FormLabel className="text-sm font-medium">Primary Contact</FormLabel>
+                  <Tabs
+                    value={primaryContactMode}
+                    onValueChange={(value) => {
+                      form.setValue("primaryContactMode", value as "existing" | "create");
+                    }}
+                    className="mt-3 w-full"
+                  >
+                    <TabsList className="grid w-full grid-cols-2">
+                      <TabsTrigger value="existing">Existing</TabsTrigger>
+                      <TabsTrigger value="create">Create New</TabsTrigger>
+                    </TabsList>
+
+                    <TabsContent value="existing" className="mt-4">
+                      <FormField
+                        control={form.control}
+                        name="existingContactId"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Contact</FormLabel>
+                            <FormControl>
+                              <SearchableSelect
+                                value={field.value || ""}
+                                onValueChange={field.onChange}
+                                options={companyContactOptions.map((contact) => contact.id)}
+                                placeholder="Select contact"
+                                searchPlaceholder="Search contacts..."
+                                emptyMessage="No GHL contacts found."
+                                getOptionLabel={(value) => {
+                                  const contact = companyContactOptions.find((option) => option.id === value);
+                                  return contact ? `${contact.name}${contact.email ? ` (${contact.email})` : ""}` : value;
+                                }}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </TabsContent>
+
+                    <TabsContent value="create" className="mt-4 space-y-4">
+                      <FormField
+                        control={form.control}
+                        name="primaryContactName"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Contact Name</FormLabel>
+                            <FormControl>
+                              <Input placeholder="Jane Doe" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="primaryContactTitle"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Title</FormLabel>
+                            <FormControl>
+                              <Input placeholder="Chief Operating Officer" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="primaryContactEmail"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Contact Email</FormLabel>
+                            <FormControl>
+                              <Input type="email" placeholder="jane@example.com" {...field} />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={form.control}
+                        name="primaryContactPhone"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Contact Phone</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="(555) 000-0000"
+                                {...field}
+                                onChange={(event) => field.onChange(formatPhoneInput(event.target.value))}
+                              />
+                            </FormControl>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                    </TabsContent>
+                  </Tabs>
+                </div>
                 <FormField
                   control={form.control}
                   name="website"

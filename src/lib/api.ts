@@ -289,7 +289,45 @@ export async function removeContactTags(contactId: string, tags: string[]) {
 
 export async function getCustomFields(locationId: string) {
   return apiClient<{ customFields?: unknown[] }>(
+    `/locations/${encodeURIComponent(locationId)}/customFields?model=contact`,
+  );
+}
+
+export async function createLocationCustomField(locationId: string, payload: Record<string, unknown>) {
+  return apiClient<{ customField?: unknown; field?: unknown }>(
     `/locations/${encodeURIComponent(locationId)}/customFields`,
+    {
+      method: "POST",
+      ghlVersion: "2021-07-28",
+      body: JSON.stringify({
+        model: "contact",
+        ...payload,
+      }),
+    },
+  );
+}
+
+export async function updateLocationCustomField(locationId: string, customFieldId: string, payload: Record<string, unknown>) {
+  return apiClient<{ customField?: unknown; field?: unknown }>(
+    `/locations/${encodeURIComponent(locationId)}/customFields/${encodeURIComponent(customFieldId)}`,
+    {
+      method: "PUT",
+      ghlVersion: "2021-07-28",
+      body: JSON.stringify({
+        model: "contact",
+        ...payload,
+      }),
+    },
+  );
+}
+
+export async function deleteLocationCustomField(locationId: string, customFieldId: string) {
+  return apiClient(
+    `/locations/${encodeURIComponent(locationId)}/customFields/${encodeURIComponent(customFieldId)}`,
+    {
+      method: "DELETE",
+      ghlVersion: "2021-07-28",
+    },
   );
 }
 
