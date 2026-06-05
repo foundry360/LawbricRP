@@ -6,9 +6,9 @@ import {
   Briefcase,
   ChevronDown,
   ChevronUp,
-  CircleUserRound,
   Eye,
   Filter,
+  IdCard,
   LayoutGrid,
   List,
   Loader2,
@@ -1578,8 +1578,8 @@ function ContactTable({
               <td className="px-4 py-2">
                 <div className="flex items-center space-x-3">
                   <Avatar className="h-8 w-8">
-                    <AvatarFallback className={isCompany ? "border border-amber-200 bg-amber-50 text-amber-700" : "border border-blue-200 bg-blue-50 text-[#344256]"}>
-                      {isCompany ? <Building2 className="h-4 w-4" /> : <CircleUserRound className="h-4 w-4" />}
+                    <AvatarFallback className="bg-blue-50 text-primary">
+                      {isCompany ? <Building2 className="h-4 w-4" /> : <IdCard className="h-4 w-4" />}
                     </AvatarFallback>
                   </Avatar>
                   {contact.recordKind === "company" ? (

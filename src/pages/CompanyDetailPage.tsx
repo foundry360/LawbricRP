@@ -59,7 +59,9 @@ function formatDate(value?: string | null) {
   if (!value) return "Not set";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "Not set";
-  return date.toLocaleDateString();
+  const dateLabel = date.toLocaleDateString("en-US");
+  const timeLabel = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  return `${dateLabel}, ${timeLabel}`;
 }
 
 function formatAddress(company: GhlBusiness) {
@@ -966,8 +968,8 @@ export function CompanyDetailPage() {
       <div className="shrink-0 border-b border-border pb-4">
         <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
           <div className="flex items-center gap-5">
-            <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-              <AvatarFallback className="border border-amber-200 bg-amber-50 text-amber-700">
+            <Avatar className="h-12 w-12">
+              <AvatarFallback className="bg-blue-50 text-primary">
                 <Building2 className="h-6 w-6" />
               </AvatarFallback>
             </Avatar>

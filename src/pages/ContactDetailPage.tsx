@@ -1,7 +1,7 @@
 import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CheckSquare, Clock, Loader2, Mail, Pencil, Phone, Plus, UserX, X } from "lucide-react";
+import { ArrowLeft, CheckSquare, Clock, IdCard, Loader2, Mail, Pencil, Phone, Plus, UserX, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -122,6 +122,15 @@ function formatDateTimeInput(value?: string | null) {
   if (Number.isNaN(date.getTime())) return "";
   const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
   return localDate.toISOString().slice(0, 16);
+}
+
+function formatRecordDate(value?: string | null) {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  const dateLabel = date.toLocaleDateString("en-US");
+  const timeLabel = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+  return `${dateLabel}, ${timeLabel}`;
 }
 
 function getTaskRelatedLabel(task: TaskRecord) {
@@ -1272,6 +1281,8 @@ export function ContactDetailPage() {
           tags,
           notes: "No notes available.",
           lastContact: "Recently",
+          createdAt: rawContact.createdAt || rawContact.dateAdded || rawContact.created_at || null,
+          updatedAt: rawContact.updatedAt || rawContact.dateUpdated || rawContact.updated_at || null,
           avatarUrl:
             rawContact.avatarUrl ||
             rawContact.profilePhoto ||
@@ -1361,13 +1372,9 @@ export function ContactDetailPage() {
       <div className="shrink-0 border-b border-border pb-4">
         <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
           <div className="flex items-center gap-5">
-            <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-              <AvatarImage
-                src={contact.avatarUrl}
-                alt={`${getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")} avatar`}
-              />
-              <AvatarFallback className="bg-blue-50 text-lg text-primary">
-                {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
+            <Avatar className="h-12 w-12">
+              <AvatarFallback className="bg-blue-50 text-primary">
+                <IdCard className="h-6 w-6" />
               </AvatarFallback>
             </Avatar>
             <div className="min-w-0">
@@ -1445,7 +1452,7 @@ export function ContactDetailPage() {
               Contact Details
             </h2>
           </div>
-          <Accordion type="multiple" defaultValue={["personal", "demographics", "tags"]} className="w-full">
+          <Accordion type="multiple" defaultValue={["personal", "demographics", "tags", "record"]} className="w-full">
             <AccordionItem value="personal">
               <AccordionTrigger>Personal Information</AccordionTrigger>
               <AccordionContent>
@@ -1540,6 +1547,21 @@ export function ContactDetailPage() {
                 )}
               </AccordionContent>
             </AccordionItem>
+            <AccordionItem value="record">
+              <AccordionTrigger>Record Information</AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-3 pt-2">
+                  <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+                    <span className="whitespace-nowrap font-medium text-foreground/70">Created</span>
+                    <span>{formatRecordDate(contact.createdAt)}</span>
+                  </div>
+                  <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+                    <span className="whitespace-nowrap font-medium text-foreground/70">Updated</span>
+                    <span>{formatRecordDate(contact.updatedAt)}</span>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
           </Accordion>
         </div>
 
@@ -1620,21 +1642,19 @@ export function ContactDetailPage() {
         </div>
 
         <div className="h-full overflow-y-auto py-6 lg:pl-6">
-          <h3 className="mb-4 text-sm font-semibold uppercase tracking-wider text-foreground/70">Matter Overview</h3>
-          <div className="space-y-4">
-            <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-              <div className="mb-1 text-xs uppercase text-muted-foreground">Practice Area</div>
-              <div className="text-sm font-semibold">{contact.caseType}</div>
-            </div>
-            <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-              <div className="mb-1 text-xs uppercase text-muted-foreground">Assigned Attorney</div>
-              <div className="text-sm font-semibold">{contact.assignedAttorney}</div>
-            </div>
-            <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-              <div className="mb-1 text-xs uppercase text-muted-foreground">Last Contact</div>
-              <div className="text-sm font-semibold">{contact.lastContact}</div>
-            </div>
-          </div>
+          <Accordion type="multiple" defaultValue={["matter"]} className="w-full">
+            <AccordionItem value="matter">
+              <AccordionTrigger>Matter Overview</AccordionTrigger>
+              <AccordionContent>
+                <div className="space-y-4 pt-2">
+                  <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
+                    <div className="mb-1 text-xs uppercase text-muted-foreground">Last Contact</div>
+                    <div className="text-sm font-semibold">{contact.lastContact}</div>
+                  </div>
+                </div>
+              </AccordionContent>
+            </AccordionItem>
+          </Accordion>
         </div>
       </div>
 
