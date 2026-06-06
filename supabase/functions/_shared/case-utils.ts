@@ -384,6 +384,97 @@ async function linkCaseRecordToContact(context: RequestContext, objectKey: strin
   });
 }
 
+function parseJsonEnv(name: string) {
+  const raw = Deno.env.get(name);
+  if (!raw) return {};
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    console.warn(`${name} is not valid JSON`, error);
+    return {};
+  }
+}
+
+function getCasePipelineStageId(caseRow: any) {
+  const stageMap = parseJsonEnv("GHL_CASE_STAGE_MAP") as Record<string, string>;
+  return caseRow.ghl_pipeline_stage_id ||
+    stageMap[caseRow.stage] ||
+    Deno.env.get("GHL_CASE_DEFAULT_PIPELINE_STAGE_ID") ||
+    "";
+}
+
+function getCaseOpportunityStatus(caseRow: any) {
+  const statusMap = {
+    open: "open",
+    pending: "open",
+    closed: "won",
+    archived: "lost",
+    ...(parseJsonEnv("GHL_CASE_STATUS_MAP") as Record<string, string>),
+  };
+
+  return statusMap[caseRow.status] || "open";
+}
+
+function getCaseOpportunityName(caseRow: any) {
+  const metadata = caseRow.metadata && typeof caseRow.metadata === "object" ? caseRow.metadata : {};
+  const companyName = String(metadata.companyName || metadata.company_name || "").trim();
+  const caseName = String(caseRow.case_name || caseRow.case_number || "Matter").trim();
+  return companyName && !caseName.toLowerCase().includes(companyName.toLowerCase())
+    ? `${companyName} - ${caseName}`
+    : caseName;
+}
+
+export async function ensureCaseOpportunity(context: RequestContext, caseRow: any) {
+  const metadata = caseRow.metadata && typeof caseRow.metadata === "object" ? caseRow.metadata : {};
+  const existingOpportunityId = metadata.ghl_opportunity_id;
+  if (existingOpportunityId) return caseRow;
+
+  const pipelineId = caseRow.ghl_pipeline_id || Deno.env.get("GHL_CASE_PIPELINE_ID") || "";
+  const pipelineStageId = getCasePipelineStageId(caseRow);
+  if (!context.location.ghlLocationId || !pipelineId || !pipelineStageId || !caseRow.ghl_contact_id) return caseRow;
+
+  const opportunityName = getCaseOpportunityName(caseRow);
+  const response = await ghlRequestOrThrow(context, "/opportunities/", {
+    method: "POST",
+    body: JSON.stringify({
+      locationId: context.location.ghlLocationId,
+      contactId: caseRow.ghl_contact_id,
+      name: opportunityName,
+      pipelineId,
+      pipelineStageId,
+      status: getCaseOpportunityStatus(caseRow),
+    }),
+  });
+
+  const opportunityId = response?.opportunity?.id || response?.data?.id || response?.id;
+  if (!opportunityId) return caseRow;
+
+  const nextMetadata = {
+    ...metadata,
+    ghl_opportunity_id: opportunityId,
+    ghl_opportunity_name: opportunityName,
+    ghl_opportunity_contact_id: caseRow.ghl_contact_id,
+    ghl_opportunity_synced_at: new Date().toISOString(),
+    ghl_opportunity_sync_error: null,
+  };
+
+  const { data, error } = await context.supabase
+    .from("cases")
+    .update({
+      metadata: nextMetadata,
+      ghl_pipeline_id: pipelineId,
+      ghl_pipeline_stage_id: pipelineStageId,
+    })
+    .eq("id", caseRow.id)
+    .eq("location_id", context.location.id)
+    .select("*")
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data || { ...caseRow, metadata: nextMetadata, ghl_pipeline_id: pipelineId, ghl_pipeline_stage_id: pipelineStageId };
+}
+
 export async function syncTaskToGhl(context: RequestContext, taskRow: any) {
   const metadata = taskRow.metadata && typeof taskRow.metadata === "object" ? taskRow.metadata : {};
 
@@ -534,27 +625,29 @@ export async function deleteCaseFromGhl(context: RequestContext, caseRow: any) {
 }
 
 export async function syncCaseStageToGhl(context: RequestContext, caseRow: any) {
-  await syncCaseReference(context, caseRow);
+  const opportunityCaseRow = await ensureCaseOpportunity(context, caseRow);
 
-  const stageMapRaw = Deno.env.get("GHL_CASE_STAGE_MAP");
-  const opportunityId = caseRow.metadata?.ghl_opportunity_id;
-  if (!stageMapRaw || !opportunityId) return;
+  const opportunityId = opportunityCaseRow.metadata?.ghl_opportunity_id;
+  if (!opportunityId) return opportunityCaseRow;
 
   try {
-    const stageMap = JSON.parse(stageMapRaw);
-    const pipelineStageId = stageMap[caseRow.stage] || caseRow.ghl_pipeline_stage_id;
-    if (!pipelineStageId) return;
+    const pipelineId = opportunityCaseRow.ghl_pipeline_id || Deno.env.get("GHL_CASE_PIPELINE_ID") || "";
+    const pipelineStageId = getCasePipelineStageId(opportunityCaseRow);
+    if (!pipelineStageId) return opportunityCaseRow;
 
     await ghlRequest(context, `/opportunities/${encodeURIComponent(opportunityId)}`, {
       method: "PUT",
       body: JSON.stringify({
+        ...(pipelineId ? { pipelineId } : {}),
         pipelineStageId,
-        status: caseRow.status,
+        status: getCaseOpportunityStatus(opportunityCaseRow),
       }),
     });
   } catch (error) {
     console.warn("Could not sync GHL case stage", error);
   }
+
+  return opportunityCaseRow;
 }
 
 const TASK_TEMPLATES: Record<string, Array<{ title: string; daysFromOpen: number; priority?: string; templateKey: string }>> = {

@@ -9,6 +9,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { createCase, deleteCase, updateCase, type CaseRecord } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { useToast } from "@/hooks/use-toast";
@@ -36,13 +37,47 @@ type MatterCreateSheetProps = {
     phone?: string | null;
     assignedUserId?: string | null;
   } | null;
+  relatedCompany?: {
+    id: string;
+    name: string;
+  } | null;
   onCreated: (matter: CaseRecord) => void;
 };
 
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
+const NO_PIPELINE_VALUE = "none";
+const NO_STAGE_VALUE = "none";
 
 function formatMatterStatus(status?: string | null) {
   return String(status || "-").replace(/_/g, " ");
+}
+
+function getPipelineSelection(
+  pipelines: GhlPipeline[],
+  pipelineId?: string | null,
+  pipelineStageId?: string | null,
+) {
+  const pipeline =
+    pipelines.find((item) => item.id === pipelineId) ||
+    pipelines.find((item) => (item.stages || []).some((stage) => stage.id === pipelineStageId));
+  const stage =
+    pipeline?.stages?.find((item) => item.id === pipelineStageId) ||
+    pipeline?.stages?.[0] ||
+    null;
+
+  return {
+    pipeline,
+    stage,
+    pipelineId: pipeline?.id || "",
+    pipelineStageId: stage?.id || "",
+    stageName: stage?.name || "",
+  };
+}
+
+async function loadMatterPipelines() {
+  const context = await getAppLocationContext();
+  const ghlLocationId = context.location?.ghlLocationId || "";
+  return ghlLocationId ? getPipelines(ghlLocationId) : [];
 }
 
 function DetailRow({ label, value }: { label: string; value?: string | null }) {
@@ -54,15 +89,18 @@ function DetailRow({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-export function MatterCreateSheet({ open, onOpenChange, locationId, contact, onCreated }: MatterCreateSheetProps) {
+export function MatterCreateSheet({ open, onOpenChange, locationId, contact, relatedCompany, onCreated }: MatterCreateSheetProps) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
+  const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
   const [form, setForm] = useState({
     caseNumber: "",
     caseName: "",
     caseType: PRACTICE_AREAS[0],
     status: "open",
     stage: "intake",
+    pipelineId: "",
+    pipelineStageId: "",
     assignedUserId: "",
     notes: "",
   });
@@ -75,12 +113,54 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, onC
       caseType: PRACTICE_AREAS[0],
       status: "open",
       stage: "intake",
+      pipelineId: "",
+      pipelineStageId: "",
       assignedUserId: contact?.assignedUserId || "",
       notes: "",
     });
   }, [contact?.assignedUserId, open]);
 
+  useEffect(() => {
+    if (!open) return;
+    loadMatterPipelines()
+      .then(setPipelines)
+      .catch((error) => {
+        console.error("Could not load matter pipelines", error);
+        setPipelines([]);
+      });
+  }, [open]);
+
   const closeSheet = () => onOpenChange(false);
+  const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  const handlePipelineChange = (pipelineId: string) => {
+    if (pipelineId === NO_PIPELINE_VALUE) {
+      setForm({ ...form, pipelineId: "", pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const selection = getPipelineSelection(pipelines, pipelineId);
+    setForm({
+      ...form,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || form.stage,
+    });
+  };
+
+  const handlePipelineStageChange = (pipelineStageId: string) => {
+    if (!selectedPipeline || pipelineStageId === NO_STAGE_VALUE) {
+      setForm({ ...form, pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const stage = selectedPipeline.stages?.find((item) => item.id === pipelineStageId);
+    setForm({
+      ...form,
+      pipelineStageId,
+      stage: stage?.name || form.stage,
+    });
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -103,7 +183,18 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, onC
         contactEmail: contact.email || "",
         contactPhone: formatPhoneNumber(contact.phone, ""),
         assignedUserId: form.assignedUserId || null,
+        ghlPipelineId: form.pipelineId || null,
+        ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
+        metadata: {
+          clientType: relatedCompany ? "company" : "contact",
+          relatedRecordType: relatedCompany ? "company" : "contact",
+          ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
+          ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
+          ...(relatedCompany ? { companyId: relatedCompany.id, companyName: relatedCompany.name } : {}),
+          primaryContactId: contact.id,
+          primaryContactName: contact.name,
+        },
       });
       onCreated(matter);
       closeSheet();
@@ -150,6 +241,24 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, onC
               emptyMessage="No practice areas found."
             />
           </div>
+          <div className="space-y-2">
+            <Label>Pipeline</Label>
+            <Select value={form.pipelineId || NO_PIPELINE_VALUE} onValueChange={handlePipelineChange}>
+              <SelectTrigger>
+                <span className={!form.pipelineId ? "text-muted-foreground" : undefined}>
+                  {selectedPipeline?.name || "No pipeline"}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="max-h-72 overflow-y-auto">
+                <SelectItem value={NO_PIPELINE_VALUE}>No Pipeline</SelectItem>
+                {pipelines.map((pipeline) => (
+                  <SelectItem key={pipeline.id} value={pipeline.id}>
+                    {pipeline.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Status</Label>
@@ -168,7 +277,29 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, onC
             </div>
             <div className="space-y-2">
               <Label>Stage</Label>
-              <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+              <Select
+                value={form.pipelineStageId || NO_STAGE_VALUE}
+                onValueChange={handlePipelineStageChange}
+              >
+                <SelectTrigger>
+                  <span className={!form.pipelineStageId ? "text-muted-foreground" : undefined}>
+                    {form.stage || (selectedPipeline ? "No stages available" : "Select pipeline first")}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  {selectedPipeline?.stages?.length ? (
+                    selectedPipeline.stages.map((stage) => (
+                      <SelectItem key={stage.id} value={stage.id}>
+                        {stage.name}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value={NO_STAGE_VALUE} disabled>
+                      No stages available
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
           </div>
           <div className="space-y-2">
@@ -201,17 +332,21 @@ export function MatterActionSheet({
 }: MatterActionSheetProps) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
+  const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
   const [form, setForm] = useState({
     caseNumber: "",
     caseName: "",
     caseType: "",
     status: "",
     stage: "",
+    pipelineId: "",
+    pipelineStageId: "",
   });
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
 
   useEffect(() => {
     if (!matter || !open) return;
+    const selection = getPipelineSelection(pipelines, matter.ghl_pipeline_id, matter.ghl_pipeline_stage_id);
     setDeleteConfirmationText("");
     setForm({
       caseNumber: matter.case_number || "",
@@ -219,10 +354,52 @@ export function MatterActionSheet({
       caseType: matter.case_type || "",
       status: matter.status || "open",
       stage: matter.stage || "",
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
     });
-  }, [matter, open]);
+  }, [matter, open, pipelines]);
+
+  useEffect(() => {
+    if (!open) return;
+    loadMatterPipelines()
+      .then(setPipelines)
+      .catch((error) => {
+        console.error("Could not load matter pipelines", error);
+        setPipelines([]);
+      });
+  }, [open]);
 
   const closeSheet = () => onOpenChange(false);
+  const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  const handlePipelineChange = (pipelineId: string) => {
+    if (pipelineId === NO_PIPELINE_VALUE) {
+      setForm({ ...form, pipelineId: "", pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const selection = getPipelineSelection(pipelines, pipelineId);
+    setForm({
+      ...form,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || form.stage,
+    });
+  };
+
+  const handlePipelineStageChange = (pipelineStageId: string) => {
+    if (!selectedPipeline || pipelineStageId === NO_STAGE_VALUE) {
+      setForm({ ...form, pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const stage = selectedPipeline.stages?.find((item) => item.id === pipelineStageId);
+    setForm({
+      ...form,
+      pipelineStageId,
+      stage: stage?.name || form.stage,
+    });
+  };
 
   const handleSave = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -237,6 +414,12 @@ export function MatterActionSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        ghlPipelineId: form.pipelineId || null,
+        ghlPipelineStageId: form.pipelineStageId || null,
+        metadata: {
+          ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
+          ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
+        },
       });
       onSaved(updatedMatter);
       closeSheet();
@@ -304,6 +487,24 @@ export function MatterActionSheet({
                 emptyMessage="No practice areas found."
               />
             </div>
+            <div className="space-y-2">
+              <Label>Pipeline</Label>
+              <Select value={form.pipelineId || NO_PIPELINE_VALUE} onValueChange={handlePipelineChange}>
+                <SelectTrigger>
+                  <span className={!form.pipelineId ? "text-muted-foreground" : undefined}>
+                    {selectedPipeline?.name || "No pipeline"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  <SelectItem value={NO_PIPELINE_VALUE}>No Pipeline</SelectItem>
+                  {pipelines.map((pipeline) => (
+                    <SelectItem key={pipeline.id} value={pipeline.id}>
+                      {pipeline.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Status</Label>
@@ -322,7 +523,29 @@ export function MatterActionSheet({
               </div>
               <div className="space-y-2">
                 <Label>Stage</Label>
-                <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+                <Select
+                  value={form.pipelineStageId || NO_STAGE_VALUE}
+                  onValueChange={handlePipelineStageChange}
+                >
+                  <SelectTrigger>
+                    <span className={!form.pipelineStageId ? "text-muted-foreground" : undefined}>
+                      {form.stage || (selectedPipeline ? "No stages available" : "Select pipeline first")}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72 overflow-y-auto">
+                    {selectedPipeline?.stages?.length ? (
+                      selectedPipeline.stages.map((stage) => (
+                        <SelectItem key={stage.id} value={stage.id}>
+                          {stage.name}
+                        </SelectItem>
+                      ))
+                    ) : (
+                      <SelectItem value={NO_STAGE_VALUE} disabled>
+                        No stages available
+                      </SelectItem>
+                    )}
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <div className="flex gap-3 pt-2">

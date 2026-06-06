@@ -31,7 +31,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient } from "@/lib/api";
+import { apiClient, getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
   createCaseEvent,
@@ -52,6 +52,34 @@ const CASE_DETAIL_TAB_TRIGGER_CLASS =
   "rounded-none border-b-2 border-border py-3 text-muted-foreground/70 data-[state=active]:border-[#2384CA] data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
 const CASE_TYPE_OPTIONS = PRACTICE_AREAS;
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
+const NO_PIPELINE_VALUE = "none";
+const NO_STAGE_VALUE = "none";
+
+function getPipelineSelection(
+  pipelines: GhlPipeline[],
+  pipelineId?: string | null,
+  pipelineStageId?: string | null,
+) {
+  const pipeline =
+    pipelines.find((item) => item.id === pipelineId) ||
+    pipelines.find((item) => (item.stages || []).some((stage) => stage.id === pipelineStageId));
+  const stage =
+    pipeline?.stages?.find((item) => item.id === pipelineStageId) ||
+    pipeline?.stages?.[0] ||
+    null;
+
+  return {
+    pipelineId: pipeline?.id || "",
+    pipelineStageId: stage?.id || "",
+    stageName: stage?.name || "",
+  };
+}
+
+async function loadMatterPipelines() {
+  const context = await getAppLocationContext();
+  const ghlLocationId = context.location?.ghlLocationId || "";
+  return ghlLocationId ? getPipelines(ghlLocationId) : [];
+}
 
 function formatDateTime(value?: string | null) {
   if (!value) return "Not set";
@@ -424,26 +452,53 @@ function EditCaseSheet({
 }) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
+  const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
   const [form, setForm] = useState({
     caseNumber: detail.case.case_number,
     caseName: detail.case.case_name,
     caseType: detail.case.case_type,
     status: detail.case.status,
     stage: detail.case.stage,
+    pipelineId: detail.case.ghl_pipeline_id || "",
+    pipelineStageId: detail.case.ghl_pipeline_stage_id || "",
     assignedUserId,
   });
 
   useEffect(() => {
     if (!open) return;
+    const selection = getPipelineSelection(pipelines, detail.case.ghl_pipeline_id, detail.case.ghl_pipeline_stage_id);
     setForm({
       caseNumber: detail.case.case_number,
       caseName: detail.case.case_name,
       caseType: detail.case.case_type,
       status: detail.case.status,
       stage: detail.case.stage,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
       assignedUserId,
     });
-  }, [assignedUserId, detail.case.case_name, detail.case.case_number, detail.case.case_type, detail.case.stage, detail.case.status, open]);
+  }, [
+    assignedUserId,
+    detail.case.case_name,
+    detail.case.case_number,
+    detail.case.case_type,
+    detail.case.ghl_pipeline_id,
+    detail.case.ghl_pipeline_stage_id,
+    detail.case.stage,
+    detail.case.status,
+    open,
+    pipelines,
+  ]);
+
+  useEffect(() => {
+    if (!open) return;
+    loadMatterPipelines()
+      .then(setPipelines)
+      .catch((error) => {
+        console.error("Could not load matter pipelines", error);
+        setPipelines([]);
+      });
+  }, [open]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -465,6 +520,8 @@ function EditCaseSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        ghlPipelineId: form.pipelineId || null,
+        ghlPipelineStageId: form.pipelineStageId || null,
         assignedUserId: form.assignedUserId || null,
       });
       onSaved(caseRecord);
@@ -483,6 +540,36 @@ function EditCaseSheet({
 
   const caseTypeOptions = CASE_TYPE_OPTIONS.includes(form.caseType) ? CASE_TYPE_OPTIONS : [form.caseType, ...CASE_TYPE_OPTIONS];
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  const handlePipelineChange = (pipelineId: string) => {
+    if (pipelineId === NO_PIPELINE_VALUE) {
+      setForm({ ...form, pipelineId: "", pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const selection = getPipelineSelection(pipelines, pipelineId);
+    setForm({
+      ...form,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || form.stage,
+    });
+  };
+
+  const handlePipelineStageChange = (pipelineStageId: string) => {
+    if (!selectedPipeline || pipelineStageId === NO_STAGE_VALUE) {
+      setForm({ ...form, pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const stage = selectedPipeline.stages?.find((item) => item.id === pipelineStageId);
+    setForm({
+      ...form,
+      pipelineStageId,
+      stage: stage?.name || form.stage,
+    });
+  };
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -541,6 +628,25 @@ function EditCaseSheet({
             </Select>
           </div>
 
+          <div className="space-y-2">
+            <Label>Pipeline</Label>
+            <Select value={form.pipelineId || NO_PIPELINE_VALUE} onValueChange={handlePipelineChange}>
+              <SelectTrigger>
+                <span className={!form.pipelineId ? "text-muted-foreground" : undefined}>
+                  {selectedPipeline?.name || "No pipeline"}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="max-h-72 overflow-y-auto">
+                <SelectItem value={NO_PIPELINE_VALUE}>No Pipeline</SelectItem>
+                {pipelines.map((pipeline) => (
+                  <SelectItem key={pipeline.id} value={pipeline.id}>
+                    {pipeline.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Status</Label>
@@ -560,7 +666,29 @@ function EditCaseSheet({
 
             <div className="space-y-2">
               <Label>Stage</Label>
-              <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+              <Select
+                value={form.pipelineStageId || NO_STAGE_VALUE}
+                onValueChange={handlePipelineStageChange}
+              >
+                <SelectTrigger>
+                  <span className={cn(!form.pipelineStageId && "text-muted-foreground")}>
+                    {form.stage || (selectedPipeline ? "No stages available" : "Select pipeline first")}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  {selectedPipeline?.stages?.length ? (
+                    selectedPipeline.stages.map((stage) => (
+                      <SelectItem key={stage.id} value={stage.id}>
+                        {stage.name}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value={NO_STAGE_VALUE} disabled>
+                      No stages available
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

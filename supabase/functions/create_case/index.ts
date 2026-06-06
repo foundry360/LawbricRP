@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
   corsHeaders,
+  ensureCaseOpportunity,
   getRequestContext,
   handleError,
   jsonResponse,
@@ -34,7 +35,7 @@ serve(async (req) => {
       assignedUserId = contactAssignment?.assigned_user_id || null;
     }
 
-    const { data: caseRow, error } = await context.supabase
+    const { data: insertedCaseRow, error } = await context.supabase
       .from("cases")
       .insert({
         location_id: context.location.id,
@@ -59,6 +60,7 @@ serve(async (req) => {
       .single();
 
     if (error) throw new Error(error.message);
+    let caseRow = insertedCaseRow;
 
     await context.supabase.from("case_parties").insert({
       location_id: context.location.id,
@@ -95,9 +97,10 @@ serve(async (req) => {
     }
 
     try {
+      caseRow = await ensureCaseOpportunity(context, caseRow);
       await syncCaseReference(context, caseRow);
     } catch (syncError) {
-      console.warn("Case created, but GHL case reference sync failed", syncError);
+      console.warn("Case created, but GHL opportunity/reference sync failed", syncError);
     }
 
     return jsonResponse({ ok: true, case: caseRow }, 201);

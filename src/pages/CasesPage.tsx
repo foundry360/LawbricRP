@@ -1,10 +1,11 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
   Briefcase,
   Calendar,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Eye,
   Filter,
@@ -17,6 +18,7 @@ import {
   Pin,
   Plus,
   Search,
+  SquareKanban,
   Trash2,
 } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -48,12 +50,13 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { getAppLocationContext, getContacts } from "@/lib/api";
+import { getAppLocationContext, getContacts, getPipelines, type GhlPipeline, type GhlPipelineStage } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
+import { listPipelineConfigs, type PipelineConfig } from "@/lib/pipeline-configs";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
@@ -63,7 +66,11 @@ const CASE_STATUSES = ["open", "pending", "closed", "archived"];
 const CASE_TYPES = PRACTICE_AREAS;
 const CASE_VIEW_MODE_STORAGE_KEY = "lawbric.matters.viewMode";
 const CASE_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.matters.pinnedViewMode";
+const CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY = "lawbric.matters.pinnedListViewId";
 const CASE_PINNED_VIEW_MODE_METADATA_KEY = "casePinnedViewMode";
+const CASE_PINNED_LIST_VIEW_ID_METADATA_KEY = "casePinnedListViewId";
+const NO_PIPELINE_VALUE = "none";
+const NO_STAGE_VALUE = "none";
 type CaseListView = {
   id: string;
   name: string;
@@ -72,14 +79,76 @@ type CaseListView = {
     status?: string;
     caseType?: string;
     stage?: string;
+    pipelineId?: string;
     assignedUserId?: string;
   };
 };
 
-type CaseViewMode = "grid" | "list";
+type CaseViewMode = "grid" | "list" | "kanban";
+type CasesPageSection = "matters" | "leads";
+
+const SECTION_COPY: Record<
+  CasesPageSection,
+  {
+    title: string;
+    allLabel: string;
+    addTooltip: string;
+    loading: string;
+    emptyTitle: string;
+    emptyDescription: string;
+    noResultsTitle: string;
+    noResultsDescription: string;
+    countLabel: string;
+    pinNoun: string;
+  }
+> = {
+  matters: {
+    title: "Matters",
+    allLabel: "All Matters",
+    addTooltip: "Add matter",
+    loading: "Loading matters...",
+    emptyTitle: "No matters found",
+    emptyDescription: "Get started by creating your first matter.",
+    noResultsTitle: "No matters found",
+    noResultsDescription: "Try adjusting your search or filters.",
+    countLabel: "matters",
+    pinNoun: "Matters",
+  },
+  leads: {
+    title: "Leads",
+    allLabel: "All Leads",
+    addTooltip: "Add lead",
+    loading: "Loading leads...",
+    emptyTitle: "No leads found",
+    emptyDescription: "Prospecting pipeline items will appear here once configured.",
+    noResultsTitle: "No leads found",
+    noResultsDescription: "Try adjusting your search or filters.",
+    countLabel: "leads",
+    pinNoun: "Leads",
+  },
+};
 
 function isCaseViewMode(value: unknown): value is CaseViewMode {
-  return value === "grid" || value === "list";
+  return value === "grid" || value === "list" || value === "kanban";
+}
+
+function getCaseViewModeLabel(value: CaseViewMode) {
+  if (value === "grid") return "card";
+  if (value === "kanban") return "kanban";
+  return "list";
+}
+
+function getPipelineDisplayOrder(config?: PipelineConfig | null) {
+  const order = config?.display_order ?? 0;
+  return order > 0 ? order : Number.MAX_SAFE_INTEGER;
+}
+
+function sortPipelinesByDisplayOrder(pipelines: GhlPipeline[], configMap: Map<string, PipelineConfig>) {
+  return [...pipelines].sort((a, b) => {
+    const orderComparison = getPipelineDisplayOrder(configMap.get(a.id)) - getPipelineDisplayOrder(configMap.get(b.id));
+    if (orderComparison !== 0) return orderComparison;
+    return a.name.localeCompare(b.name);
+  });
 }
 
 function getInitialCaseViewMode(): CaseViewMode {
@@ -96,6 +165,16 @@ function getInitialPinnedCaseViewMode(): CaseViewMode | null {
   return isCaseViewMode(pinnedViewMode) ? pinnedViewMode : null;
 }
 
+function getInitialCaseListViewId() {
+  if (typeof window === "undefined") return "all";
+  return window.localStorage.getItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY) || "all";
+}
+
+function getInitialPinnedCaseListViewId() {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+}
+
 function ControlTooltip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip>
@@ -109,10 +188,6 @@ function ControlTooltip({ label, children }: { label: string; children: ReactNod
 
 const defaultCaseListViews: CaseListView[] = [
   { id: "all", name: "All Matters", system: true, filters: {} },
-  { id: "open", name: "Open", system: true, filters: { status: "open" } },
-  { id: "pending", name: "Pending", system: true, filters: { status: "pending" } },
-  { id: "closed", name: "Closed", system: true, filters: { status: "closed" } },
-  { id: "archived", name: "Archived", system: true, filters: { status: "archived" } },
 ];
 
 function formatContactName(contact: any) {
@@ -188,12 +263,38 @@ function getContactAvatarUrl(contact: any) {
   );
 }
 
-export function CasesPage() {
+function getPipelineSelection(
+  pipelines: GhlPipeline[],
+  pipelineId?: string | null,
+  pipelineStageId?: string | null,
+) {
+  const pipeline =
+    pipelines.find((item) => item.id === pipelineId) ||
+    pipelines.find((item) => (item.stages || []).some((stage) => stage.id === pipelineStageId));
+  const stage =
+    pipeline?.stages?.find((item) => item.id === pipelineStageId) ||
+    pipeline?.stages?.[0] ||
+    null;
+
+  return {
+    pipeline,
+    stage,
+    pipelineId: pipeline?.id || "",
+    pipelineStageId: stage?.id || "",
+    stageName: stage?.name || "",
+  };
+}
+
+export function CasesPage({ section = "matters" }: { section?: CasesPageSection }) {
   const navigate = useNavigate();
   const { toast } = useToast();
+  const isLeadsSection = section === "leads";
+  const sectionCopy = SECTION_COPY[section];
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
+  const [pipelineConfigs, setPipelineConfigs] = useState<PipelineConfig[]>([]);
   const [locationId, setLocationId] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
@@ -202,8 +303,9 @@ export function CasesPage() {
   const [assignedUserFilter, setAssignedUserFilter] = useState("All");
   const [viewMode, setViewMode] = useState<CaseViewMode>(getInitialCaseViewMode);
   const [pinnedViewMode, setPinnedViewMode] = useState<CaseViewMode | null>(getInitialPinnedCaseViewMode);
+  const [pinnedListViewId, setPinnedListViewId] = useState<string | null>(getInitialPinnedCaseListViewId);
   const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
-  const [activeListViewId, setActiveListViewId] = useState("all");
+  const [activeListViewId, setActiveListViewId] = useState(getInitialCaseListViewId);
   const [listViews, setListViews] = useState<CaseListView[]>(defaultCaseListViews);
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
   const [editingListView, setEditingListView] = useState<CaseListView | null>(null);
@@ -217,6 +319,9 @@ export function CasesPage() {
   const [caseToEdit, setCaseToEdit] = useState<CaseRecord | null>(null);
   const [caseToDelete, setCaseToDelete] = useState<CaseRecord | null>(null);
   const [isDeletingCase, setIsDeletingCase] = useState(false);
+  const [dragOverPipelineStageId, setDragOverPipelineStageId] = useState("");
+  const [updatingCaseStageId, setUpdatingCaseStageId] = useState<string | null>(null);
+  const updatingCaseStageRef = useRef<string | null>(null);
 
   useEffect(() => {
     const loadCasePreferences = async () => {
@@ -238,6 +343,16 @@ export function CasesPage() {
         setPinnedViewMode(null);
         window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
       }
+
+      const savedPinnedListViewId = userMetadata[CASE_PINNED_LIST_VIEW_ID_METADATA_KEY];
+      if (typeof savedPinnedListViewId === "string" && savedPinnedListViewId) {
+        setPinnedListViewId(savedPinnedListViewId);
+        setActiveListViewId(savedPinnedListViewId);
+        window.localStorage.setItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY, savedPinnedListViewId);
+      } else {
+        setPinnedListViewId(null);
+        window.localStorage.removeItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+      }
     };
 
     loadCasePreferences().catch((error) => console.error("Failed to load matter preferences from Supabase", error));
@@ -248,12 +363,19 @@ export function CasesPage() {
   }, [viewMode]);
 
   const handleTogglePinnedView = async () => {
-    const nextPinnedViewMode = pinnedViewMode === viewMode ? null : viewMode;
+    const nextPinnedViewMode = isCurrentPinnedView ? null : viewMode;
+    const nextPinnedListViewId = isCurrentPinnedView ? null : activeListViewId;
     setPinnedViewMode(nextPinnedViewMode);
+    setPinnedListViewId(nextPinnedListViewId);
     if (nextPinnedViewMode) {
       window.localStorage.setItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY, nextPinnedViewMode);
     } else {
       window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+    }
+    if (nextPinnedListViewId) {
+      window.localStorage.setItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY, nextPinnedListViewId);
+    } else {
+      window.localStorage.removeItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY);
     }
 
     setIsSavingPinnedView(true);
@@ -261,24 +383,31 @@ export function CasesPage() {
       await supabase.auth.updateUser({
         data: {
           [CASE_PINNED_VIEW_MODE_METADATA_KEY]: nextPinnedViewMode,
+          [CASE_PINNED_LIST_VIEW_ID_METADATA_KEY]: nextPinnedListViewId,
         },
       });
       toast({
-        title: nextPinnedViewMode ? "Matters View Pinned" : "Matters View Unpinned",
+        title: nextPinnedViewMode ? `${sectionCopy.pinNoun} View Pinned` : `${sectionCopy.pinNoun} View Unpinned`,
         description: nextPinnedViewMode
-          ? `Matters will open in ${nextPinnedViewMode === "grid" ? "card" : "list"} view.`
-          : "Matters will open in the last view used on this device.",
+          ? `${sectionCopy.pinNoun} will open in ${activeListView.name} ${getCaseViewModeLabel(nextPinnedViewMode)} view.`
+          : `${sectionCopy.pinNoun} will open in the last view used on this device.`,
       });
     } catch (error) {
       setPinnedViewMode(pinnedViewMode);
+      setPinnedListViewId(pinnedListViewId);
       if (pinnedViewMode) {
         window.localStorage.setItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY, pinnedViewMode);
       } else {
         window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
       }
+      if (pinnedListViewId) {
+        window.localStorage.setItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY, pinnedListViewId);
+      } else {
+        window.localStorage.removeItem(CASE_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+      }
       toast({
         title: "Pinned View Not Saved",
-        description: getUserFriendlyErrorMessage(error, "Could not save your pinned Matters view."),
+        description: getUserFriendlyErrorMessage(error, `Could not save your pinned ${sectionCopy.pinNoun} view.`),
         variant: "destructive",
       });
     } finally {
@@ -303,8 +432,8 @@ export function CasesPage() {
       setCases(rows);
     } catch (error) {
       toast({
-        title: "Matters Not Loaded",
-        description: getUserFriendlyErrorMessage(error, "Could not load matters. Please try again."),
+        title: `${sectionCopy.pinNoun} Not Loaded`,
+        description: getUserFriendlyErrorMessage(error, `Could not load ${sectionCopy.countLabel}. Please try again.`),
         variant: "destructive",
       });
     } finally {
@@ -320,19 +449,41 @@ export function CasesPage() {
         const ghlLocationId = context.location?.ghlLocationId || "";
         setLocationId(appLocationId);
 
-        const [caseRows, contactResponse, assignableUsers] = await Promise.all([
+        const [caseRows, contactResponse, assignableUsers, pipelineRows, pipelineConfigRows] = await Promise.all([
           listCases({ locationId: appLocationId }),
           ghlLocationId ? getContacts(ghlLocationId) : Promise.resolve({ contacts: [] }),
           getAssignableUsers(),
+          ghlLocationId
+            ? getPipelines(ghlLocationId).catch((error) => {
+                toast({
+                  title: "Pipelines Not Loaded",
+                  description: getUserFriendlyErrorMessage(error, `Could not load GHL pipelines for the ${sectionCopy.pinNoun} Kanban.`),
+                  variant: "destructive",
+                });
+                return [] as GhlPipeline[];
+              })
+            : Promise.resolve([] as GhlPipeline[]),
+          appLocationId
+            ? listPipelineConfigs(appLocationId).catch((error) => {
+                toast({
+                  title: "Pipeline Settings Not Loaded",
+                  description: getUserFriendlyErrorMessage(error, "Could not load pipeline settings."),
+                  variant: "destructive",
+                });
+                return [] as PipelineConfig[];
+              })
+            : Promise.resolve([] as PipelineConfig[]),
         ]);
 
         setCases(caseRows);
         setContacts(getArrayFromResponse(contactResponse, "contacts"));
         setUsers(assignableUsers);
+        setPipelines(pipelineRows);
+        setPipelineConfigs(pipelineConfigRows);
       } catch (error) {
         toast({
-          title: "Matters Not Loaded",
-          description: getUserFriendlyErrorMessage(error, "Could not load matter data. Please try again."),
+          title: `${sectionCopy.pinNoun} Not Loaded`,
+          description: getUserFriendlyErrorMessage(error, `Could not load ${sectionCopy.countLabel} data. Please try again.`),
           variant: "destructive",
         });
       } finally {
@@ -341,16 +492,129 @@ export function CasesPage() {
     };
 
     initialize();
-  }, [toast]);
+  }, [sectionCopy.countLabel, sectionCopy.pinNoun, toast]);
 
-  const activeListView = listViews.find((view) => view.id === activeListViewId) || listViews[0];
+  const pipelineConfigMap = useMemo(
+    () => new Map(pipelineConfigs.map((config) => [config.ghl_pipeline_id, config])),
+    [pipelineConfigs],
+  );
+  const matterPipelines = useMemo(
+    () =>
+      sortPipelinesByDisplayOrder(
+        pipelines.filter((pipeline) => {
+          const config = pipelineConfigMap.get(pipeline.id);
+          return config?.is_active !== false && config?.classification !== "prospecting";
+        }),
+        pipelineConfigMap,
+      ),
+    [pipelineConfigMap, pipelines],
+  );
+  const prospectingPipelineIds = useMemo(
+    () =>
+      new Set(
+        pipelineConfigs
+          .filter((config) => config.classification === "prospecting" || config.is_active === false)
+          .map((config) => config.ghl_pipeline_id),
+      ),
+    [pipelineConfigs],
+  );
+  const leadPipelineIds = useMemo(
+    () =>
+      new Set(
+        pipelineConfigs
+          .filter((config) => config.classification === "prospecting" && config.is_active !== false)
+          .map((config) => config.ghl_pipeline_id),
+      ),
+    [pipelineConfigs],
+  );
+  const leadPipelineStageIds = useMemo(
+    () =>
+      new Set(
+        pipelines
+          .filter((pipeline) => leadPipelineIds.has(pipeline.id))
+          .flatMap((pipeline) => (pipeline.stages || []).map((stage) => stage.id)),
+      ),
+    [pipelines, leadPipelineIds],
+  );
+  const leadPipelines = useMemo(
+    () => sortPipelinesByDisplayOrder(pipelines.filter((pipeline) => leadPipelineIds.has(pipeline.id)), pipelineConfigMap),
+    [leadPipelineIds, pipelineConfigMap, pipelines],
+  );
+  const sectionPipelines = isLeadsSection ? leadPipelines : matterPipelines;
+  const prospectingPipelineStageIds = useMemo(
+    () =>
+      new Set(
+        pipelines
+          .filter((pipeline) => prospectingPipelineIds.has(pipeline.id))
+          .flatMap((pipeline) => (pipeline.stages || []).map((stage) => stage.id)),
+      ),
+    [pipelines, prospectingPipelineIds],
+  );
+  const matterCases = useMemo(
+    () =>
+      cases.filter((caseRecord) => {
+        if (isLeadsSection) {
+          return Boolean(
+            caseRecord.ghl_pipeline_id && leadPipelineIds.has(caseRecord.ghl_pipeline_id) ||
+            caseRecord.ghl_pipeline_stage_id && leadPipelineStageIds.has(caseRecord.ghl_pipeline_stage_id),
+          );
+        }
+        if (caseRecord.ghl_pipeline_id && prospectingPipelineIds.has(caseRecord.ghl_pipeline_id)) return false;
+        if (caseRecord.ghl_pipeline_stage_id && prospectingPipelineStageIds.has(caseRecord.ghl_pipeline_stage_id)) return false;
+        return true;
+      }),
+    [cases, isLeadsSection, leadPipelineIds, leadPipelineStageIds, prospectingPipelineIds, prospectingPipelineStageIds],
+  );
+  const sectionAllListView = useMemo<CaseListView>(
+    () => ({ id: "all", name: sectionCopy.allLabel, system: true, filters: {} }),
+    [sectionCopy.allLabel],
+  );
+
+  const pipelineListViews = useMemo<CaseListView[]>(
+    () =>
+      sectionPipelines.map((pipeline) => ({
+        id: `pipeline:${pipeline.id}`,
+        name: pipeline.name,
+        system: true,
+        filters: { pipelineId: pipeline.id },
+      })),
+    [sectionPipelines],
+  );
+  const displayListViews = useMemo(
+    () =>
+      viewMode === "kanban"
+        ? pipelineListViews
+        : [sectionAllListView, ...pipelineListViews, ...listViews.filter((view) => !view.system)],
+    [listViews, pipelineListViews, sectionAllListView, viewMode],
+  );
+  const activeListView = displayListViews.find((view) => view.id === activeListViewId) || displayListViews[0] || sectionAllListView;
+  const activePipeline = activeListView.filters.pipelineId
+    ? sectionPipelines.find((pipeline) => pipeline.id === activeListView.filters.pipelineId)
+    : null;
+  const isCurrentPinnedView = pinnedViewMode === viewMode && pinnedListViewId === activeListViewId;
+
+  useEffect(() => {
+    if (viewMode === "kanban") {
+      if (pipelineListViews.length === 0) return;
+      if (!pipelineListViews.some((view) => view.id === activeListViewId)) {
+        setActiveListViewId(pipelineListViews[0].id);
+        setCurrentPage(1);
+      }
+      return;
+    }
+
+    if (!displayListViews.some((view) => view.id === activeListViewId)) {
+      setActiveListViewId("all");
+      setCurrentPage(1);
+    }
+  }, [activeListViewId, displayListViews, pipelineListViews, viewMode]);
   const caseTypeOptions = useMemo(
-    () => [...new Set([...CASE_TYPES, ...cases.map((caseRecord) => caseRecord.case_type).filter(Boolean)])],
-    [cases],
+    () => [...new Set([...CASE_TYPES, ...matterCases.map((caseRecord) => caseRecord.case_type).filter(Boolean)])],
+    [matterCases],
   );
   const stageOptions = useMemo(
-    () => [...new Set(cases.map((caseRecord) => caseRecord.stage).filter(Boolean))],
-    [cases],
+    () => [...new Set(matterCases.map((caseRecord) => caseRecord.stage).filter(Boolean))],
+    [matterCases],
   );
   const activeFilterCount = [
     typeFilter,
@@ -362,7 +626,7 @@ export function CasesPage() {
   const filteredCases = useMemo(() => {
     const search = searchTerm.toLowerCase();
 
-    return cases.filter((caseRecord) => {
+    return matterCases.filter((caseRecord) => {
       const matchesSearch =
         caseRecord.case_name.toLowerCase().includes(search) ||
         caseRecord.case_number.toLowerCase().includes(search) ||
@@ -380,13 +644,22 @@ export function CasesPage() {
       if (activeListView.filters.status && caseRecord.status !== activeListView.filters.status) matchesListView = false;
       if (activeListView.filters.caseType && caseRecord.case_type !== activeListView.filters.caseType) matchesListView = false;
       if (activeListView.filters.stage && caseRecord.stage !== activeListView.filters.stage) matchesListView = false;
+      if (activeListView.filters.pipelineId) {
+        const activePipeline = sectionPipelines.find((pipeline) => pipeline.id === activeListView.filters.pipelineId);
+        const matchesPipeline =
+          caseRecord.ghl_pipeline_id === activeListView.filters.pipelineId ||
+          Boolean(
+            activePipeline?.stages?.some((stage) => stage.id === caseRecord.ghl_pipeline_stage_id),
+          );
+        if (!matchesPipeline) matchesListView = false;
+      }
       if (activeListView.filters.assignedUserId && caseRecord.assigned_user_id !== activeListView.filters.assignedUserId) {
         matchesListView = false;
       }
 
       return matchesSearch && matchesType && matchesStatus && matchesStage && matchesAssigned && matchesListView;
     });
-  }, [activeListView, assignedUserFilter, cases, searchTerm, stageFilter, statusFilter, typeFilter]);
+  }, [activeListView, assignedUserFilter, matterCases, sectionPipelines, searchTerm, stageFilter, statusFilter, typeFilter]);
 
   const sortedCases = useMemo(() => {
     return [...filteredCases].sort((a, b) => {
@@ -457,6 +730,62 @@ export function CasesPage() {
     }
   };
 
+  const handleCasePipelineStageChange = async (
+    caseRecord: CaseRecord,
+    pipeline: GhlPipeline,
+    stage: GhlPipelineStage,
+  ) => {
+    if (updatingCaseStageRef.current) return;
+    if (caseRecord.ghl_pipeline_id === pipeline.id && caseRecord.ghl_pipeline_stage_id === stage.id) return;
+
+    const previousCases = cases;
+    const nextStageName = stage.name || "Pipeline";
+    updatingCaseStageRef.current = caseRecord.id;
+    setUpdatingCaseStageId(caseRecord.id);
+    setCases((current) =>
+      current.map((item) =>
+        item.id === caseRecord.id
+          ? {
+              ...item,
+              stage: nextStageName,
+              ghl_pipeline_id: pipeline.id,
+              ghl_pipeline_stage_id: stage.id,
+              metadata: {
+                ...(item.metadata || {}),
+                ghl_pipeline_name: pipeline.name,
+                ghl_pipeline_stage_name: nextStageName,
+              },
+            }
+          : item,
+      ),
+    );
+
+    try {
+      const updatedCase = await updateCase({
+        caseId: caseRecord.id,
+        stage: nextStageName,
+        ghlPipelineId: pipeline.id,
+        ghlPipelineStageId: stage.id,
+        metadata: {
+          ghl_pipeline_name: pipeline.name,
+          ghl_pipeline_stage_name: nextStageName,
+        },
+      });
+      setCases((current) => current.map((item) => (item.id === updatedCase.id ? { ...item, ...updatedCase } : item)));
+    } catch (error) {
+      setCases(previousCases);
+      toast({
+        title: "Matter Stage Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not move this matter to the selected pipeline stage."),
+        variant: "destructive",
+      });
+    } finally {
+      updatingCaseStageRef.current = null;
+      setUpdatingCaseStageId(null);
+      setDragOverPipelineStageId("");
+    }
+  };
+
   return (
     <div className="flex flex-col space-y-6 p-6">
       <CreateCaseSheet
@@ -464,7 +793,10 @@ export function CasesPage() {
         onOpenChange={setIsCreateOpen}
         contacts={contacts}
         users={users}
+        pipelines={sectionPipelines}
         locationId={locationId}
+        defaultPipelineId={activePipeline?.id || ""}
+        recordLabel={isLeadsSection ? "Lead" : "Matter"}
         onCreated={handleCaseCreated}
       />
       <EditCaseSheet
@@ -472,6 +804,8 @@ export function CasesPage() {
         onOpenChange={(open) => !open && setCaseToEdit(null)}
         caseRecord={caseToEdit}
         users={users}
+        pipelines={sectionPipelines}
+        recordLabel={isLeadsSection ? "Lead" : "Matter"}
         onSaved={handleCaseSaved}
       />
       <DeleteConfirmationDialog
@@ -505,7 +839,7 @@ export function CasesPage() {
 
       <div className="flex w-full flex-col items-start justify-between gap-4 overflow-visible xl:flex-row xl:items-center">
         <div className="flex min-w-0 flex-1 items-center gap-4">
-          <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">Matters</h2>
+          <h2 className="shrink-0 text-2xl font-bold tracking-tight text-primary">{sectionCopy.title}</h2>
           <Tabs
             value={activeListViewId}
             onValueChange={(value) => {
@@ -516,7 +850,7 @@ export function CasesPage() {
           >
             <div className="flex items-center gap-2">
               <TabsList className="h-10 flex-nowrap justify-start overflow-x-auto bg-transparent p-0">
-                {listViews.slice(0, 6).map((view) => (
+                {displayListViews.slice(0, 6).map((view) => (
                   <TabsTrigger
                     key={view.id}
                     value={view.id}
@@ -526,7 +860,7 @@ export function CasesPage() {
                   </TabsTrigger>
                 ))}
               </TabsList>
-              {listViews.length > 6 && (
+              {displayListViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
                     <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
@@ -534,7 +868,7 @@ export function CasesPage() {
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
-                    {listViews.slice(6).map((view) => (
+                    {displayListViews.slice(6).map((view) => (
                       <DropdownMenuItem
                         key={view.id}
                         onClick={() => {
@@ -599,7 +933,7 @@ export function CasesPage() {
                 </Button>
                 <Input
                   id="case-search"
-                  placeholder="Search matters..."
+                  placeholder={`Search ${sectionCopy.countLabel}...`}
                   className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
                     isSearchExpanded || searchTerm ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
                   }`}
@@ -615,7 +949,7 @@ export function CasesPage() {
               </div>
 
               <Popover>
-                <ControlTooltip label="Filter matters">
+                <ControlTooltip label={`Filter ${sectionCopy.countLabel}`}>
                   <PopoverTrigger asChild>
                     <Button
                       variant="outline"
@@ -637,7 +971,7 @@ export function CasesPage() {
                 <PopoverContent className="right-0 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold">Filter Matters</div>
+                      <div className="text-sm font-semibold">Filter {sectionCopy.title}</div>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -744,9 +1078,9 @@ export function CasesPage() {
                 className="hidden sm:block"
               >
                 <TabsList className="h-10 rounded-full">
-                  <ControlTooltip label="Card view">
-                    <TabsTrigger value="grid" className="rounded-full px-3">
-                      <LayoutGrid className="h-4 w-4" />
+                  <ControlTooltip label="Kanban view">
+                    <TabsTrigger value="kanban" className="rounded-full px-3">
+                      <SquareKanban className="h-4 w-4" />
                     </TabsTrigger>
                   </ControlTooltip>
                   <ControlTooltip label="List view">
@@ -754,28 +1088,33 @@ export function CasesPage() {
                       <List className="h-4 w-4" />
                     </TabsTrigger>
                   </ControlTooltip>
+                  <ControlTooltip label="Card view">
+                    <TabsTrigger value="grid" className="rounded-full px-3">
+                      <LayoutGrid className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
                 </TabsList>
               </Tabs>
-              <ControlTooltip label={pinnedViewMode === viewMode ? "Unpin this Matters view" : "Pin this Matters view"}>
+              <ControlTooltip label={isCurrentPinnedView ? `Unpin this ${sectionCopy.pinNoun} view` : `Pin this ${sectionCopy.pinNoun} view`}>
                 <Button
                   type="button"
                   variant="ghost"
                   size="icon"
                   className={cn(
                     "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
-                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                    isCurrentPinnedView && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
                   )}
                   disabled={isSavingPinnedView}
                   onClick={handleTogglePinnedView}
-                  aria-label={pinnedViewMode === viewMode ? "Unpin this Matters view" : "Pin this Matters view"}
+                  aria-label={isCurrentPinnedView ? `Unpin this ${sectionCopy.pinNoun} view` : `Pin this ${sectionCopy.pinNoun} view`}
                 >
-                  <Pin className={cn("h-4 w-4", pinnedViewMode === viewMode && "fill-current")} />
+                  <Pin className={cn("h-4 w-4", isCurrentPinnedView && "fill-current")} />
                 </Button>
               </ControlTooltip>
             </>
           )}
 
-          <ControlTooltip label="Add matter">
+          <ControlTooltip label={sectionCopy.addTooltip}>
             <Button
               size="icon"
               className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
@@ -790,15 +1129,15 @@ export function CasesPage() {
       {loading ? (
         <div className="flex items-center justify-center py-12">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <span className="ml-3 text-muted-foreground">Loading matters...</span>
+          <span className="ml-3 text-muted-foreground">{sectionCopy.loading}</span>
         </div>
-      ) : cases.length === 0 ? (
+      ) : matterCases.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/40 bg-muted/5 px-4 py-20 text-center">
           <div className="mb-4 rounded-full bg-muted/30 p-4 text-muted-foreground/50">
             <Briefcase className="h-8 w-8" />
           </div>
-          <h3 className="mb-1 text-lg font-medium text-muted-foreground">No matters found</h3>
-          <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by creating your first matter.</p>
+          <h3 className="mb-1 text-lg font-medium text-muted-foreground">{sectionCopy.emptyTitle}</h3>
+          <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">{sectionCopy.emptyDescription}</p>
           <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
             <Plus className="h-6 w-6" />
           </Button>
@@ -817,6 +1156,20 @@ export function CasesPage() {
               />
               ))}
             </div>
+          ) : viewMode === "kanban" ? (
+            <CasePipelineKanbanBoard
+              cases={sortedCases}
+              pipelines={activePipeline ? [activePipeline] : []}
+              countLabel={sectionCopy.countLabel}
+              sectionTitle={sectionCopy.title}
+              navigate={navigate}
+              dragOverPipelineStageId={dragOverPipelineStageId}
+              updatingCaseStageId={updatingCaseStageId}
+              onDragOverPipelineStage={setDragOverPipelineStageId}
+              onStageChange={handleCasePipelineStageChange}
+              onEdit={setCaseToEdit}
+              onDelete={setCaseToDelete}
+            />
           ) : (
             <CaseTable
               cases={paginatedCases}
@@ -832,18 +1185,19 @@ export function CasesPage() {
           {filteredCases.length === 0 && (
             <div className="rounded-lg border-2 border-dashed border-muted-foreground/40 bg-card py-12 text-center">
               <Briefcase className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-              <h3 className="text-lg font-medium text-foreground">No matters found</h3>
-              <p className="mt-1 text-muted-foreground">Try adjusting your search or filters.</p>
+              <h3 className="text-lg font-medium text-foreground">{sectionCopy.noResultsTitle}</h3>
+              <p className="mt-1 text-muted-foreground">{sectionCopy.noResultsDescription}</p>
             </div>
           )}
 
+          {viewMode !== "kanban" ? (
           <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
               Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
               {" - "}
               <span className="font-medium text-foreground">{lastVisibleRow}</span>
               {" of "}
-              <span className="font-medium text-foreground">{sortedCases.length}</span> matters
+              <span className="font-medium text-foreground">{sortedCases.length}</span> {sectionCopy.countLabel}
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -925,9 +1279,216 @@ export function CasesPage() {
               </Pagination>
             </div>
           </div>
+          ) : null}
         </>
       )}
     </div>
+  );
+}
+
+function getPipelineStageKey(pipelineId: string, stageId: string) {
+  return `${pipelineId}:${stageId}`;
+}
+
+function caseMatchesPipelineStage(caseRecord: CaseRecord, pipeline: GhlPipeline, stage: GhlPipelineStage) {
+  if (caseRecord.ghl_pipeline_stage_id !== stage.id) return false;
+  return !caseRecord.ghl_pipeline_id || caseRecord.ghl_pipeline_id === pipeline.id;
+}
+
+function CasePipelineKanbanBoard({
+  cases,
+  pipelines,
+  countLabel,
+  sectionTitle,
+  navigate,
+  dragOverPipelineStageId,
+  updatingCaseStageId,
+  onDragOverPipelineStage,
+  onStageChange,
+  onEdit,
+  onDelete,
+}: {
+  cases: CaseRecord[];
+  pipelines: GhlPipeline[];
+  countLabel: string;
+  sectionTitle: string;
+  navigate: (path: string) => void;
+  dragOverPipelineStageId: string;
+  updatingCaseStageId: string | null;
+  onDragOverPipelineStage: (stageKey: string) => void;
+  onStageChange: (caseRecord: CaseRecord, pipeline: GhlPipeline, stage: GhlPipelineStage) => void;
+  onEdit: (caseRecord: CaseRecord) => void;
+  onDelete: (caseRecord: CaseRecord) => void;
+}) {
+  if (pipelines.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/40 bg-muted/5 px-4 py-16 text-center">
+        <SquareKanban className="mb-4 h-10 w-10 text-muted-foreground/50" />
+        <h3 className="text-lg font-medium text-foreground">No GHL pipelines found</h3>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          Configure pipelines in Tools, then refresh {sectionTitle} to use them here.
+        </p>
+      </div>
+    );
+  }
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>, pipeline: GhlPipeline, stage: GhlPipelineStage) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (updatingCaseStageId) return;
+    const caseId = event.dataTransfer.getData("text/plain");
+    const caseRecord = cases.find((item) => item.id === caseId);
+    onDragOverPipelineStage("");
+    if (caseRecord) onStageChange(caseRecord, pipeline, stage);
+  };
+
+  return (
+    <div className="space-y-6">
+      {pipelines.map((pipeline) => {
+        const stages = pipeline.stages || [];
+        const pipelineCaseCount = cases.filter((caseRecord) =>
+          stages.some((stage) => caseMatchesPipelineStage(caseRecord, pipeline, stage)),
+        ).length;
+
+        return (
+          <section key={pipeline.id} className="space-y-3">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold text-foreground">{pipeline.name}</h3>
+              <Badge variant="outline" className="rounded-full">
+                {pipelineCaseCount} {pipelineCaseCount === 1 ? countLabel.replace(/s$/, "") : countLabel}
+              </Badge>
+            </div>
+
+            {stages.length === 0 ? (
+              <div className="rounded-lg border border-dashed bg-card px-4 py-8 text-center text-sm text-muted-foreground">
+                This GHL pipeline does not have stages yet.
+              </div>
+            ) : (
+              <div className="flex h-[calc(100vh-13rem)] min-h-[32rem] overflow-x-auto pb-2">
+                {stages.map((stage, index) => {
+                  const stageKey = getPipelineStageKey(pipeline.id, stage.id);
+                  const columnCases = cases.filter((caseRecord) => caseMatchesPipelineStage(caseRecord, pipeline, stage));
+                  const isDragOver = dragOverPipelineStageId === stageKey;
+
+                  return (
+                    <div
+                      key={stageKey}
+                      className={cn(
+                        "flex min-w-[18rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
+                        index === 0 && "overflow-hidden rounded-tl-md",
+                        index === stages.length - 1 && "overflow-hidden rounded-tr-md",
+                        isDragOver && "border-[#0484C8] bg-[#F0F6FF]",
+                      )}
+                      onDragOver={(event) => {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "move";
+                        onDragOverPipelineStage(stageKey);
+                      }}
+                      onDragLeave={() => {
+                        if (dragOverPipelineStageId === stageKey) onDragOverPipelineStage("");
+                      }}
+                      onDrop={(event) => handleDrop(event, pipeline, stage)}
+                    >
+                      <div
+                        className={cn(
+                          "relative z-10 flex h-10 items-center justify-between bg-[#0384C8] py-2 pl-3 pr-1 text-white",
+                          index === 0 && "rounded-tl-md",
+                          index === stages.length - 1 && "rounded-tr-md",
+                        )}
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <div className="truncate text-xs font-semibold uppercase tracking-wide text-white">
+                            {stage.name}
+                          </div>
+                          <Badge variant="outline" className="border-transparent bg-white/20 text-xs text-white">
+                            {columnCases.length}
+                          </Badge>
+                        </div>
+                        {index < stages.length - 1 ? (
+                          <ChevronRight className="h-7 w-7 shrink-0 text-white" />
+                        ) : null}
+                      </div>
+
+                      <div className="flex flex-1 flex-col gap-3 p-3">
+                        {columnCases.map((caseRecord) => (
+                          <KanbanCaseCard
+                            key={caseRecord.id}
+                            caseRecord={caseRecord}
+                            navigate={navigate}
+                            updating={updatingCaseStageId === caseRecord.id}
+                            onEdit={() => onEdit(caseRecord)}
+                            onDelete={() => onDelete(caseRecord)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function KanbanCaseCard({
+  caseRecord,
+  navigate,
+  updating,
+  onEdit,
+  onDelete,
+}: {
+  caseRecord: CaseRecord;
+  navigate: (path: string) => void;
+  updating: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const clientName = formatContactDisplayName(caseRecord.primary_contact_name) || caseRecord.ghl_contact_id || "No client";
+
+  const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.setData("text/plain", caseRecord.id);
+    event.dataTransfer.effectAllowed = "move";
+  };
+
+  return (
+    <Card
+      draggable={!updating}
+      className={cn(
+        "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
+        updating && "cursor-wait opacity-60",
+      )}
+      onClick={() => navigate(`/case/${caseRecord.id}`)}
+      onDragStart={handleDragStart}
+    >
+      <CardHeader className="space-y-1.5 bg-muted/30 p-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="min-w-0 truncate text-xs font-semibold leading-tight text-[#2384CA]">
+            {caseRecord.case_name}
+          </h3>
+          <div onClick={(event) => event.stopPropagation()}>
+            <CaseActions
+              onView={() => navigate(`/case/${caseRecord.id}`)}
+              onEdit={onEdit}
+              onDelete={onDelete}
+              triggerClassName="h-6 w-6 shrink-0"
+              iconClassName="h-3.5 w-3.5"
+            />
+          </div>
+        </div>
+        <div className="truncate text-xs text-muted-foreground">
+          {clientName}
+        </div>
+        <div className="flex items-center justify-between gap-2">
+          <span className="truncate text-xs text-muted-foreground">{caseRecord.case_number}</span>
+          <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getCaseStatusClass(caseRecord.status))}>
+            {caseRecord.status}
+          </Badge>
+        </div>
+      </CardHeader>
+    </Card>
   );
 }
 
@@ -990,16 +1551,24 @@ function CaseActions({
   onView,
   onEdit,
   onDelete,
+  triggerClassName,
+  iconClassName,
 }: {
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  triggerClassName?: string;
+  iconClassName?: string;
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
-          <MoreVertical className="h-4 w-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground", triggerClassName)}
+        >
+          <MoreVertical className={cn("h-4 w-4", iconClassName)} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -1343,24 +1912,33 @@ function CreateCaseSheet({
   onOpenChange,
   contacts,
   users,
+  pipelines,
   locationId,
+  defaultPipelineId,
+  recordLabel = "Matter",
   onCreated,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contacts: any[];
   users: AssignableUser[];
+  pipelines: GhlPipeline[];
   locationId: string;
+  defaultPipelineId?: string;
+  recordLabel?: string;
   onCreated: (caseRecord: CaseRecord) => void;
 }) {
   const { toast } = useToast();
+  const defaultPipelineSelection = getPipelineSelection(pipelines, defaultPipelineId);
   const [submitting, setSubmitting] = useState(false);
   const [form, setForm] = useState({
     caseNumber: "",
     caseName: "",
     caseType: CASE_TYPES[0],
-    stage: "intake",
+    stage: defaultPipelineSelection.stageName || "intake",
     status: "open",
+    pipelineId: defaultPipelineSelection.pipelineId,
+    pipelineStageId: defaultPipelineSelection.pipelineStageId,
     contactId: "",
     assignedUserId: "",
     notes: "",
@@ -1368,24 +1946,68 @@ function CreateCaseSheet({
 
   const selectedContact = contacts.find((contact) => contact.id === form.contactId);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  useEffect(() => {
+    if (!open) return;
+    const selection = getPipelineSelection(pipelines, defaultPipelineId);
+    setForm((current) => ({
+      ...current,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || current.stage || "intake",
+    }));
+  }, [defaultPipelineId, open, pipelines]);
 
   const resetForm = () => {
+    const selection = getPipelineSelection(pipelines, defaultPipelineId);
     setForm({
       caseNumber: "",
       caseName: "",
       caseType: CASE_TYPES[0],
-      stage: "intake",
+      stage: selection.stageName || "intake",
       status: "open",
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
       contactId: "",
       assignedUserId: "",
       notes: "",
     });
   };
 
+  const handlePipelineChange = (pipelineId: string) => {
+    if (pipelineId === NO_PIPELINE_VALUE) {
+      setForm({ ...form, pipelineId: "", pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const selection = getPipelineSelection(pipelines, pipelineId);
+    setForm({
+      ...form,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || form.stage,
+    });
+  };
+
+  const handlePipelineStageChange = (pipelineStageId: string) => {
+    if (!selectedPipeline || pipelineStageId === NO_STAGE_VALUE) {
+      setForm({ ...form, pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const stage = selectedPipeline.stages?.find((item) => item.id === pipelineStageId);
+    setForm({
+      ...form,
+      pipelineStageId,
+      stage: stage?.name || form.stage,
+    });
+  };
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!form.contactId) {
-      toast({ title: "Contact Required", description: "Please select a GHL contact.", variant: "destructive" });
+      toast({ title: "Contact Required", description: "Please select a contact.", variant: "destructive" });
       return;
     }
 
@@ -1403,18 +2025,26 @@ function CreateCaseSheet({
         contactEmail: selectedContact?.email || "",
         contactPhone: formatPhoneNumber(selectedContact?.phone, ""),
         assignedUserId: form.assignedUserId || null,
+        ghlPipelineId: form.pipelineId || null,
+        ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
         metadata: {
           assigned_user_name: selectedUser ? getUserName(selectedUser) : "",
+          ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
+          ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
+          clientType: "contact",
+          relatedRecordType: "contact",
+          primaryContactId: form.contactId,
+          primaryContactName: selectedContact ? formatContactName(selectedContact) : "",
         },
       });
-      toast({ title: "Matter Created", description: `${caseRecord.case_name} has been created.` });
+      toast({ title: `${recordLabel} Created`, description: `${caseRecord.case_name} has been created.` });
       resetForm();
       onCreated(caseRecord);
     } catch (error) {
       toast({
-        title: "Matter Not Created",
-        description: getUserFriendlyErrorMessage(error, "Could not create the matter. Please try again."),
+        title: `${recordLabel} Not Created`,
+        description: getUserFriendlyErrorMessage(error, `Could not create the ${recordLabel.toLowerCase()}. Please try again.`),
         variant: "destructive",
       });
     } finally {
@@ -1426,12 +2056,12 @@ function CreateCaseSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="overflow-y-auto p-6 sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>Create Matter</SheetTitle>
+          <SheetTitle>Create {recordLabel}</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
-            <Label>Matter Number</Label>
+            <Label>{recordLabel} Number</Label>
             <Input
               value={form.caseNumber}
               onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
@@ -1440,7 +2070,7 @@ function CreateCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Matter Name</Label>
+            <Label>{recordLabel} Name</Label>
             <Input
               value={form.caseName}
               onChange={(event) => setForm({ ...form, caseName: event.target.value })}
@@ -1450,7 +2080,7 @@ function CreateCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>GHL Contact</Label>
+            <Label>Contact</Label>
             <Select value={form.contactId} onValueChange={(contactId) => setForm({ ...form, contactId })} required>
               <SelectTrigger>
                 <span className={cn(!form.contactId && "text-muted-foreground")}>
@@ -1486,9 +2116,50 @@ function CreateCaseSheet({
               />
             </div>
             <div className="space-y-2">
-              <Label>Stage</Label>
-              <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+              <Label>Pipeline</Label>
+              <Select value={form.pipelineId || NO_PIPELINE_VALUE} onValueChange={handlePipelineChange}>
+                <SelectTrigger>
+                  <span className={cn(!form.pipelineId && "text-muted-foreground")}>
+                    {selectedPipeline?.name || "No pipeline"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  <SelectItem value={NO_PIPELINE_VALUE}>No Pipeline</SelectItem>
+                  {pipelines.map((pipeline) => (
+                    <SelectItem key={pipeline.id} value={pipeline.id}>
+                      {pipeline.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Stage</Label>
+            <Select
+              value={form.pipelineStageId || NO_STAGE_VALUE}
+              onValueChange={handlePipelineStageChange}
+            >
+              <SelectTrigger>
+                <span className={cn(!form.pipelineStageId && "text-muted-foreground")}>
+                  {form.stage || (selectedPipeline ? "No stages available" : "Select pipeline first")}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="max-h-72 overflow-y-auto">
+                {selectedPipeline?.stages?.length ? (
+                  selectedPipeline.stages.map((stage) => (
+                    <SelectItem key={stage.id} value={stage.id}>
+                      {stage.name}
+                    </SelectItem>
+                  ))
+                ) : (
+                  <SelectItem value={NO_STAGE_VALUE} disabled>
+                    No stages available
+                  </SelectItem>
+                )}
+              </SelectContent>
+            </Select>
           </div>
 
           <div className="space-y-2">
@@ -1515,7 +2186,7 @@ function CreateCaseSheet({
             <Textarea
               value={form.notes}
               onChange={(event) => setForm({ ...form, notes: event.target.value })}
-              placeholder="Optional context for this matter"
+              placeholder={`Optional context for this ${recordLabel.toLowerCase()}`}
               rows={3}
             />
           </div>
@@ -1526,7 +2197,7 @@ function CreateCaseSheet({
             </Button>
             <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Create Matter
+              Create {recordLabel}
             </Button>
           </div>
         </form>
@@ -1540,12 +2211,16 @@ function EditCaseSheet({
   onOpenChange,
   caseRecord,
   users,
+  pipelines,
+  recordLabel = "Matter",
   onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   caseRecord: CaseRecord | null;
   users: AssignableUser[];
+  pipelines: GhlPipeline[];
+  recordLabel?: string;
   onSaved: (caseRecord: CaseRecord) => void;
 }) {
   const { toast } = useToast();
@@ -1556,23 +2231,58 @@ function EditCaseSheet({
     caseType: CASE_TYPES[0],
     stage: "intake",
     status: "open",
+    pipelineId: "",
+    pipelineStageId: "",
     assignedUserId: "",
   });
 
   useEffect(() => {
     if (!caseRecord || !open) return;
+    const selection = getPipelineSelection(pipelines, caseRecord.ghl_pipeline_id, caseRecord.ghl_pipeline_stage_id);
     setForm({
       caseNumber: caseRecord.case_number || "",
       caseName: caseRecord.case_name || "",
       caseType: caseRecord.case_type || CASE_TYPES[0],
       stage: caseRecord.stage || "intake",
       status: caseRecord.status || "open",
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
       assignedUserId: caseRecord.assigned_user_id || "",
     });
-  }, [caseRecord, open]);
+  }, [caseRecord, open, pipelines]);
 
   const caseTypeOptions = CASE_TYPES.includes(form.caseType) ? CASE_TYPES : [form.caseType, ...CASE_TYPES];
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  const handlePipelineChange = (pipelineId: string) => {
+    if (pipelineId === NO_PIPELINE_VALUE) {
+      setForm({ ...form, pipelineId: "", pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const selection = getPipelineSelection(pipelines, pipelineId);
+    setForm({
+      ...form,
+      pipelineId: selection.pipelineId,
+      pipelineStageId: selection.pipelineStageId,
+      stage: selection.stageName || form.stage,
+    });
+  };
+
+  const handlePipelineStageChange = (pipelineStageId: string) => {
+    if (!selectedPipeline || pipelineStageId === NO_STAGE_VALUE) {
+      setForm({ ...form, pipelineStageId: "", stage: "" });
+      return;
+    }
+
+    const stage = selectedPipeline.stages?.find((item) => item.id === pipelineStageId);
+    setForm({
+      ...form,
+      pipelineStageId,
+      stage: stage?.name || form.stage,
+    });
+  };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1587,14 +2297,20 @@ function EditCaseSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        ghlPipelineId: form.pipelineId || null,
+        ghlPipelineStageId: form.pipelineStageId || null,
         assignedUserId: form.assignedUserId || null,
+        metadata: {
+          ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
+          ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
+        },
       });
       onSaved(updatedCase);
-      toast({ title: "Matter Updated", description: `${updatedCase.case_name} has been saved.` });
+      toast({ title: `${recordLabel} Updated`, description: `${updatedCase.case_name} has been saved.` });
     } catch (error) {
       toast({
-        title: "Matter Not Updated",
-        description: getUserFriendlyErrorMessage(error, "Could not update this matter. Please try again."),
+        title: `${recordLabel} Not Updated`,
+        description: getUserFriendlyErrorMessage(error, `Could not update this ${recordLabel.toLowerCase()}. Please try again.`),
         variant: "destructive",
       });
     } finally {
@@ -1606,12 +2322,12 @@ function EditCaseSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
         <SheetHeader>
-          <SheetTitle>Edit Matter</SheetTitle>
+          <SheetTitle>Edit {recordLabel}</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
-            <Label>Matter Number</Label>
+            <Label>{recordLabel} Number</Label>
             <Input
               value={form.caseNumber}
               onChange={(event) => setForm({ ...form, caseNumber: event.target.value })}
@@ -1620,7 +2336,7 @@ function EditCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Matter Name</Label>
+            <Label>{recordLabel} Name</Label>
             <Input
               value={form.caseName}
               onChange={(event) => setForm({ ...form, caseName: event.target.value })}
@@ -1659,6 +2375,25 @@ function EditCaseSheet({
             </Select>
           </div>
 
+          <div className="space-y-2">
+            <Label>Pipeline</Label>
+            <Select value={form.pipelineId || NO_PIPELINE_VALUE} onValueChange={handlePipelineChange}>
+              <SelectTrigger>
+                <span className={cn(!form.pipelineId && "text-muted-foreground")}>
+                  {selectedPipeline?.name || "No pipeline"}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="max-h-72 overflow-y-auto">
+                <SelectItem value={NO_PIPELINE_VALUE}>No Pipeline</SelectItem>
+                {pipelines.map((pipeline) => (
+                  <SelectItem key={pipeline.id} value={pipeline.id}>
+                    {pipeline.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Status</Label>
@@ -1678,7 +2413,29 @@ function EditCaseSheet({
 
             <div className="space-y-2">
               <Label>Stage</Label>
-              <Input value={form.stage} onChange={(event) => setForm({ ...form, stage: event.target.value })} />
+              <Select
+                value={form.pipelineStageId || NO_STAGE_VALUE}
+                onValueChange={handlePipelineStageChange}
+              >
+                <SelectTrigger>
+                  <span className={cn(!form.pipelineStageId && "text-muted-foreground")}>
+                    {form.stage || (selectedPipeline ? "No stages available" : "Select pipeline first")}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  {selectedPipeline?.stages?.length ? (
+                    selectedPipeline.stages.map((stage) => (
+                      <SelectItem key={stage.id} value={stage.id}>
+                        {stage.name}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value={NO_STAGE_VALUE} disabled>
+                      No stages available
+                    </SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
             </div>
           </div>
 

@@ -1265,7 +1265,8 @@ export function CompanyDetailPage() {
           setCompanyMatters(
             caseRows.filter((caseRecord) => {
               const matterContactId = String(caseRecord.ghl_contact_id || "");
-              return matterContactId === companyId || linkedContactIds.has(matterContactId);
+              const matterCompanyId = String(caseRecord.metadata?.companyId || caseRecord.metadata?.company_id || "");
+              return matterCompanyId === companyId || matterContactId === companyId || linkedContactIds.has(matterContactId);
             }),
           );
 
@@ -1385,6 +1386,10 @@ export function CompanyDetailPage() {
               }
             : null
         }
+        relatedCompany={{
+          id: companyId || company.id,
+          name: company.name || "Company",
+        }}
         onCreated={(matter) => {
           setCompanyMatters((current) => [matter, ...current]);
         }}

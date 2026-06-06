@@ -71,6 +71,25 @@ export type GhlCustomField = {
   picklistOptions?: Array<string | GhlCustomFieldOption>;
 };
 
+export type GhlPipelineStage = {
+  id: string;
+  name: string;
+  position?: number | null;
+  showInFunnel?: boolean | null;
+  showInPieChart?: boolean | null;
+};
+
+export type GhlPipeline = {
+  id: string;
+  name: string;
+  stages?: GhlPipelineStage[];
+  locationId?: string | null;
+  showInFunnel?: boolean | null;
+  showInPieChart?: boolean | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+};
+
 export async function getAppLocationContext(): Promise<AppLocationContext> {
   const { data, error } = await supabase.functions.invoke("app-location-context", {
     body: {},
@@ -251,6 +270,48 @@ export async function deleteBusiness(businessId: string) {
   return apiClient<{ ok?: boolean; success?: boolean }>(`/businesses/${encodeURIComponent(businessId)}`, {
     method: "DELETE",
   });
+}
+
+function normalizePipelineStage(rawStage: any): GhlPipelineStage {
+  return {
+    id: String(rawStage?.id || rawStage?._id || rawStage?.stageId || rawStage?.name || ""),
+    name: String(rawStage?.name || rawStage?.title || "Untitled Stage"),
+    position: rawStage?.position ?? rawStage?.order ?? rawStage?.sortOrder ?? null,
+    showInFunnel: rawStage?.showInFunnel ?? null,
+    showInPieChart: rawStage?.showInPieChart ?? null,
+  };
+}
+
+function normalizePipeline(rawPipeline: any): GhlPipeline {
+  return {
+    id: String(rawPipeline?.id || rawPipeline?._id || rawPipeline?.pipelineId || rawPipeline?.name || ""),
+    name: String(rawPipeline?.name || rawPipeline?.title || "Untitled Pipeline"),
+    stages: Array.isArray(rawPipeline?.stages)
+      ? rawPipeline.stages
+          .map(normalizePipelineStage)
+          .sort((a: GhlPipelineStage, b: GhlPipelineStage) => (a.position ?? 0) - (b.position ?? 0))
+      : [],
+    locationId: rawPipeline?.locationId || rawPipeline?.location_id || null,
+    showInFunnel: rawPipeline?.showInFunnel ?? null,
+    showInPieChart: rawPipeline?.showInPieChart ?? null,
+    createdAt: rawPipeline?.createdAt || rawPipeline?.dateAdded || rawPipeline?.created_at || null,
+    updatedAt: rawPipeline?.updatedAt || rawPipeline?.dateUpdated || rawPipeline?.updated_at || null,
+  };
+}
+
+function getPipelineCollection(response: any) {
+  if (Array.isArray(response)) return response;
+  if (Array.isArray(response?.pipelines)) return response.pipelines;
+  if (Array.isArray(response?.data?.pipelines)) return response.data.pipelines;
+  if (Array.isArray(response?.data)) return response.data;
+  return [];
+}
+
+export async function getPipelines(locationId: string) {
+  const response = await apiClient<unknown>(`/opportunities/pipelines?locationId=${encodeURIComponent(locationId)}`);
+  return getPipelineCollection(response)
+    .map((pipeline: unknown) => normalizePipeline(pipeline))
+    .filter((pipeline: GhlPipeline) => pipeline.id && pipeline.name);
 }
 
 export async function getBusinessCustomFields(locationId: string) {

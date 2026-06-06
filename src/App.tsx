@@ -10,6 +10,7 @@ import Index from "@/pages/Index";
 import { Login } from "@/pages/Login";
 import NotFound from "@/pages/NotFound";
 import { PlaceholderPage } from "@/pages/PlaceholderPage";
+import { PipelinesPage } from "@/pages/PipelinesPage";
 import { ResetPassword } from "@/pages/ResetPassword";
 import { TasksPage } from "@/pages/TasksPage";
 import { Toaster } from "@/components/ui/toaster";
@@ -63,6 +64,16 @@ function CasesShell() {
   );
 }
 
+function LeadsShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <CasesPage section="leads" />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
 function CaseDetailShell() {
   return (
     <RequireAuth>
@@ -93,6 +104,16 @@ function TasksShell() {
   );
 }
 
+function PipelinesShell() {
+  return (
+    <RequireAuth>
+      <Layout>
+        <PipelinesPage />
+      </Layout>
+    </RequireAuth>
+  );
+}
+
 function IndexShell() {
   return (
     <RequireAuth>
@@ -116,9 +137,9 @@ export function App() {
         <Route path="/calendar" element={<CalendarShell />} />
         <Route path="/tasks" element={<TasksShell />} />
         <Route path="/users" element={<UsersShell />} />
-        <Route path="/leads" element={<AppShell title="Leads" />} />
+        <Route path="/leads" element={<LeadsShell />} />
         <Route path="/tools/data" element={<AppShell title="Data" />} />
-        <Route path="/tools/pipelines" element={<AppShell title="Pipelines" />} />
+        <Route path="/tools/pipelines" element={<PipelinesShell />} />
         <Route path="/billing" element={<AppShell title="Billing" />} />
         <Route path="/documents" element={<AppShell title="Documents" />} />
         <Route path="/payments" element={<AppShell title="Payments" />} />

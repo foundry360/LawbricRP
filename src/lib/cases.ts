@@ -14,6 +14,10 @@ export type CaseRecord = {
   primary_contact_email?: string | null;
   primary_contact_phone?: string | null;
   assigned_user_id?: string | null;
+  ghl_case_record_id?: string | null;
+  ghl_pipeline_id?: string | null;
+  ghl_pipeline_stage_id?: string | null;
+  metadata?: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 };
