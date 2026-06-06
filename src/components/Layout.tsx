@@ -50,6 +50,7 @@ import { SettingsDialog } from "@/components/SettingsDialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getAvatarInitials } from "@/lib/avatar";
 import { formatDistanceToNow } from "date-fns";
+import { GlobalSearch } from "@/components/GlobalSearch";
 
 type NotificationRow = {
   id: string;
@@ -195,15 +196,21 @@ export function Layout({ children }: { children: ReactNode }) {
 
   return (
     <SidebarProvider>
-      <header className="fixed left-0 right-0 top-0 z-50 flex h-16 items-center justify-between border-b bg-header px-4 text-header-foreground lg:px-6">
-        <div className="flex items-center gap-2">
+      <header className="fixed left-0 right-0 top-0 z-50 grid h-16 grid-cols-[1fr_auto_1fr] items-center gap-4 border-b bg-header px-4 text-header-foreground lg:px-6">
+        <div className="flex items-center gap-2 justify-self-start">
           <img
             src="https://vibe.filesafe.space/1780031277244837711/attachments/2a75f7ed-1a85-412c-99dd-6eda46271a66.png"
             alt="Lawbric Logo"
             className="h-9"
           />
         </div>
-        <div className="flex items-center gap-6">
+        <div className="hidden w-[min(20rem,24vw)] justify-self-center md:block">
+          <GlobalSearch
+            locationId={appContext?.location?.ghlLocationId || ""}
+            disabled={isInitializing || !appContext?.configured}
+          />
+        </div>
+        <div className="flex items-center gap-6 justify-self-end">
           <div className="flex items-center gap-4">
             <div className="flex items-center gap-0">
               <Button
@@ -336,7 +343,7 @@ export function Layout({ children }: { children: ReactNode }) {
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <SidebarMenuButton className="h-10 justify-start font-medium hover:bg-transparent focus:outline-none focus-visible:ring-0 focus-visible:ring-offset-0">
-                        <div className="relative right-0.5 top-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+                        <div className="relative right-0.5 top-px flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors group-hover/menu-button:bg-[#0484C8]">
                           <Plus className="h-4 w-4" strokeWidth={1.8} />
                         </div>
                         <span className="min-w-0 truncate whitespace-nowrap text-[13px] group-data-[collapsible=icon]:hidden">

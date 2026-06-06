@@ -14,6 +14,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
+import { formatPersonName } from "@/lib/names";
 
 export type ListView = {
   id: string;
@@ -208,11 +209,10 @@ export function CreateListViewSheet({
                 <SelectContent>
                   <SelectItem value="All">Any Attorney</SelectItem>
                   {systemUsers.map((user) => {
-                    const userName =
+                    const rawName =
                       user.name ||
-                      `${user.firstName || ""} ${user.lastName || ""}`.trim() ||
-                      user.email ||
-                      user.id;
+                      `${user.firstName || ""} ${user.lastName || ""}`.trim();
+                    const userName = rawName ? formatPersonName(rawName) : user.email || user.id;
                     return (
                       <SelectItem key={user.id} value={userName}>
                         {userName}
@@ -246,7 +246,7 @@ export function CreateListViewSheet({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSave}>{editingListView ? "Save Changes" : "Save List View"}</Button>
+            <Button className="hover:bg-[#0484C8]" onClick={handleSave}>{editingListView ? "Save Changes" : "Save List View"}</Button>
           </div>
         </SheetFooter>
       </SheetContent>

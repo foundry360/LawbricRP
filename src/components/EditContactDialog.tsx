@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 
 const contactSchema = z.object({
@@ -63,13 +64,12 @@ type EditContactDialogProps = {
 };
 
 function getUserName(user: SystemUser) {
-  return (
+  const name =
     user.name ||
     user.full_name ||
-    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim() ||
-    user.email ||
-    user.id
-  );
+    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim();
+
+  return name ? formatPersonName(name) : user.email || user.id;
 }
 
 function getUserByFormValue(users: SystemUser[], value: string) {
@@ -345,6 +345,10 @@ export function EditContactDialog({
                         value={field.value && field.value !== "N/A" ? field.value : ""}
                         onValueChange={field.onChange}
                         placeholder="Select date of birth"
+                        monthYearPicker
+                        fromYear={1900}
+                        toYear={new Date().getFullYear()}
+                        maxDate={new Date()}
                       />
                     </FormControl>
                     <FormMessage />
@@ -408,7 +412,7 @@ export function EditContactDialog({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={form.formState.isSubmitting}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={form.formState.isSubmitting}>
+              <Button type="submit" className="hover:bg-[#0484C8]" disabled={form.formState.isSubmitting}>
                 {form.formState.isSubmitting ? "Saving..." : "Save Changes"}
               </Button>
             </div>

@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatFullName, formatPersonName } from "@/lib/names";
 import { supabase } from "@/lib/supabase";
 import { Key, Loader2, Tags, Upload, User } from "lucide-react";
 
@@ -134,12 +135,12 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     const { error } = await supabase.auth.updateUser({
       data: {
         avatar_url: avatarUrl,
-        first_name: firstName,
-        last_name: lastName,
+        first_name: formatPersonName(firstName),
+        last_name: formatPersonName(lastName),
       },
     });
 
-    const fullName = `${firstName} ${lastName}`.trim();
+    const fullName = formatFullName(firstName, lastName);
     const profileError = !error && userId
       ? (await supabase.from("profiles").update({ full_name: fullName }).eq("id", userId)).error
       : null;

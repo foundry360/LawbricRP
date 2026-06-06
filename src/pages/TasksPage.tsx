@@ -1,11 +1,13 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type DragEvent, type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
   Calendar,
   CheckSquare,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
+  Clock,
   Eye,
   Filter,
   LayoutGrid,
@@ -14,8 +16,10 @@ import {
   MoreHorizontal,
   MoreVertical,
   Pencil,
+  Pin,
   Plus,
   Search,
+  SquareKanban,
   Trash2,
   User,
 } from "lucide-react";
@@ -44,11 +48,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getContacts } from "@/lib/api";
 import { type CaseRecord, listCases } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { supabase } from "@/lib/supabase";
 import { type TaskRecord, createTask, deleteTask, listTasks, updateTask } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
@@ -57,6 +63,16 @@ import { cn } from "@/lib/utils";
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
 const RELATED_TYPES = ["general", "case", "contact", "opportunity"];
+const TASK_VIEW_MODE_STORAGE_KEY = "lawbric.tasks.viewMode";
+const TASK_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.tasks.pinnedViewMode";
+const TASK_PINNED_VIEW_MODE_METADATA_KEY = "taskPinnedViewMode";
+const TASK_STATUS_COLUMN_STYLES: Record<string, string> = {
+  todo: "bg-sky-50",
+  in_progress: "bg-blue-50",
+  blocked: "bg-rose-50",
+  done: "bg-emerald-50",
+  cancelled: "bg-slate-100",
+};
 
 function getRelatedTypeLabel(type: string) {
   return type === "case" ? "Matter" : type;
@@ -73,6 +89,37 @@ type TaskListView = {
     assignedUserId?: string;
   };
 };
+
+type TaskViewMode = "grid" | "list" | "kanban";
+
+function isTaskViewMode(value: unknown): value is TaskViewMode {
+  return value === "grid" || value === "list" || value === "kanban";
+}
+
+function getInitialTaskViewMode(): TaskViewMode {
+  if (typeof window === "undefined") return "list";
+  const pinnedViewMode = window.localStorage.getItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY);
+  if (isTaskViewMode(pinnedViewMode)) return pinnedViewMode;
+  const savedViewMode = window.localStorage.getItem(TASK_VIEW_MODE_STORAGE_KEY);
+  return isTaskViewMode(savedViewMode) ? savedViewMode : "list";
+}
+
+function getInitialPinnedTaskViewMode(): TaskViewMode | null {
+  if (typeof window === "undefined") return null;
+  const pinnedViewMode = window.localStorage.getItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY);
+  return isTaskViewMode(pinnedViewMode) ? pinnedViewMode : null;
+}
+
+function ControlTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 const defaultTaskListViews: TaskListView[] = [
   { id: "all", name: "All Tasks", system: true, filters: {} },
@@ -92,18 +139,20 @@ function getArrayFromResponse(response: any, key: string) {
 }
 
 function formatContactName(contact: any) {
-  return (
-    `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() ||
-    contact?.name ||
-    contact?.email ||
-    "Unnamed contact"
-  );
+  const name = `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || "";
+  return formatPersonName(name) || contact?.email || "Unnamed contact";
 }
 
 function formatDate(value?: string | null) {
   if (!value) return "Not set";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Not set" : date.toLocaleDateString();
+}
+
+function isTaskOverdue(task: TaskRecord) {
+  if (!task.due_at || ["done", "cancelled"].includes(task.status)) return false;
+  const dueDate = new Date(task.due_at);
+  return !Number.isNaN(dueDate.getTime()) && dueDate.getTime() < Date.now();
 }
 
 function formatDateTimeInput(value?: string | null) {
@@ -161,7 +210,7 @@ function getTaskPriorityClass(priority: string) {
 
 function getRelatedLabel(task: TaskRecord) {
   if (task.related_type === "case" && task.case) return task.case.case_name;
-  if (task.related_type === "contact") return task.ghl_contact_name || task.ghl_contact_id || "Contact";
+  if (task.related_type === "contact") return formatPersonName(task.ghl_contact_name) || task.ghl_contact_id || "Contact";
   if (task.related_type === "opportunity") return task.ghl_opportunity_name || task.ghl_opportunity_id || "Opportunity";
   return "General";
 }
@@ -179,7 +228,9 @@ function getAssignedName(task: TaskRecord, users: AssignableUser[] = []) {
     ? users.find((user) => getUserId(user) === task.assigned_user_id)
     : null;
 
-  return task.assigned_user?.full_name || task.assigned_user?.email || (matchedUser ? getUserName(matchedUser) : "Unassigned");
+  return task.assigned_user?.full_name
+    ? formatPersonName(task.assigned_user.full_name)
+    : task.assigned_user?.email || (matchedUser ? getUserName(matchedUser) : "Unassigned");
 }
 
 export function TasksPage() {
@@ -205,7 +256,11 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState("All");
   const [priorityFilter, setPriorityFilter] = useState("All");
   const [assignedUserFilter, setAssignedUserFilter] = useState("All");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("list");
+  const [viewMode, setViewMode] = useState<TaskViewMode>(getInitialTaskViewMode);
+  const [pinnedViewMode, setPinnedViewMode] = useState<TaskViewMode | null>(getInitialPinnedTaskViewMode);
+  const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
+  const [dragOverStatus, setDragOverStatus] = useState("");
+  const [updatingTaskStatusId, setUpdatingTaskStatusId] = useState<string | null>(null);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [currentPage, setCurrentPage] = useState(1);
@@ -245,22 +300,76 @@ export function TasksPage() {
   };
 
   useEffect(() => {
-    const loadListViews = async () => {
+    const loadTaskPreferences = async () => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const saved = session?.user?.user_metadata?.taskListViews;
+      const userMetadata = session?.user?.user_metadata || {};
+      const saved = userMetadata.taskListViews;
       if (Array.isArray(saved) && saved.length > 0) {
         setListViews([...defaultTaskListViews, ...saved.filter((view: TaskListView) => !view.system)]);
       }
+
+      const savedPinnedViewMode = userMetadata[TASK_PINNED_VIEW_MODE_METADATA_KEY];
+      if (isTaskViewMode(savedPinnedViewMode)) {
+        setPinnedViewMode(savedPinnedViewMode);
+        setViewMode(savedPinnedViewMode);
+        window.localStorage.setItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY, savedPinnedViewMode);
+      } else {
+        setPinnedViewMode(null);
+        window.localStorage.removeItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
     };
 
-    loadListViews().catch((error) => console.error("Failed to load task list views from Supabase", error));
+    loadTaskPreferences().catch((error) => console.error("Failed to load task preferences from Supabase", error));
   }, []);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(TASK_VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
+
+  const handleTogglePinnedView = async () => {
+    const nextPinnedViewMode = pinnedViewMode === viewMode ? null : viewMode;
+    setPinnedViewMode(nextPinnedViewMode);
+    if (nextPinnedViewMode) {
+      window.localStorage.setItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY, nextPinnedViewMode);
+    } else {
+      window.localStorage.removeItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY);
+    }
+
+    setIsSavingPinnedView(true);
+    try {
+      await supabase.auth.updateUser({
+        data: {
+          [TASK_PINNED_VIEW_MODE_METADATA_KEY]: nextPinnedViewMode,
+        },
+      });
+      toast({
+        title: nextPinnedViewMode ? "Tasks View Pinned" : "Tasks View Unpinned",
+        description: nextPinnedViewMode
+          ? `Tasks will open in ${nextPinnedViewMode === "grid" ? "card" : nextPinnedViewMode} view.`
+          : "Tasks will open in the last view used on this device.",
+      });
+    } catch (error) {
+      setPinnedViewMode(pinnedViewMode);
+      if (pinnedViewMode) {
+        window.localStorage.setItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY, pinnedViewMode);
+      } else {
+        window.localStorage.removeItem(TASK_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
+      toast({
+        title: "Pinned View Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Could not save your pinned Tasks view."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingPinnedView(false);
+    }
+  };
 
   const saveListViewsToSupabase = async (newListViews: TaskListView[]) => {
     setListViews(newListViews);
@@ -383,6 +492,41 @@ export function TasksPage() {
     loadData();
   };
 
+  const handleTaskStatusChange = async (task: TaskRecord, status: string) => {
+    if (task.status === status || updatingTaskStatusId) return;
+
+    const previousTasks = tasks;
+    const updatedAt = new Date().toISOString();
+    setUpdatingTaskStatusId(task.id);
+    setTasks((current) =>
+      current.map((item) =>
+        item.id === task.id
+          ? {
+              ...item,
+              status,
+              completed_at: status === "done" ? item.completed_at || updatedAt : null,
+              updated_at: updatedAt,
+            }
+          : item,
+      ),
+    );
+
+    try {
+      const savedTask = await updateTask({ locationId, taskId: task.id, status });
+      setTasks((current) => current.map((item) => (item.id === savedTask.id ? savedTask : item)));
+      toast({ title: "Task Updated", description: `${savedTask.title} moved to ${status.replace(/_/g, " ")}.` });
+    } catch (error) {
+      setTasks(previousTasks);
+      toast({
+        title: "Task Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not move this task. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setUpdatingTaskStatusId(null);
+    }
+  };
+
   const handleDeleteTask = async () => {
     if (!taskToDelete) return;
     setIsDeletingTask(true);
@@ -471,7 +615,7 @@ export function TasksPage() {
               {listViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
                       <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -493,7 +637,7 @@ export function TasksPage() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground"
+                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                 onClick={() => {
                   setEditingListView(null);
                   setIsListViewPanelOpen(true);
@@ -557,23 +701,25 @@ export function TasksPage() {
               </div>
 
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={cn(
-                      "relative h-10 w-10 shrink-0 rounded-full",
-                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
-                    )}
-                  >
-                    <Filter className="h-4 w-4" />
-                    {activeFilterCount > 0 && (
-                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                        {activeFilterCount}
-                      </span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
+                <ControlTooltip label="Filter tasks">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className={cn(
+                        "relative h-10 w-10 shrink-0 rounded-full",
+                        activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                      )}
+                    >
+                      <Filter className="h-4 w-4" />
+                      {activeFilterCount > 0 && (
+                        <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                          {activeFilterCount}
+                        </span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                </ControlTooltip>
                 <PopoverContent className="right-0 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -681,33 +827,60 @@ export function TasksPage() {
               <Tabs
                 value={viewMode}
                 onValueChange={(value) => {
-                  setViewMode(value as "grid" | "list");
+                  setViewMode(value as TaskViewMode);
                   setCurrentPage(1);
                 }}
                 className="hidden sm:block"
               >
                 <TabsList className="h-10 rounded-full">
-                  <TabsTrigger value="grid" className="rounded-full px-3">
-                    <LayoutGrid className="h-4 w-4" />
-                  </TabsTrigger>
-                  <TabsTrigger value="list" className="rounded-full px-3">
-                    <List className="h-4 w-4" />
-                  </TabsTrigger>
+                  <ControlTooltip label="Kanban view">
+                    <TabsTrigger value="kanban" className="rounded-full px-3">
+                      <SquareKanban className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
+                  <ControlTooltip label="List view">
+                    <TabsTrigger value="list" className="rounded-full px-3">
+                      <List className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
+                  <ControlTooltip label="Card view">
+                    <TabsTrigger value="grid" className="rounded-full px-3">
+                      <LayoutGrid className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
                 </TabsList>
               </Tabs>
+              <ControlTooltip label={pinnedViewMode === viewMode ? "Unpin this Tasks view" : "Pin this Tasks view"}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
+                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                  )}
+                  disabled={isSavingPinnedView}
+                  onClick={handleTogglePinnedView}
+                  aria-label={pinnedViewMode === viewMode ? "Unpin this Tasks view" : "Pin this Tasks view"}
+                >
+                  <Pin className={cn("h-4 w-4", pinnedViewMode === viewMode && "fill-current")} />
+                </Button>
+              </ControlTooltip>
             </>
           )}
 
-          <Button
-            size="icon"
-            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
-            onClick={() => {
-              setEditingTask(null);
-              setIsTaskSheetOpen(true);
-            }}
-          >
-            <Plus className="h-5 w-5" />
-          </Button>
+          <ControlTooltip label="Add task">
+            <Button
+              size="icon"
+              className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+              onClick={() => {
+                setEditingTask(null);
+                setIsTaskSheetOpen(true);
+              }}
+            >
+              <Plus className="h-5 w-5" />
+            </Button>
+          </ControlTooltip>
         </div>
       </div>
 
@@ -723,14 +896,14 @@ export function TasksPage() {
           </div>
           <h3 className="mb-1 text-lg font-medium text-muted-foreground">No tasks found</h3>
           <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by creating your first task.</p>
-          <Button onClick={() => setIsTaskSheetOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm">
+          <Button onClick={() => setIsTaskSheetOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
             <Plus className="h-6 w-6" />
           </Button>
         </div>
       ) : (
         <>
           {viewMode === "grid" ? (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {paginatedTasks.map((task) => (
                 <TaskCard
                   key={task.id}
@@ -745,6 +918,20 @@ export function TasksPage() {
                 />
               ))}
             </div>
+          ) : viewMode === "kanban" ? (
+            <TaskKanbanBoard
+              tasks={sortedTasks}
+              navigate={navigate}
+              dragOverStatus={dragOverStatus}
+              updatingTaskStatusId={updatingTaskStatusId}
+              onDragOverStatus={setDragOverStatus}
+              onStatusChange={handleTaskStatusChange}
+              onEdit={(task) => {
+                setEditingTask(task);
+                setIsTaskSheetOpen(true);
+              }}
+              onDelete={setTaskToDelete}
+            />
           ) : (
             <TaskTable
               tasks={paginatedTasks}
@@ -768,6 +955,7 @@ export function TasksPage() {
             </div>
           )}
 
+          {viewMode !== "kanban" ? (
           <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
             <div className="text-muted-foreground">
               Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
@@ -856,6 +1044,7 @@ export function TasksPage() {
               </Pagination>
             </div>
           </div>
+          ) : null}
         </>
       )}
     </div>
@@ -878,35 +1067,190 @@ function TaskCard({
   const relatedPath = getRelatedPath(task);
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={() => relatedPath && navigate(relatedPath)}>
-      <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
-        <div className="min-w-0">
-          <h3 className="mb-1.5 text-lg leading-none text-[#2384CA]">{task.title}</h3>
-          <div className="text-sm capitalize text-muted-foreground">{(task.related_type || "general").replace(/_/g, " ")}</div>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 bg-muted/30 p-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+            <CheckSquare className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="min-w-0 truncate text-sm font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
+              <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getTaskStatusClass(task.status))}>
+                {task.status.replace(/_/g, " ")}
+              </Badge>
+            </div>
+            <div className="mt-1 truncate text-xs capitalize text-muted-foreground">{(task.related_type || "general").replace(/_/g, " ")}</div>
+          </div>
         </div>
         <TaskActions onView={() => (relatedPath ? navigate(relatedPath) : onEdit())} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
-      <CardContent className="space-y-3 pt-4">
-        <div className="flex flex-wrap gap-2">
-          <Badge variant="outline" className={cn("border-transparent capitalize", getTaskStatusClass(task.status))}>
-            {task.status.replace(/_/g, " ")}
-          </Badge>
-          <Badge variant="outline" className={cn("border-transparent capitalize", getTaskPriorityClass(task.priority))}>
-            {task.priority}
-          </Badge>
-        </div>
+      <CardContent className="space-y-1.5 p-3 pt-3">
+        <TaskMeta label="Priority" value={task.priority} />
         <TaskMeta label="Related To" value={getRelatedLabel(task)} />
         <TaskMeta label="Assigned To" value={getAssignedName(task, users)} />
-        <TaskMeta label="Due" value={formatDate(task.due_at)} />
+        <TaskMeta
+          label="Due"
+          value={formatDate(task.due_at)}
+          valueClassName={cn(isTaskOverdue(task) && "font-medium text-red-600")}
+        />
       </CardContent>
     </Card>
   );
 }
 
-function TaskMeta({ label, value }: { label: string; value: string }) {
+function TaskKanbanBoard({
+  tasks,
+  navigate,
+  dragOverStatus,
+  updatingTaskStatusId,
+  onDragOverStatus,
+  onStatusChange,
+  onEdit,
+  onDelete,
+}: {
+  tasks: TaskRecord[];
+  navigate: (path: string) => void;
+  dragOverStatus: string;
+  updatingTaskStatusId: string | null;
+  onDragOverStatus: (status: string) => void;
+  onStatusChange: (task: TaskRecord, status: string) => void;
+  onEdit: (task: TaskRecord) => void;
+  onDelete: (task: TaskRecord) => void;
+}) {
+  const statuses = Array.from(
+    new Set([...TASK_STATUSES, ...tasks.map((task) => task.status).filter(Boolean)]),
+  );
+
+  const handleDrop = (event: DragEvent<HTMLDivElement>, status: string) => {
+    event.preventDefault();
+    const taskId = event.dataTransfer.getData("text/plain");
+    const task = tasks.find((item) => item.id === taskId);
+    onDragOverStatus("");
+    if (task) onStatusChange(task, status);
+  };
+
   return (
-    <div className="flex justify-between gap-4 text-sm">
+    <div className="flex h-[calc(100vh-10rem)] min-h-[32rem] overflow-x-auto pb-2">
+      {statuses.map((status, index) => {
+        const columnTasks = tasks.filter((task) => task.status === status);
+        const isDragOver = dragOverStatus === status;
+
+        return (
+          <div
+            key={status}
+            className={cn(
+              "flex min-w-[16rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
+              index === 0 && "overflow-hidden rounded-tl-md",
+              index === statuses.length - 1 && "overflow-hidden rounded-tr-md",
+              isDragOver && "border-[#0484C8] bg-[#F0F6FF]",
+            )}
+            onDragOver={(event) => {
+              event.preventDefault();
+              event.dataTransfer.dropEffect = "move";
+              onDragOverStatus(status);
+            }}
+            onDragLeave={() => {
+              if (dragOverStatus === status) onDragOverStatus("");
+            }}
+            onDrop={(event) => handleDrop(event, status)}
+          >
+            <div
+              className={cn(
+                "relative z-10 flex h-10 items-center justify-between bg-[#0384C8] py-2 pl-3 pr-1 text-white",
+                index === 0 && "rounded-tl-md",
+                index === statuses.length - 1 && "rounded-tr-md",
+              )}
+            >
+              <div className="flex items-center gap-2">
+                <div className="text-xs font-semibold uppercase tracking-wide text-white">
+                  {status.replace(/_/g, " ")}
+                </div>
+                <Badge variant="outline" className="border-transparent bg-white/20 text-xs text-white">
+                  {columnTasks.length}
+                </Badge>
+              </div>
+              {index < statuses.length - 1 ? (
+                <ChevronRight className="h-7 w-7 shrink-0 text-white" />
+              ) : null}
+            </div>
+
+            <div className="flex flex-1 flex-col gap-3 p-3">
+              {columnTasks.map((task) => (
+                <KanbanTaskCard
+                  key={task.id}
+                  task={task}
+                  navigate={navigate}
+                  updating={updatingTaskStatusId === task.id}
+                  onEdit={() => onEdit(task)}
+                  onDelete={() => onDelete(task)}
+                />
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function KanbanTaskCard({
+  task,
+  navigate,
+  updating,
+  onEdit,
+  onDelete,
+}: {
+  task: TaskRecord;
+  navigate: (path: string) => void;
+  updating: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const relatedPath = getRelatedPath(task);
+
+  const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
+    event.dataTransfer.setData("text/plain", task.id);
+    event.dataTransfer.effectAllowed = "move";
+  };
+
+  return (
+    <Card
+      draggable={!updating}
+      className={cn(
+        "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
+        updating && "cursor-wait opacity-60",
+      )}
+      onClick={() => relatedPath && navigate(relatedPath)}
+      onDragStart={handleDragStart}
+    >
+      <CardHeader className="space-y-1.5 bg-muted/30 p-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="min-w-0 truncate text-xs font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
+          <TaskActions
+            onView={() => (relatedPath ? navigate(relatedPath) : onEdit())}
+            onEdit={onEdit}
+            onDelete={onDelete}
+            triggerClassName="h-6 w-6 shrink-0"
+            iconClassName="h-3.5 w-3.5"
+          />
+        </div>
+        <div className="truncate text-xs text-muted-foreground">
+          {getRelatedLabel(task)}
+        </div>
+        <div className={cn("flex items-center gap-1.5 text-xs text-muted-foreground", isTaskOverdue(task) && "font-medium text-red-600")}>
+          <Clock className="h-3 w-3 shrink-0" />
+          <span className="truncate">{formatDate(task.due_at)}</span>
+        </div>
+      </CardHeader>
+    </Card>
+  );
+}
+
+function TaskMeta({ label, value, valueClassName }: { label: string; value: string; valueClassName?: string }) {
+  return (
+    <div className="flex justify-between gap-3 text-xs">
       <span className="text-muted-foreground">{label}:</span>
-      <span className="text-right text-foreground/80">{value}</span>
+      <span className={cn("truncate text-right text-foreground/80", valueClassName)}>{value}</span>
     </div>
   );
 }
@@ -915,16 +1259,24 @@ function TaskActions({
   onView,
   onEdit,
   onDelete,
+  triggerClassName,
+  iconClassName,
 }: {
   onView: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  triggerClassName?: string;
+  iconClassName?: string;
 }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8">
-          <MoreVertical className="h-4 w-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground", triggerClassName)}
+        >
+          <MoreVertical className={cn("h-4 w-4", iconClassName)} />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
@@ -1051,7 +1403,7 @@ function TaskTable({
                   </Badge>
                 </td>
                 <td className="px-4 py-2 text-foreground/70">
-                  <div className="flex items-center">
+                  <div className={cn("flex items-center", isTaskOverdue(task) && "font-medium text-red-600")}>
                     <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
                     <span>{formatDate(task.due_at)}</span>
                   </div>
@@ -1243,7 +1595,7 @@ function TaskListViewSheet({
           )}
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button onClick={handleSave}>{editingListView ? "Save Changes" : "Create List"}</Button>
+            <Button className="hover:bg-[#0484C8]" onClick={handleSave}>{editingListView ? "Save Changes" : "Create List"}</Button>
           </div>
         </div>
       </SheetContent>
@@ -1548,7 +1900,7 @@ function TaskSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               {task ? "Save Task" : "Create Task"}
             </Button>

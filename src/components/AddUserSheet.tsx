@@ -8,6 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { getPasswordResetSkippedMessage } from "@/lib/password-reset";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
@@ -104,7 +105,7 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
         body: {
           action: "create",
           email: formData.email,
-          fullName: `${formData.firstName} ${formData.lastName}`.trim(),
+          fullName: formatPersonName(`${formData.firstName} ${formData.lastName}`.trim()),
           phone: formatPhoneNumber(formData.phone, ""),
           role: formData.role,
           ghlRole: "user",
@@ -261,7 +262,7 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
             <Button type="button" variant="outline" onClick={() => setIsOpen(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={isLoading || locations.length === 0}>
+            <Button type="submit" className="hover:bg-[#0484C8]" disabled={isLoading || locations.length === 0}>
               {isLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Create User
             </Button>

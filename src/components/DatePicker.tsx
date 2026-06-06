@@ -11,7 +11,11 @@ type DatePickerProps = {
   placeholder?: string;
   disabled?: boolean;
   minDate?: Date;
+  maxDate?: Date;
   clearable?: boolean;
+  monthYearPicker?: boolean;
+  fromYear?: number;
+  toYear?: number;
 };
 
 type DateTimePickerProps = DatePickerProps;
@@ -73,7 +77,11 @@ function DatePickerBase({
   placeholder = "Select date",
   disabled,
   minDate,
+  maxDate,
   clearable = true,
+  monthYearPicker = false,
+  fromYear,
+  toYear,
   mode,
 }: DatePickerProps & { mode: "date" | "datetime" }) {
   const [open, setOpen] = useState(false);
@@ -178,8 +186,11 @@ function DatePickerBase({
               month={month}
               onMonthChange={setMonth}
               onSelect={handleDateSelect}
-              disabled={minDate ? (date) => date < minDate : undefined}
+              disabled={(date) => Boolean((minDate && date < minDate) || (maxDate && date > maxDate))}
               className="w-full border-0 p-0 shadow-none"
+              monthYearPicker={monthYearPicker}
+              fromYear={fromYear}
+              toYear={toYear}
             />
 
             {mode === "datetime" && (

@@ -49,6 +49,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useToast } from "@/hooks/use-toast";
 import { apiClient, createCalendar, getActiveGhlLocationId } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { cn } from "@/lib/utils";
 
@@ -118,22 +119,16 @@ type CreateCalendarForm = {
 };
 
 function getDisplayName(entity: any) {
-  return (
+  const name =
     entity?.name ||
-    `${entity?.firstName || ""} ${entity?.lastName || ""}`.trim() ||
-    entity?.email ||
-    (entity?.id ? `User (${String(entity.id).slice(0, 4)})` : "Unknown")
-  );
+    `${entity?.firstName || ""} ${entity?.lastName || ""}`.trim();
+
+  return name ? formatPersonName(name) : entity?.email || (entity?.id ? `User (${String(entity.id).slice(0, 4)})` : "Unknown");
 }
 
 function formatContactName(contact: any) {
-  return (
-    `${contact?.firstName ? contact.firstName.charAt(0).toUpperCase() + contact.firstName.slice(1).toLowerCase() : ""} ${
-      contact?.lastName ? contact.lastName.charAt(0).toUpperCase() + contact.lastName.slice(1).toLowerCase() : ""
-    }`.trim() ||
-    contact?.email ||
-    "Unknown Contact"
-  );
+  const name = `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || "";
+  return formatPersonName(name) || contact?.email || "Unknown Contact";
 }
 
 function getCalendarColor(index: number) {
@@ -1733,7 +1728,7 @@ function CreateCalendarSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               {isEditMode ? "Save Calendar" : "Create Calendar"}
             </Button>
@@ -1847,7 +1842,7 @@ function BookingSheet(props: BookingSheetProps) {
             <Textarea id="notes" placeholder="Appointment notes..." value={props.notes} onChange={(event) => props.setNotes(event.target.value)} />
           </div>
 
-          <Button type="submit" className="w-full" disabled={props.submitting}>
+          <Button type="submit" className="w-full hover:bg-[#0484C8]" disabled={props.submitting}>
             {props.submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
             {props.submitting ? "Booking..." : "Book Appointment"}
           </Button>
@@ -2151,7 +2146,7 @@ function EditEventForm(props: any) {
         <Button variant="outline" className="flex-1" onClick={props.onCancel} disabled={props.savingEvent}>
           Cancel
         </Button>
-        <Button className="flex-1" onClick={props.onSave} disabled={props.savingEvent}>
+        <Button className="flex-1 hover:bg-[#0484C8]" onClick={props.onSave} disabled={props.savingEvent}>
           {props.savingEvent && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
           Save Changes
         </Button>

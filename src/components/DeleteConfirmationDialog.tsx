@@ -4,7 +4,6 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
-  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -64,14 +63,14 @@ export function DeleteConfirmationDialog({
           />
         </div>
 
-        <SheetFooter className="pt-4">
+        <div className="mt-6 flex justify-end gap-2 border-t border-border pt-4">
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={isDeleting}>
             Cancel
           </Button>
           <Button type="button" variant="destructive" disabled={!canDelete} onClick={onConfirm}>
             {isDeleting ? "Deleting..." : "Delete"}
           </Button>
-        </SheetFooter>
+        </div>
       </SheetContent>
     </Sheet>
   );

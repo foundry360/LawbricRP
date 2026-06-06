@@ -1,7 +1,7 @@
-import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, CheckSquare, Clock, IdCard, Loader2, Mail, Pencil, Phone, Plus, UserX, X } from "lucide-react";
+import { ArrowLeft, Briefcase, CheckSquare, Clock, IdCard, Loader2, Mail, MoreVertical, Pencil, Phone, Plus, Trash2, UserX, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +14,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { DateTimePicker } from "@/components/DatePicker";
 import { EditContactDialog, type ContactFormValues } from "@/components/EditContactDialog";
+import { MatterActionSheet, MatterCreateSheet } from "@/components/MatterActionSheet";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
@@ -25,10 +28,13 @@ import {
   updateContact,
 } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
+import { listCases, type CaseRecord } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
+import { getTagPastelStyle } from "@/lib/tag-colors";
 import { createTagMetadata, loadTagsWithMetadata } from "@/lib/tag-metadata";
 import { createTask, listTasks, type TaskRecord, updateTask } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
@@ -62,6 +68,22 @@ const ACCOUNT_TYPE_OPTIONS = [
 ];
 const LEGACY_ACCOUNT_TYPE_TAGS = ["Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
 const DEFAULT_ACCOUNT_TYPE = ACCOUNT_TYPE_OPTIONS[0];
+
+type MatterActionState = {
+  mode: "view" | "edit" | "delete";
+  matter: CaseRecord;
+} | null;
+
+function HeaderIconTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function getAvatarUrlFromMetadata(metadata?: Record<string, unknown> | null) {
   const possibleValues = [
@@ -178,12 +200,18 @@ function formatDateTimeInput(value?: string | null) {
 }
 
 function formatRecordDate(value?: string | null) {
-  if (!value) return "Not set";
+  if (!value) return "-";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Not set";
-  const dateLabel = date.toLocaleDateString("en-US");
+  if (Number.isNaN(date.getTime())) return "-";
+  const dateLabel = date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
   const timeLabel = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-  return `${dateLabel}, ${timeLabel}`;
+  return `${dateLabel} ${timeLabel}`;
+}
+
+function formatDetailValue(value?: string | null) {
+  const text = String(value || "").trim();
+  if (!text || ["n/a", "not set", "unassigned"].includes(text.toLowerCase())) return "-";
+  return text;
 }
 
 function getTaskRelatedLabel(task: TaskRecord) {
@@ -242,10 +270,13 @@ function ContactTagAddButton({
     const viewportPadding = 16;
     const gap = 6;
     const menuWidth = 260;
-    const estimatedHeight = 260;
-    const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const availableAbove = rect.top - viewportPadding;
-    const openAbove = availableBelow < estimatedHeight && availableAbove > availableBelow;
+    const desiredHeight = 320;
+    const minHeight = 120;
+    const availableBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const availableAbove = rect.top - gap - viewportPadding;
+    const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
+    const availableHeight = Math.max(minHeight, openAbove ? availableAbove : availableBelow);
+    const menuHeight = Math.min(desiredHeight, availableHeight);
     const left = Math.min(
       Math.max(viewportPadding, rect.left),
       Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
@@ -253,8 +284,9 @@ function ContactTagAddButton({
 
     setMenuStyle({
       left,
-      top: openAbove ? Math.max(viewportPadding, rect.top - estimatedHeight - gap) : rect.bottom + gap,
+      top: openAbove ? Math.max(viewportPadding, rect.top - menuHeight - gap) : rect.bottom + gap,
       width: menuWidth,
+      maxHeight: menuHeight,
     });
   }, []);
 
@@ -319,7 +351,7 @@ function ContactTagAddButton({
       ? createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[220] overflow-hidden rounded-md border border-border bg-background shadow-lg"
+            className="fixed z-[220] flex flex-col overflow-hidden rounded-md border border-border bg-background shadow-lg"
             style={menuStyle}
           >
             <div className="border-b border-border p-2">
@@ -337,7 +369,7 @@ function ContactTagAddButton({
                 className="h-9"
               />
             </div>
-            <div className="hover-scrollbar max-h-56 overflow-y-auto p-1">
+            <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto p-1">
               {filteredOptions.length === 0 && !canCreate ? (
                 <div className="px-2 py-3 text-center text-sm text-muted-foreground">No tags available.</div>
               ) : (
@@ -411,7 +443,7 @@ function ContactTaskList({
         const assignedUserId = task.assigned_user?.id || task.assigned_user_id || "";
         const matchedUser = users.find((user) => getUserId(user) === assignedUserId);
         const assignedUserName =
-          task.assigned_user?.full_name ||
+          (task.assigned_user?.full_name ? formatPersonName(task.assigned_user.full_name) : "") ||
           task.assigned_user?.email ||
           (matchedUser ? getUserName(matchedUser) : "");
         const assignedUserEmail = task.assigned_user?.email || matchedUser?.email;
@@ -663,7 +695,7 @@ function ContactTaskEditSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Save Task
             </Button>
@@ -880,7 +912,7 @@ function ContactTaskCreateSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Create Task
             </Button>
@@ -896,11 +928,14 @@ export function ContactDetailPage() {
   const { toast } = useToast();
   const [contact, setContact] = useState<any>(null);
   const [contactTasks, setContactTasks] = useState<TaskRecord[]>([]);
+  const [contactMatters, setContactMatters] = useState<CaseRecord[]>([]);
+  const [matterAction, setMatterAction] = useState<MatterActionState>(null);
   const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+  const [isCreateMatterOpen, setIsCreateMatterOpen] = useState(false);
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
@@ -1146,9 +1181,11 @@ export function ContactDetailPage() {
 
     const previousContact = contact;
     const selectedAssignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
+    const formattedUpdatedName = formatPersonName(updatedData.name.trim());
     setContact({
       ...contact,
       ...updatedData,
+      name: formattedUpdatedName,
       phone: formatPhoneNumber(updatedData.phone),
       assignedAttorney: selectedAssignedUser ? getUserName(selectedAssignedUser) : "Unassigned",
       assignedAttorneyId: selectedAssignedUser ? getUserId(selectedAssignedUser) : "",
@@ -1156,7 +1193,7 @@ export function ContactDetailPage() {
     });
 
     try {
-      const [firstName, ...rest] = updatedData.name.trim().split(" ");
+      const [firstName, ...rest] = formattedUpdatedName.split(" ");
       const payload: Record<string, any> = {
         firstName,
         lastName: rest.join(" "),
@@ -1248,7 +1285,21 @@ export function ContactDetailPage() {
         }
         const customFieldsMap = buildCustomFieldsMap(contactCustomFields);
         setContactTasks([]);
+        setContactMatters([]);
         if (locRecordId && rawContact.id) {
+          listCases({ locationId: locRecordId })
+            .then((cases) => {
+              setContactMatters(cases.filter((caseRecord) => caseRecord.ghl_contact_id === rawContact.id));
+            })
+            .catch((error) => {
+              console.error("Failed to fetch contact matters", error);
+              toast({
+                variant: "destructive",
+                title: "Matters Not Loaded",
+                description: getUserFriendlyErrorMessage(error, "Could not load matters for this contact. Please try again."),
+              });
+            });
+
           setTasksLoading(true);
           listTasks({ locationId: locRecordId, limit: 500 })
             .then((tasks) => {
@@ -1293,12 +1344,8 @@ export function ContactDetailPage() {
           }
         }
 
-        const rawName = `${rawContact.firstName || ""} ${rawContact.lastName || ""}`.trim();
-        const formattedName = rawName
-          .split(" ")
-          .filter(Boolean)
-          .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-          .join(" ");
+        const rawName = `${rawContact.firstName || ""} ${rawContact.lastName || ""}`.trim() || rawContact.name || "";
+        const formattedName = formatPersonName(rawName);
         const tags = rawContact.tags || [];
         const accountTypeValue =
           getCustomFieldValue(rawContact, customFieldsMap, "account type") ||
@@ -1400,25 +1447,41 @@ export function ContactDetailPage() {
   const contactTagValues: string[] = (Array.isArray(contact.tags) ? contact.tags : [])
     .map((tag: unknown) => String(tag).trim())
     .filter(Boolean);
-  const visibleTags = Array.from(new Set(contactTagValues)).filter((tag) => {
-    const normalized = tag.toLowerCase();
-    return ![
-      String(contact.type || "").toLowerCase(),
-      String(contact.status || "").toLowerCase(),
-      "client",
-      "attorney",
-      "expert witness",
-      "opposing counsel",
-      "lead",
-      "active",
-      "pending",
-      "closed",
-      "consultation",
-    ].includes(normalized);
-  });
+  const visibleTags = Array.from(new Set(contactTagValues));
 
   return (
     <div className="mx-auto flex h-[calc(100vh-80px)] w-full flex-col overflow-hidden px-4 pb-2 pt-2 sm:px-6">
+      <MatterActionSheet
+        open={Boolean(matterAction)}
+        onOpenChange={(open) => !open && setMatterAction(null)}
+        mode={matterAction?.mode || null}
+        matter={matterAction?.matter || null}
+        locationId={locationRecordId}
+        onSaved={(updatedMatter) => {
+          setContactMatters((current) =>
+            current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
+          );
+        }}
+        onDeleted={(matterId) => {
+          setContactMatters((current) => current.filter((matter) => matter.id !== matterId));
+        }}
+      />
+      <MatterCreateSheet
+        open={isCreateMatterOpen}
+        onOpenChange={setIsCreateMatterOpen}
+        locationId={locationRecordId}
+        contact={{
+          id: contact.id,
+          name: contact.name,
+          email: contact.email,
+          phone: contact.phone,
+          assignedUserId: contact.assignedAttorneyId,
+        }}
+        onCreated={(matter) => {
+          setContactMatters((current) => [matter, ...current]);
+        }}
+      />
+
       <ContactTaskEditSheet
         open={Boolean(editingTask)}
         onOpenChange={(open) => !open && setEditingTask(null)}
@@ -1464,48 +1527,62 @@ export function ContactDetailPage() {
             </div>
           </div>
           <div className="flex w-full gap-3 md:w-auto">
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full p-0"
-              disabled={!contact.email || contact.email === "N/A"}
-              title="Email"
-              aria-label="Email"
-              onClick={() => {
-                if (contact.email && contact.email !== "N/A") window.location.href = `mailto:${contact.email}`;
-              }}
-            >
-              <Mail className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              disabled={!contact.phone || contact.phone === "N/A"}
-              title="Call"
-              aria-label="Call"
-              onClick={() => {
-                if (contact.phone && contact.phone !== "N/A") window.location.href = `tel:${contact.phone}`;
-              }}
-            >
-              <Phone className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              title="Edit"
-              aria-label="Edit"
-              onClick={() => setIsEditModalOpen(true)}
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              title="Add Task"
-              aria-label="Add Task"
-              onClick={() => setIsCreateTaskOpen(true)}
-            >
-              <CheckSquare className="h-4 w-4" />
-            </Button>
+            <HeaderIconTooltip label="Email">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full p-0 hover:bg-[#0484C8]"
+                disabled={!contact.email || contact.email === "N/A"}
+                aria-label="Email"
+                onClick={() => {
+                  if (contact.email && contact.email !== "N/A") window.location.href = `mailto:${contact.email}`;
+                }}
+              >
+                <Mail className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Call">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                disabled={!contact.phone || contact.phone === "N/A"}
+                aria-label="Call"
+                onClick={() => {
+                  if (contact.phone && contact.phone !== "N/A") window.location.href = `tel:${contact.phone}`;
+                }}
+              >
+                <Phone className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Edit">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Edit"
+                onClick={() => setIsEditModalOpen(true)}
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Add Task">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Add Task"
+                onClick={() => setIsCreateTaskOpen(true)}
+              >
+                <CheckSquare className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Add Matter">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Add Matter"
+                onClick={() => setIsCreateMatterOpen(true)}
+              >
+                <Briefcase className="h-4 w-4 shrink-0" />
+              </Button>
+            </HeaderIconTooltip>
           </div>
         </div>
       </div>
@@ -1528,43 +1605,47 @@ export function ContactDetailPage() {
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <span className="font-medium text-foreground/70">Email</span>
                     <span className="col-span-2 break-all">
-                      {contact.email !== "N/A" ? (
+                      {formatDetailValue(contact.email) !== "-" ? (
                         <a href={`mailto:${contact.email}`} className="text-[#2384CA] hover:underline">
                           {contact.email}
                         </a>
                       ) : (
-                        contact.email
+                        "-"
                       )}
                     </span>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <span className="font-medium text-foreground/70">Phone</span>
-                    <span className="col-span-2">{contact.phone}</span>
+                    <span className="col-span-2">{formatDetailValue(contact.phone)}</span>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <span className="font-medium text-foreground/70">Address</span>
-                    <span className="col-span-2 whitespace-pre-line">{contact.address}</span>
+                    <span className="col-span-2 whitespace-pre-line">{formatDetailValue(contact.address)}</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <span className="font-medium text-foreground/70">Date of Birth</span>
+                    <span className="col-span-2">
+                      {contact.dob !== "N/A" ? new Date(contact.dob).toLocaleDateString() : "-"}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-sm">
+                    <span className="font-medium text-foreground/70">Gender</span>
+                    <span className="col-span-2">{formatDetailValue(contact.gender)}</span>
                   </div>
                 </div>
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="demographics">
-              <AccordionTrigger>Demographics</AccordionTrigger>
+              <AccordionTrigger>Additional Information</AccordionTrigger>
               <AccordionContent>
                 <div className="space-y-3 pt-2">
                   <div className="grid grid-cols-3 gap-2 text-sm">
-                    <span className="font-medium text-foreground/70">DOB</span>
-                    <span className="col-span-2">
-                      {contact.dob !== "N/A" ? new Date(contact.dob).toLocaleDateString() : "N/A"}
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-3 gap-2 text-sm">
-                    <span className="font-medium text-foreground/70">Gender</span>
-                    <span className="col-span-2">{contact.gender}</span>
+                    <span className="font-medium text-foreground/70">Status</span>
+                    <span className="col-span-2">{contact.status}</span>
                   </div>
                   <div className="grid grid-cols-3 gap-2 text-sm">
                     <span className="font-medium text-foreground/70">Language</span>
-                    <span className="col-span-2">{contact.language}</span>
+                    <span className="col-span-2">{formatDetailValue(contact.language)}</span>
                   </div>
                 </div>
               </AccordionContent>
@@ -1578,12 +1659,13 @@ export function ContactDetailPage() {
                       <Badge
                         key={tag}
                         variant="outline"
-                        className="h-6 gap-1.5 border-transparent bg-primary/5 px-2.5 text-xs font-medium text-primary"
+                        className="h-6 gap-1.5 px-2.5 text-xs font-medium"
+                        style={getTagPastelStyle(tag)}
                       >
                         {tag}
                         <button
                           type="button"
-                          className="-mr-1 rounded-full p-0.5 text-primary/70 transition-colors hover:bg-primary/10 hover:text-primary"
+                          className="-mr-1 rounded-full p-0.5 opacity-70 transition-opacity hover:opacity-100"
                           title={`Remove ${tag}`}
                           onClick={(event) => {
                             event.preventDefault();
@@ -1714,11 +1796,63 @@ export function ContactDetailPage() {
             <AccordionItem value="matter">
               <AccordionTrigger>Matter Overview</AccordionTrigger>
               <AccordionContent>
-                <div className="space-y-4 pt-2">
-                  <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-                    <div className="mb-1 text-xs uppercase text-muted-foreground">Last Contact</div>
-                    <div className="text-sm font-semibold">{contact.lastContact}</div>
+                <div className="pt-2">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-foreground">
+                      {contactMatters.length === 1 ? "Matter" : "Matters"} ({contactMatters.length})
+                    </div>
+                    <Link to="/cases" className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]">
+                      View all matters
+                    </Link>
                   </div>
+
+                  {contactMatters.length > 0 ? (
+                    <div className="divide-y divide-border rounded-lg bg-card">
+                      {contactMatters.map((matter) => (
+                        <div key={matter.id} className="px-3 py-3 first:pt-3 last:pb-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <Link
+                                to={`/case/${matter.id}`}
+                                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                              >
+                                {matter.case_name || matter.case_number || "Untitled Matter"}
+                              </Link>
+                              {matter.case_number ? (
+                                <div className="mt-0.5 truncate text-xs text-muted-foreground">{matter.case_number}</div>
+                              ) : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Badge variant="outline" className="border-transparent bg-muted text-xs capitalize text-foreground/80">
+                                {String(matter.status || "-").replace(/_/g, " ")}
+                              </Badge>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                                    <MoreVertical className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-40">
+                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "edit", matter })}>
+                                    <Pencil className="mr-2 h-4 w-4" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "delete", matter })}>
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30 p-4 text-sm text-muted-foreground">
+                      No matters linked to this contact yet.
+                    </div>
+                  )}
                 </div>
               </AccordionContent>
             </AccordionItem>

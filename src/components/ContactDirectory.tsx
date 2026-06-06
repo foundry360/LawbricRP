@@ -17,6 +17,7 @@ import {
   MoreVertical,
   Pencil,
   Phone,
+  Pin,
   Plus,
   Search,
   Trash2,
@@ -25,6 +26,7 @@ import {
 import { AddContactDialog, type ContactFormValues } from "@/components/AddContactDialog";
 import { CreateListViewSheet, type ListView } from "@/components/CreateListViewSheet";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
+import { EditCompanyDialog, type CompanyFormValues } from "@/components/EditCompanyDialog";
 import { EditContactDialog } from "@/components/EditContactDialog";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -50,6 +52,7 @@ import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
@@ -61,15 +64,26 @@ import {
   deleteContact,
   getAppLocationContext,
   getBusinesses,
+  getBusinessCustomFields,
+  getBusinessObjectRecord,
   getContacts,
   getCustomFields,
   getLocationTags,
   type GhlBusiness,
+  type GhlCustomField,
   type GhlTag,
+  updateBusiness,
+  updateBusinessObjectProperties,
   updateContact,
 } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
+import {
+  getBusinessCustomFieldsCollection,
+  getBusinessIndustryLabel,
+  getBusinessIndustryOptions,
+} from "@/lib/business-custom-fields";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
@@ -80,6 +94,9 @@ import { cn } from "@/lib/utils";
 type ContactStatus = "Active" | "Inactive";
 type ContactType = string;
 const CONTACT_STATUS_OPTIONS: ContactStatus[] = ["Active", "Inactive"];
+const CONTACT_VIEW_MODE_STORAGE_KEY = "lawbric.contacts.viewMode";
+const CONTACT_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.contacts.pinnedViewMode";
+const CONTACT_PINNED_VIEW_MODE_METADATA_KEY = "contactPinnedViewMode";
 const ACCOUNT_TYPE_OPTIONS = [
   "Prospect",
   "Client (Active)",
@@ -116,6 +133,37 @@ type Contact = {
 };
 
 const defaultListViews: ListView[] = [{ id: "all", name: "All Contacts", filters: {} }];
+
+type DirectoryViewMode = "grid" | "list";
+
+function isDirectoryViewMode(value: unknown): value is DirectoryViewMode {
+  return value === "grid" || value === "list";
+}
+
+function getInitialDirectoryViewMode(): DirectoryViewMode {
+  if (typeof window === "undefined") return "list";
+  const pinnedViewMode = window.localStorage.getItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY);
+  if (isDirectoryViewMode(pinnedViewMode)) return pinnedViewMode;
+  const savedViewMode = window.localStorage.getItem(CONTACT_VIEW_MODE_STORAGE_KEY);
+  return isDirectoryViewMode(savedViewMode) ? savedViewMode : "list";
+}
+
+function getInitialPinnedDirectoryViewMode(): DirectoryViewMode | null {
+  if (typeof window === "undefined") return null;
+  const pinnedViewMode = window.localStorage.getItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY);
+  return isDirectoryViewMode(pinnedViewMode) ? pinnedViewMode : null;
+}
+
+function ControlTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
 
 function getStatusColor(status: ContactStatus) {
   switch (status) {
@@ -221,6 +269,28 @@ function getArrayFromResponse(response: any, key: string) {
   return [];
 }
 
+function getDescriptionValue(description: unknown, label: string) {
+  const normalizedLabel = label.trim().toLowerCase();
+  return String(description || "")
+    .split(/\r?\n/)
+    .map((line) => {
+      const [lineLabel, ...rest] = line.split(":");
+      return {
+        label: lineLabel.trim().toLowerCase(),
+        value: rest.join(":").trim(),
+      };
+    })
+    .find((line) => line.label === normalizedLabel)?.value || "";
+}
+
+function getBusinessPropertiesFromRecord(response: any) {
+  return response?.record?.properties || response?.data?.record?.properties || response?.data?.properties || response?.properties || {};
+}
+
+function getBusinessIndustryFromRecord(response: any, customFields: GhlCustomField[]) {
+  return getBusinessIndustryLabel(getBusinessPropertiesFromRecord(response).industry, customFields);
+}
+
 function getCustomFieldId(customFields: any[], name: string) {
   return getCustomField(customFields, name)?.id;
 }
@@ -287,10 +357,15 @@ export function ContactDirectory() {
   const [statusFilter, setStatusFilter] = useState("All");
   const [caseTypeFilter, setCaseTypeFilter] = useState("All");
   const [attorneyFilter, setAttorneyFilter] = useState("All");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("list");
+  const [viewMode, setViewMode] = useState<DirectoryViewMode>(getInitialDirectoryViewMode);
+  const [pinnedViewMode, setPinnedViewMode] = useState<DirectoryViewMode | null>(getInitialPinnedDirectoryViewMode);
+  const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [isEditCompanyModalOpen, setIsEditCompanyModalOpen] = useState(false);
   const [contactToEdit, setContactToEdit] = useState<Contact | null>(null);
+  const [companyToEdit, setCompanyToEdit] = useState<Contact | null>(null);
+  const [companyToEditIndustry, setCompanyToEditIndustry] = useState("");
   const [contactToDelete, setContactToDelete] = useState<Contact | null>(null);
   const [isDeletingContact, setIsDeletingContact] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
@@ -301,6 +376,8 @@ export function ContactDirectory() {
   const [locationId, setLocationId] = useState("");
   const [locationRecordId, setLocationRecordId] = useState("");
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
+  const [businessCustomFields, setBusinessCustomFields] = useState<GhlCustomField[]>([]);
+  const [industryOptions, setIndustryOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
   const [tagOptions, setTagOptions] = useState<GhlTag[]>([]);
@@ -314,19 +391,73 @@ export function ContactDirectory() {
   const [editingListView, setEditingListView] = useState<ListView | null>(null);
 
   useEffect(() => {
-    const loadListViews = async () => {
+    const loadContactPreferences = async () => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const saved = session?.user?.user_metadata?.contactListViews;
+      const userMetadata = session?.user?.user_metadata || {};
+      const saved = userMetadata.contactListViews;
       if (Array.isArray(saved) && saved.length > 0) {
         const hasAll = saved.some((view) => view.id === "all");
         setListViews(hasAll ? saved : [...defaultListViews, ...saved]);
       }
+
+      const savedPinnedViewMode = userMetadata[CONTACT_PINNED_VIEW_MODE_METADATA_KEY];
+      if (isDirectoryViewMode(savedPinnedViewMode)) {
+        setPinnedViewMode(savedPinnedViewMode);
+        setViewMode(savedPinnedViewMode);
+        window.localStorage.setItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY, savedPinnedViewMode);
+      } else {
+        setPinnedViewMode(null);
+        window.localStorage.removeItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
     };
 
-    loadListViews().catch((error) => console.error("Failed to load list views from Supabase", error));
+    loadContactPreferences().catch((error) => console.error("Failed to load contact preferences from Supabase", error));
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(CONTACT_VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
+
+  const handleTogglePinnedView = async () => {
+    const nextPinnedViewMode = pinnedViewMode === viewMode ? null : viewMode;
+    setPinnedViewMode(nextPinnedViewMode);
+    if (nextPinnedViewMode) {
+      window.localStorage.setItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY, nextPinnedViewMode);
+    } else {
+      window.localStorage.removeItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY);
+    }
+
+    setIsSavingPinnedView(true);
+    try {
+      await supabase.auth.updateUser({
+        data: {
+          [CONTACT_PINNED_VIEW_MODE_METADATA_KEY]: nextPinnedViewMode,
+        },
+      });
+      toast({
+        title: nextPinnedViewMode ? "Contacts View Pinned" : "Contacts View Unpinned",
+        description: nextPinnedViewMode
+          ? `Contacts will open in ${nextPinnedViewMode === "grid" ? "card" : "list"} view.`
+          : "Contacts will open in the last view used on this device.",
+      });
+    } catch (error) {
+      setPinnedViewMode(pinnedViewMode);
+      if (pinnedViewMode) {
+        window.localStorage.setItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY, pinnedViewMode);
+      } else {
+        window.localStorage.removeItem(CONTACT_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
+      toast({
+        title: "Pinned View Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Could not save your pinned Contacts view."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingPinnedView(false);
+    }
+  };
 
   const saveListViewsToSupabase = async (newListViews: ListView[]) => {
     setListViews(newListViews);
@@ -431,6 +562,18 @@ export function ContactDirectory() {
         const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
         setCrmCustomFields(customFieldsList);
 
+        let businessFieldsList: GhlCustomField[] = [];
+        try {
+          const businessFieldsResponse = await getBusinessCustomFields(locId);
+          businessFieldsList = getBusinessCustomFieldsCollection(businessFieldsResponse);
+          setBusinessCustomFields(businessFieldsList);
+          setIndustryOptions(getBusinessIndustryOptions(businessFieldsList));
+        } catch (error) {
+          console.error("Failed to fetch business custom fields", error);
+          setBusinessCustomFields([]);
+          setIndustryOptions([]);
+        }
+
         let fetchedTags: GhlTag[] = [];
         try {
           fetchedTags = locId ? await getLocationTags(locId) : [];
@@ -510,7 +653,9 @@ export function ContactDirectory() {
         const mappedContacts = getArrayFromResponse(response, "contacts").map((contact: any): Contact => {
           const tags = contact.tags || [];
           const isCompanyContact = tags.some((tag: string) => tag.toLowerCase() === "company");
-          const personName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim();
+          const personName = formatPersonName(
+            `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.name || "",
+          );
           const companyName = contact.companyName || "";
           const accountTypeValue =
             getCustomFieldValue(contact, customFieldsMap, "account type") ||
@@ -567,6 +712,9 @@ export function ContactDirectory() {
           const assignedUser = assignedUserId
             ? fetchedUsers.find((user) => getUserId(user) === assignedUserId)
             : null;
+          const industry =
+            getBusinessIndustryLabel(business.properties?.industry || business.industry, businessFieldsList) ||
+            getDescriptionValue(business.description, "Industry");
 
           return {
             id: business.id,
@@ -581,7 +729,7 @@ export function ContactDirectory() {
             attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
             lastContact: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "Recently",
             tags: ["Company"],
-            companyDetails: business,
+            companyDetails: { ...business, industry },
           };
         });
 
@@ -629,6 +777,16 @@ export function ContactDirectory() {
     return customFieldsList;
   };
 
+  const loadLatestBusinessCustomFields = async () => {
+    if (!locationId) return businessCustomFields;
+
+    const fieldsResponse = await getBusinessCustomFields(locationId);
+    const customFieldsList = getBusinessCustomFieldsCollection(fieldsResponse);
+    setBusinessCustomFields(customFieldsList);
+    setIndustryOptions(getBusinessIndustryOptions(customFieldsList));
+    return customFieldsList;
+  };
+
   const handleCreateTag = async (name: string) => {
     const trimmedName = name.trim();
     if (!trimmedName) return;
@@ -673,15 +831,16 @@ export function ContactDirectory() {
   const handleAddContact = async (newContactData: ContactFormValues) => {
     try {
       const isCompany = newContactData.contactKind === "company";
-      const displayName = (isCompany ? newContactData.companyName : newContactData.name)?.trim() || "";
+      const rawDisplayName = (isCompany ? newContactData.companyName : newContactData.name)?.trim() || "";
+      const displayName = isCompany ? rawDisplayName : formatPersonName(rawDisplayName);
       const selectedPrimaryContact = isCompany && newContactData.existingContactId
         ? contacts.find((contact) => contact.id === newContactData.existingContactId && contact.recordKind === "contact")
         : null;
-      const primaryName = (
+      const primaryName = formatPersonName((
         isCompany
           ? selectedPrimaryContact?.name || newContactData.primaryContactName
           : newContactData.name
-      )?.trim() || displayName;
+      )?.trim() || displayName);
       const [firstName, ...rest] = primaryName.split(/\s+/);
       const assignedUser = systemUsers.find((user) => getUserId(user) === newContactData.attorneyAssigned);
 
@@ -709,6 +868,10 @@ export function ContactDirectory() {
         const response: any = await createBusiness(businessPayload);
         const createdBusiness = response.business || response.buiseness || response.data?.business || response.data?.buiseness || response.data || response;
         const createdBusinessId = createdBusiness.id || crypto.randomUUID();
+        const latestBusinessCustomFields = await loadLatestBusinessCustomFields();
+        if (createdBusinessId && newContactData.industry?.trim()) {
+          await updateBusinessObjectProperties(locationId, createdBusinessId, { industry: newContactData.industry.trim() });
+        }
         let linkedContactId = newContactData.existingContactId || "";
         let createdCompanyContact: Contact | null = null;
 
@@ -720,22 +883,17 @@ export function ContactDirectory() {
             name: primaryName,
             email: newContactData.primaryContactEmail?.trim(),
             companyName: displayName,
-            businessId: createdBusinessId,
             tags: ["Company Contact"],
           };
 
           if (newContactData.primaryContactPhone?.trim()) {
             contactPayload.phone = formatPhoneNumber(newContactData.primaryContactPhone, "");
           }
-          if (newContactData.primaryContactTitle?.trim()) {
-            contactPayload.title = newContactData.primaryContactTitle.trim();
-            contactPayload.jobTitle = newContactData.primaryContactTitle.trim();
-          }
-
+          const latestCustomFields = await loadLatestCustomFields();
           const titleFieldId =
-            getCustomFieldId(crmCustomFields, "title") ||
-            getCustomFieldId(crmCustomFields, "job title") ||
-            getCustomFieldId(crmCustomFields, "contact title");
+            getCustomFieldId(latestCustomFields, "title") ||
+            getCustomFieldId(latestCustomFields, "job title") ||
+            getCustomFieldId(latestCustomFields, "contact title");
           if (titleFieldId && newContactData.primaryContactTitle?.trim()) {
             contactPayload.customFields = [{ id: titleFieldId, field_value: newContactData.primaryContactTitle.trim() }];
           }
@@ -779,6 +937,11 @@ export function ContactDirectory() {
           attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
           lastContact: "Just now",
           tags: ["Company"],
+          companyDetails: {
+            ...createdBusiness,
+            id: createdBusinessId,
+            industry: getBusinessIndustryLabel(newContactData.industry, latestBusinessCustomFields) || newContactData.industry,
+          },
         };
 
         setContacts((current) => [
@@ -854,7 +1017,7 @@ export function ContactDirectory() {
     if (!contactToEdit) return;
     const previousContacts = contacts;
     const selectedAssignedUser = systemUsers.find((user) => getUserId(user) === updatedData.attorneyAssigned);
-    const updatedName = updatedData.name?.trim() || contactToEdit.name;
+    const updatedName = formatPersonName(updatedData.name?.trim() || contactToEdit.name);
     const updatedContact: Contact = {
       ...contactToEdit,
       ...updatedData,
@@ -1014,12 +1177,86 @@ export function ContactDirectory() {
 
   const handleEditRecord = (contact: Contact) => {
     if (contact.recordKind === "company") {
-      toast({ title: "Company Editing Coming Soon", description: "Company records can be managed in GHL Companies for now." });
+      setCompanyToEdit(contact);
+      setCompanyToEditIndustry(
+        getBusinessIndustryLabel((contact.companyDetails as any)?.industry, businessCustomFields) ||
+          getDescriptionValue(contact.companyDetails?.description, "Industry"),
+      );
+      setIsEditCompanyModalOpen(true);
+      if (locationId) {
+        void Promise.all([
+          loadLatestBusinessCustomFields().catch((error) => {
+            console.error("Failed to refresh business fields", error);
+            return businessCustomFields;
+          }),
+          getBusinessObjectRecord(locationId, contact.id).catch((error) => {
+            console.error("Failed to load business object record", error);
+            return null;
+          }),
+        ]).then(([latestFields, recordResponse]) => {
+          if (recordResponse) {
+            setCompanyToEditIndustry(
+              getBusinessIndustryFromRecord(recordResponse, latestFields) ||
+                getDescriptionValue(contact.companyDetails?.description, "Industry"),
+            );
+          }
+        });
+      }
       return;
     }
 
     setContactToEdit(contact);
     setIsEditModalOpen(true);
+  };
+
+  const handleEditCompany = async (updatedData: CompanyFormValues) => {
+    if (!companyToEdit) return;
+
+    const previousContacts = contacts;
+    const previousCompany = companyToEdit;
+    const nextCompanyDetails: GhlBusiness = {
+      ...(companyToEdit.companyDetails || { id: companyToEdit.id, name: companyToEdit.name }),
+      name: updatedData.name.trim(),
+      email: updatedData.email.trim() || null,
+      phone: updatedData.phone ? formatPhoneNumber(updatedData.phone, "") : null,
+      website: updatedData.website.trim() || null,
+      address: updatedData.address.trim() || null,
+      industry: updatedData.industry,
+    } as GhlBusiness;
+    const nextCompany: Contact = {
+      ...companyToEdit,
+      name: nextCompanyDetails.name,
+      email: nextCompanyDetails.email || "N/A",
+      phone: formatPhoneNumber(nextCompanyDetails.phone || ""),
+      companyDetails: nextCompanyDetails,
+    };
+
+    setCompanyToEdit(nextCompany);
+    setContacts((current) => current.map((contact) => (contact.id === companyToEdit.id ? nextCompany : contact)));
+
+    try {
+      await updateBusiness(companyToEdit.id, {
+        name: nextCompanyDetails.name,
+        email: nextCompanyDetails.email,
+        phone: nextCompanyDetails.phone,
+        website: nextCompanyDetails.website,
+        address: nextCompanyDetails.address,
+      });
+      if (locationId) {
+        await updateBusinessObjectProperties(locationId, companyToEdit.id, { industry: updatedData.industry || "" });
+      }
+      setCompanyToEditIndustry(updatedData.industry);
+      toast({ title: "Company Updated", description: `${nextCompanyDetails.name} has been saved.` });
+    } catch (error) {
+      setCompanyToEdit(previousCompany);
+      setContacts(previousContacts);
+      toast({
+        variant: "destructive",
+        title: "Company Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not save company changes. Please try again."),
+      });
+      throw error;
+    }
   };
 
   const totalPages = Math.ceil(sortedContacts.length / itemsPerPage);
@@ -1075,7 +1312,7 @@ export function ContactDirectory() {
               {listViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
                       <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -1091,7 +1328,7 @@ export function ContactDirectory() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground"
+                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                 onClick={() => {
                   setEditingListView(null);
                   setIsListViewPanelOpen(true);
@@ -1155,23 +1392,25 @@ export function ContactDirectory() {
               </div>
 
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={cn(
-                      "relative h-10 w-10 shrink-0 rounded-full",
-                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
-                    )}
-                  >
-                    <Filter className="h-4 w-4" />
-                    {activeFilterCount > 0 && (
-                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                        {activeFilterCount}
-                      </span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
+                <ControlTooltip label="Filter contacts">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className={cn(
+                        "relative h-10 w-10 shrink-0 rounded-full",
+                        activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                      )}
+                    >
+                      <Filter className="h-4 w-4" />
+                      {activeFilterCount > 0 && (
+                        <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                          {activeFilterCount}
+                        </span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                </ControlTooltip>
                 <PopoverContent className="right-0 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -1270,26 +1509,48 @@ export function ContactDirectory() {
                 </PopoverContent>
               </Popover>
 
-              <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as "grid" | "list")} className="hidden sm:block">
+              <Tabs value={viewMode} onValueChange={(value) => setViewMode(value as DirectoryViewMode)} className="hidden sm:block">
                 <TabsList className="h-10 rounded-full">
-                  <TabsTrigger value="grid" className="rounded-full px-3">
-                    <LayoutGrid className="h-4 w-4" />
-                  </TabsTrigger>
-                  <TabsTrigger value="list" className="rounded-full px-3">
-                    <List className="h-4 w-4" />
-                  </TabsTrigger>
+                  <ControlTooltip label="Card view">
+                    <TabsTrigger value="grid" className="rounded-full px-3">
+                      <LayoutGrid className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
+                  <ControlTooltip label="List view">
+                    <TabsTrigger value="list" className="rounded-full px-3">
+                      <List className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
                 </TabsList>
               </Tabs>
+              <ControlTooltip label={pinnedViewMode === viewMode ? "Unpin this Contacts view" : "Pin this Contacts view"}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
+                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                  )}
+                  disabled={isSavingPinnedView}
+                  onClick={handleTogglePinnedView}
+                  aria-label={pinnedViewMode === viewMode ? "Unpin this Contacts view" : "Pin this Contacts view"}
+                >
+                  <Pin className={cn("h-4 w-4", pinnedViewMode === viewMode && "fill-current")} />
+                </Button>
+              </ControlTooltip>
             </>
           )}
 
-          <Button
-            size="icon"
-            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
-            onClick={() => setIsAddModalOpen(true)}
-          >
-            <Plus className="h-5 w-5" />
-          </Button>
+          <ControlTooltip label="Add contact">
+            <Button
+              size="icon"
+              className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+              onClick={() => setIsAddModalOpen(true)}
+            >
+              <Plus className="h-5 w-5" />
+            </Button>
+          </ControlTooltip>
         </div>
       </div>
 
@@ -1305,14 +1566,14 @@ export function ContactDirectory() {
           </div>
           <h3 className="mb-1 text-lg font-medium text-muted-foreground">No contacts found</h3>
           <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by adding your first contact.</p>
-          <Button onClick={() => setIsAddModalOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm">
+          <Button onClick={() => setIsAddModalOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
             <Plus className="h-6 w-6" />
           </Button>
         </div>
       ) : (
         <>
           {viewMode === "grid" ? (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {paginatedContacts.map((contact) => (
                 <ContactCard
                   key={contact.id}
@@ -1446,6 +1707,7 @@ export function ContactDirectory() {
         locationId={locationId}
         accountTypeOptions={accountTypeOptions}
         practiceAreaOptions={contactPracticeAreaOptions}
+        industryOptions={industryOptions}
         languageOptions={languageOptions}
         tagOptions={tagOptions.map((tag) => tag.name)}
         onCreateTag={handleCreateTag}
@@ -1453,6 +1715,30 @@ export function ContactDirectory() {
         companyContactOptions={contacts
           .filter((contact) => contact.recordKind === "contact")
           .map((contact) => ({ id: contact.id, name: contact.name, email: contact.email }))}
+      />
+
+      <EditCompanyDialog
+        open={isEditCompanyModalOpen}
+        onOpenChange={(open) => {
+          setIsEditCompanyModalOpen(open);
+          if (!open) {
+            setCompanyToEdit(null);
+            setCompanyToEditIndustry("");
+          }
+        }}
+        company={
+          companyToEdit
+            ? companyToEdit.companyDetails || {
+                id: companyToEdit.id,
+                name: companyToEdit.name,
+                email: companyToEdit.email === "N/A" ? null : companyToEdit.email,
+                phone: companyToEdit.phone === "N/A" ? null : companyToEdit.phone,
+              }
+            : null
+        }
+        industry={companyToEditIndustry}
+        industryOptions={industryOptions}
+        onEditCompany={handleEditCompany}
       />
 
       <EditContactDialog
@@ -1521,58 +1807,59 @@ function ContactCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const contactInitials = getAvatarInitials({ fullName: contact.name, email: contact.email }, "C");
   const isCompany = contact.recordKind === "company";
 
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
-      <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
-        <div className="flex items-center space-x-4">
-          <Avatar className="h-12 w-12 border-2 border-background shadow-sm">
-            {!isCompany ? <AvatarImage src={contact.avatarUrl} alt={`${contactInitials} avatar`} /> : null}
-            <AvatarFallback className={isCompany ? "border border-amber-200 bg-amber-50 text-amber-700" : "bg-blue-50 font-semibold text-primary"}>
-              {isCompany ? <Building2 className="h-5 w-5" /> : contactInitials}
+      <CardHeader className="flex flex-row items-start justify-between gap-3 bg-muted/30 p-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <Avatar className="h-8 w-8 shrink-0">
+            <AvatarFallback className="bg-blue-50 text-primary">
+              {isCompany ? <Building2 className="h-4 w-4" /> : <IdCard className="h-4 w-4" />}
             </AvatarFallback>
           </Avatar>
-          <div>
-            <h3 className="mb-1.5 text-lg capitalize leading-none text-[#2384CA] hover:underline">
-              {contact.recordKind === "company" ? (
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onNavigate();
-                  }}
-                >
-                  {contact.name}
-                </button>
-              ) : (
-                <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()}>
-                  {contact.name}
-                </Link>
-              )}
-            </h3>
-            <div className="text-sm text-muted-foreground">{contact.type}</div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="min-w-0 truncate text-sm font-semibold leading-tight text-[#2384CA] hover:underline">
+                {contact.recordKind === "company" ? (
+                  <button
+                    type="button"
+                    className="block max-w-full truncate text-left"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onNavigate();
+                    }}
+                  >
+                    {contact.name}
+                  </button>
+                ) : (
+                  <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="block truncate">
+                    {contact.name}
+                  </Link>
+                )}
+              </h3>
+              <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px]", getStatusColor(contact.status))}>
+                {contact.status}
+              </Badge>
+            </div>
+            <div className="mt-1 truncate text-xs text-muted-foreground">{contact.type}</div>
           </div>
         </div>
         <ContactActions onView={onNavigate} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
-      <CardContent className="pt-4">
-        <div className="space-y-3">
-          <Badge variant="outline" className={cn("border-transparent", getStatusColor(contact.status))}>
-            {contact.status}
-          </Badge>
-          <div className="mt-4 grid grid-cols-1 gap-2 text-sm">
+      <CardContent className="p-3 pt-3">
+        <div className="space-y-2.5">
+          <div className="grid grid-cols-1 gap-1.5 text-xs">
             <div className="flex items-center text-foreground/70">
-              <Mail className="mr-2 h-4 w-4" />
+              <Mail className="mr-2 h-3.5 w-3.5 shrink-0" />
               <span className="truncate">{contact.email}</span>
             </div>
             <div className="flex items-center text-foreground/70">
-              <Phone className="mr-2 h-4 w-4" />
-              <span>{contact.phone}</span>
+              <Phone className="mr-2 h-3.5 w-3.5 shrink-0" />
+              <span className="truncate">{contact.phone}</span>
             </div>
           </div>
-          <div className="mt-3 space-y-2 border-t pt-3">
+          <div className="space-y-1.5 border-t pt-2.5">
             <ContactMeta label="Practice Area" value={contact.caseType} />
             <ContactMeta label="Assigned To" value={contact.attorneyAssigned} />
             <ContactMeta label="Last Contact" value={contact.lastContact} />
@@ -1585,9 +1872,9 @@ function ContactCard({
 
 function ContactMeta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between text-sm">
+    <div className="flex justify-between gap-3 text-xs">
       <span className="text-muted-foreground">{label}:</span>
-      <span className="text-foreground/80">{value}</span>
+      <span className="truncate text-right text-foreground/80">{value}</span>
     </div>
   );
 }
@@ -1604,7 +1891,7 @@ function ContactActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8">
+        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
           <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
@@ -1722,12 +2009,12 @@ function ContactTable({
                         event.stopPropagation();
                         onView(contact);
                       }}
-                      className="capitalize text-[#2384CA] hover:underline"
+                      className="text-[#2384CA] hover:underline"
                     >
                       {contact.name}
                     </button>
                   ) : (
-                    <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
+                    <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="text-[#2384CA] hover:underline">
                       {contact.name}
                     </Link>
                   )}

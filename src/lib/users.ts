@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { formatPersonName } from "@/lib/names";
 
 export type AssignableUser = {
   id: string;
@@ -18,13 +19,12 @@ export function getUserId(user: any) {
 }
 
 export function getUserName(user: any) {
-  return (
+  const name =
     user?.name ||
     user?.full_name ||
-    `${user?.firstName || user?.first_name || ""} ${user?.lastName || user?.last_name || ""}`.trim() ||
-    user?.email ||
-    getUserId(user)
-  );
+    `${user?.firstName || user?.first_name || ""} ${user?.lastName || user?.last_name || ""}`.trim();
+
+  return name ? formatPersonName(name) : user?.email || getUserId(user);
 }
 
 export async function getAssignableUsers() {

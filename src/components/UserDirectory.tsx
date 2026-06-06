@@ -43,6 +43,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getActiveGhlLocationId } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { getPasswordResetSkippedMessage, isPasswordResetCooldown } from "@/lib/password-reset";
 import { formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
@@ -258,13 +259,13 @@ export function UserDirectory() {
   };
 
   const getDisplayName = (user: any) => {
-    if (user.full_name) return user.full_name;
-    if (user.fullName) return user.fullName;
-    if (user.name) return user.name;
+    if (user.full_name) return formatPersonName(user.full_name);
+    if (user.fullName) return formatPersonName(user.fullName);
+    if (user.name) return formatPersonName(user.name);
     const first = user.first_name || user.firstName || "";
     const last = user.last_name || user.lastName || "";
-    if (first || last) return `${first} ${last}`.trim();
-    if (user.email) return user.email.split("@")[0];
+    if (first || last) return formatPersonName(`${first} ${last}`.trim());
+    if (user.email) return user.email;
     return "Unknown";
   };
 
@@ -359,7 +360,7 @@ export function UserDirectory() {
                           {getUserInitials(user)}
                         </AvatarFallback>
                       </Avatar>
-                      <div className="capitalize text-[#2384CA] hover:underline">{getDisplayName(user)}</div>
+                      <div className="text-[#2384CA] hover:underline">{getDisplayName(user)}</div>
                     </div>
                   </td>
                   <td className="px-4 py-2">
@@ -387,7 +388,7 @@ export function UserDirectory() {
                   <td className="px-4 py-2 text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-foreground">
+                        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
                           <MoreVertical className="h-4 w-4" />
                         </Button>
                       </DropdownMenuTrigger>

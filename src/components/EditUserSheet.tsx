@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/sheet";
 import { useToast } from "@/hooks/use-toast";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
 
@@ -70,7 +71,7 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
           action: "update",
           userId: user?.id,
           email: user?.email,
-          fullName: values.fullName,
+          fullName: formatPersonName(values.fullName),
           phone: formatPhoneNumber(values.phone, ""),
           role: values.role,
           ghlRole: "user",
@@ -174,7 +175,7 @@ export function EditUserSheet({ user, open, onOpenChange, onSuccess }: EditUserS
               />
 
               <div className="flex justify-end pt-4">
-                <Button type="submit" disabled={isSubmitting}>
+                <Button type="submit" className="hover:bg-[#0484C8]" disabled={isSubmitting}>
                   {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Changes
                 </Button>

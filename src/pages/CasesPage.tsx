@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   MoreVertical,
   Pencil,
+  Pin,
   Plus,
   Search,
   Trash2,
@@ -44,12 +45,14 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getContacts } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
@@ -58,6 +61,9 @@ import { cn } from "@/lib/utils";
 
 const CASE_STATUSES = ["open", "pending", "closed", "archived"];
 const CASE_TYPES = PRACTICE_AREAS;
+const CASE_VIEW_MODE_STORAGE_KEY = "lawbric.matters.viewMode";
+const CASE_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.matters.pinnedViewMode";
+const CASE_PINNED_VIEW_MODE_METADATA_KEY = "casePinnedViewMode";
 type CaseListView = {
   id: string;
   name: string;
@@ -70,6 +76,37 @@ type CaseListView = {
   };
 };
 
+type CaseViewMode = "grid" | "list";
+
+function isCaseViewMode(value: unknown): value is CaseViewMode {
+  return value === "grid" || value === "list";
+}
+
+function getInitialCaseViewMode(): CaseViewMode {
+  if (typeof window === "undefined") return "list";
+  const pinnedViewMode = window.localStorage.getItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+  if (isCaseViewMode(pinnedViewMode)) return pinnedViewMode;
+  const savedViewMode = window.localStorage.getItem(CASE_VIEW_MODE_STORAGE_KEY);
+  return isCaseViewMode(savedViewMode) ? savedViewMode : "list";
+}
+
+function getInitialPinnedCaseViewMode(): CaseViewMode | null {
+  if (typeof window === "undefined") return null;
+  const pinnedViewMode = window.localStorage.getItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+  return isCaseViewMode(pinnedViewMode) ? pinnedViewMode : null;
+}
+
+function ControlTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const defaultCaseListViews: CaseListView[] = [
   { id: "all", name: "All Matters", system: true, filters: {} },
   { id: "open", name: "Open", system: true, filters: { status: "open" } },
@@ -79,12 +116,8 @@ const defaultCaseListViews: CaseListView[] = [
 ];
 
 function formatContactName(contact: any) {
-  return (
-    `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() ||
-    contact?.name ||
-    contact?.email ||
-    "Unnamed contact"
-  );
+  const name = `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || "";
+  return formatPersonName(name) || contact?.email || "Unnamed contact";
 }
 
 function getArrayFromResponse(response: any, key: string) {
@@ -141,10 +174,7 @@ function formatDate(value?: string) {
 function formatContactDisplayName(value?: string | null) {
   const name = value?.trim();
   if (!name) return "";
-  return name
-    .split(/\s+/)
-    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-    .join(" ");
+  return formatPersonName(name);
 }
 
 function getContactAvatarUrl(contact: any) {
@@ -170,7 +200,9 @@ export function CasesPage() {
   const [statusFilter, setStatusFilter] = useState("All");
   const [stageFilter, setStageFilter] = useState("All");
   const [assignedUserFilter, setAssignedUserFilter] = useState("All");
-  const [viewMode, setViewMode] = useState<"grid" | "list">("list");
+  const [viewMode, setViewMode] = useState<CaseViewMode>(getInitialCaseViewMode);
+  const [pinnedViewMode, setPinnedViewMode] = useState<CaseViewMode | null>(getInitialPinnedCaseViewMode);
+  const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [listViews, setListViews] = useState<CaseListView[]>(defaultCaseListViews);
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
@@ -187,18 +219,72 @@ export function CasesPage() {
   const [isDeletingCase, setIsDeletingCase] = useState(false);
 
   useEffect(() => {
-    const loadListViews = async () => {
+    const loadCasePreferences = async () => {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const saved = session?.user?.user_metadata?.caseListViews;
+      const userMetadata = session?.user?.user_metadata || {};
+      const saved = userMetadata.caseListViews;
       if (Array.isArray(saved) && saved.length > 0) {
         setListViews([...defaultCaseListViews, ...saved.filter((view: CaseListView) => !view.system)]);
       }
+
+      const savedPinnedViewMode = userMetadata[CASE_PINNED_VIEW_MODE_METADATA_KEY];
+      if (isCaseViewMode(savedPinnedViewMode)) {
+        setPinnedViewMode(savedPinnedViewMode);
+        setViewMode(savedPinnedViewMode);
+        window.localStorage.setItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY, savedPinnedViewMode);
+      } else {
+        setPinnedViewMode(null);
+        window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
     };
 
-    loadListViews().catch((error) => console.error("Failed to load case list views from Supabase", error));
+    loadCasePreferences().catch((error) => console.error("Failed to load matter preferences from Supabase", error));
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(CASE_VIEW_MODE_STORAGE_KEY, viewMode);
+  }, [viewMode]);
+
+  const handleTogglePinnedView = async () => {
+    const nextPinnedViewMode = pinnedViewMode === viewMode ? null : viewMode;
+    setPinnedViewMode(nextPinnedViewMode);
+    if (nextPinnedViewMode) {
+      window.localStorage.setItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY, nextPinnedViewMode);
+    } else {
+      window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+    }
+
+    setIsSavingPinnedView(true);
+    try {
+      await supabase.auth.updateUser({
+        data: {
+          [CASE_PINNED_VIEW_MODE_METADATA_KEY]: nextPinnedViewMode,
+        },
+      });
+      toast({
+        title: nextPinnedViewMode ? "Matters View Pinned" : "Matters View Unpinned",
+        description: nextPinnedViewMode
+          ? `Matters will open in ${nextPinnedViewMode === "grid" ? "card" : "list"} view.`
+          : "Matters will open in the last view used on this device.",
+      });
+    } catch (error) {
+      setPinnedViewMode(pinnedViewMode);
+      if (pinnedViewMode) {
+        window.localStorage.setItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY, pinnedViewMode);
+      } else {
+        window.localStorage.removeItem(CASE_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
+      toast({
+        title: "Pinned View Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Could not save your pinned Matters view."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingPinnedView(false);
+    }
+  };
 
   const saveListViewsToSupabase = async (newListViews: CaseListView[]) => {
     setListViews(newListViews);
@@ -443,7 +529,7 @@ export function CasesPage() {
               {listViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
                       <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
                     </Button>
                   </DropdownMenuTrigger>
@@ -465,7 +551,7 @@ export function CasesPage() {
               <Button
                 variant="ghost"
                 size="sm"
-                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground"
+                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                 onClick={() => {
                   setEditingListView(null);
                   setIsListViewPanelOpen(true);
@@ -529,23 +615,25 @@ export function CasesPage() {
               </div>
 
               <Popover>
-                <PopoverTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    className={cn(
-                      "relative h-10 w-10 shrink-0 rounded-full",
-                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
-                    )}
-                  >
-                    <Filter className="h-4 w-4" />
-                    {activeFilterCount > 0 && (
-                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
-                        {activeFilterCount}
-                      </span>
-                    )}
-                  </Button>
-                </PopoverTrigger>
+                <ControlTooltip label="Filter matters">
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className={cn(
+                        "relative h-10 w-10 shrink-0 rounded-full",
+                        activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                      )}
+                    >
+                      <Filter className="h-4 w-4" />
+                      {activeFilterCount > 0 && (
+                        <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                          {activeFilterCount}
+                        </span>
+                      )}
+                    </Button>
+                  </PopoverTrigger>
+                </ControlTooltip>
                 <PopoverContent className="right-0 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
@@ -650,30 +738,52 @@ export function CasesPage() {
               <Tabs
                 value={viewMode}
                 onValueChange={(value) => {
-                  setViewMode(value as "grid" | "list");
+                  setViewMode(value as CaseViewMode);
                   setCurrentPage(1);
                 }}
                 className="hidden sm:block"
               >
                 <TabsList className="h-10 rounded-full">
-                  <TabsTrigger value="grid" className="rounded-full px-3">
-                    <LayoutGrid className="h-4 w-4" />
-                  </TabsTrigger>
-                  <TabsTrigger value="list" className="rounded-full px-3">
-                    <List className="h-4 w-4" />
-                  </TabsTrigger>
+                  <ControlTooltip label="Card view">
+                    <TabsTrigger value="grid" className="rounded-full px-3">
+                      <LayoutGrid className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
+                  <ControlTooltip label="List view">
+                    <TabsTrigger value="list" className="rounded-full px-3">
+                      <List className="h-4 w-4" />
+                    </TabsTrigger>
+                  </ControlTooltip>
                 </TabsList>
               </Tabs>
+              <ControlTooltip label={pinnedViewMode === viewMode ? "Unpin this Matters view" : "Pin this Matters view"}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
+                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                  )}
+                  disabled={isSavingPinnedView}
+                  onClick={handleTogglePinnedView}
+                  aria-label={pinnedViewMode === viewMode ? "Unpin this Matters view" : "Pin this Matters view"}
+                >
+                  <Pin className={cn("h-4 w-4", pinnedViewMode === viewMode && "fill-current")} />
+                </Button>
+              </ControlTooltip>
             </>
           )}
 
-          <Button
-            size="icon"
-            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
-            onClick={() => setIsCreateOpen(true)}
-          >
-            <Plus className="h-5 w-5" />
-          </Button>
+          <ControlTooltip label="Add matter">
+            <Button
+              size="icon"
+              className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+              onClick={() => setIsCreateOpen(true)}
+            >
+              <Plus className="h-5 w-5" />
+            </Button>
+          </ControlTooltip>
         </div>
       </div>
 
@@ -689,14 +799,14 @@ export function CasesPage() {
           </div>
           <h3 className="mb-1 text-lg font-medium text-muted-foreground">No matters found</h3>
           <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">Get started by creating your first matter.</p>
-          <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm">
+          <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
             <Plus className="h-6 w-6" />
           </Button>
         </div>
       ) : (
         <>
           {viewMode === "grid" ? (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
               {paginatedCases.map((caseRecord) => (
               <CaseCard
                 key={caseRecord.id}
@@ -834,28 +944,33 @@ function CaseCard({
 }) {
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
-      <CardHeader className="flex flex-row items-start justify-between bg-muted/30 pb-4">
-        <div>
-          <h3 className="mb-1.5 text-lg capitalize leading-none text-[#2384CA] hover:underline">
-            <Link to={`/case/${caseRecord.id}`} onClick={(event) => event.stopPropagation()}>
-              {caseRecord.case_name}
-            </Link>
-          </h3>
-          <div className="text-sm text-muted-foreground">{caseRecord.case_number}</div>
+      <CardHeader className="flex flex-row items-start justify-between gap-3 bg-muted/30 p-3">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+            <Briefcase className="h-4 w-4" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <h3 className="min-w-0 truncate text-sm font-semibold capitalize leading-tight text-[#2384CA] hover:underline">
+                <Link to={`/case/${caseRecord.id}`} onClick={(event) => event.stopPropagation()} className="block truncate">
+                  {caseRecord.case_name}
+                </Link>
+              </h3>
+              <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getCaseStatusClass(caseRecord.status))}>
+                {caseRecord.status}
+              </Badge>
+            </div>
+            <div className="mt-1 truncate text-xs text-muted-foreground">{caseRecord.case_number}</div>
+          </div>
         </div>
         <CaseActions onView={onNavigate} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
-      <CardContent className="pt-4">
-        <div className="space-y-3">
-          <Badge variant="outline" className={cn("border-transparent capitalize", getCaseStatusClass(caseRecord.status))}>
-            {caseRecord.status}
-          </Badge>
-          <div className="mt-3 space-y-2 border-t pt-3">
-            <CaseMeta label="Practice Area" value={caseRecord.case_type} />
-            <CaseMeta label="Stage" value={caseRecord.stage.replace(/_/g, " ")} />
-            <CaseMeta label="Client" value={caseRecord.primary_contact_name || caseRecord.ghl_contact_id} />
-            <CaseMeta label="Last Updated" value={formatDate(caseRecord.updated_at)} />
-          </div>
+      <CardContent className="p-3 pt-3">
+        <div className="space-y-1.5">
+          <CaseMeta label="Practice Area" value={caseRecord.case_type} />
+          <CaseMeta label="Stage" value={caseRecord.stage.replace(/_/g, " ")} />
+          <CaseMeta label="Client" value={caseRecord.primary_contact_name || caseRecord.ghl_contact_id} />
+          <CaseMeta label="Last Updated" value={formatDate(caseRecord.updated_at)} />
         </div>
       </CardContent>
     </Card>
@@ -864,9 +979,9 @@ function CaseCard({
 
 function CaseMeta({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex justify-between text-sm">
+    <div className="flex justify-between gap-3 text-xs">
       <span className="text-muted-foreground">{label}:</span>
-      <span className="text-right capitalize text-foreground/80">{value}</span>
+      <span className="truncate text-right capitalize text-foreground/80">{value}</span>
     </div>
   );
 }
@@ -883,7 +998,7 @@ function CaseActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8">
+        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
           <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
@@ -1215,7 +1330,7 @@ function CaseListViewSheet({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={handleSave}>{editingListView ? "Save Changes" : "Save List View"}</Button>
+            <Button className="hover:bg-[#0484C8]" onClick={handleSave}>{editingListView ? "Save Changes" : "Save List View"}</Button>
           </div>
         </div>
       </SheetContent>
@@ -1409,7 +1524,7 @@ function CreateCaseSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Create Matter
             </Button>
@@ -1571,7 +1686,7 @@ function EditCaseSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Save Changes
             </Button>

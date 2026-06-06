@@ -1,7 +1,7 @@
-import { type CSSProperties, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Link, useLocation, useParams } from "react-router-dom";
-import { ArrowLeft, Building2, CheckSquare, Loader2, Mail, Pencil, Phone, Plus, UserRound, UserX, X } from "lucide-react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { ArrowLeft, Briefcase, Building2, CheckSquare, Loader2, Mail, MoreVertical, Pencil, Phone, Plus, Trash2, UserRound, UserX, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -13,21 +13,43 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sh
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { DateTimePicker } from "@/components/DatePicker";
+import { EditCompanyDialog, type CompanyFormValues } from "@/components/EditCompanyDialog";
+import { MatterActionSheet, MatterCreateSheet } from "@/components/MatterActionSheet";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import {
   addContactsToBusiness,
   createContact,
+  createLocationTag,
   getAppLocationContext,
   getBusiness,
+  getBusinessCustomFields,
+  getBusinessObjectRecord,
+  getContact,
   getContactsByBusinessId,
   getCustomFields,
+  getLocationTags,
   type GhlBusiness,
+  type GhlCustomField,
+  type GhlTag,
+  removeContactsFromBusiness,
   updateBusiness,
+  updateBusinessObjectProperties,
+  updateContact,
 } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
+import {
+  getBusinessCustomFieldsCollection,
+  getBusinessIndustryLabel,
+  getBusinessIndustryOptions,
+} from "@/lib/business-custom-fields";
+import { listCases, type CaseRecord } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
+import { getTagPastelStyle } from "@/lib/tag-colors";
 import { createTask, listTasks, type TaskRecord } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
@@ -48,6 +70,22 @@ type CompanyContact = {
   email: string;
 };
 
+type MatterActionState = {
+  mode: "view" | "edit" | "delete";
+  matter: CaseRecord;
+} | null;
+
+function HeaderIconTooltip({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
 
@@ -56,12 +94,18 @@ function unwrapBusinessResponse(response: any): GhlBusiness | null {
 }
 
 function formatDate(value?: string | null) {
-  if (!value) return "Not set";
+  if (!value) return "-";
   const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "Not set";
-  const dateLabel = date.toLocaleDateString("en-US");
+  if (Number.isNaN(date.getTime())) return "-";
+  const dateLabel = date.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" });
   const timeLabel = date.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
-  return `${dateLabel}, ${timeLabel}`;
+  return `${dateLabel} ${timeLabel}`;
+}
+
+function formatDetailValue(value?: string | null) {
+  const text = String(value || "").trim();
+  if (!text || ["n/a", "not set", "unassigned"].includes(text.toLowerCase())) return "-";
+  return text;
 }
 
 function formatAddress(company: GhlBusiness) {
@@ -69,7 +113,7 @@ function formatAddress(company: GhlBusiness) {
     company.address,
     [company.city, `${company.state || ""} ${company.postalCode || ""}`.trim()].filter(Boolean).join(", "),
     company.country,
-  ].filter(Boolean).join("\n") || "N/A";
+  ].filter(Boolean).join("\n") || "-";
 }
 
 function getStatusColor(status: string) {
@@ -123,6 +167,10 @@ function getArrayFromResponse(response: any, key: string) {
   return [];
 }
 
+function getBusinessPropertiesFromRecord(response: any) {
+  return response?.record?.properties || response?.data?.record?.properties || response?.data?.properties || response?.properties || {};
+}
+
 function getCustomFieldId(customFields: any[], names: string[]) {
   const normalizedNames = names.map((name) => name.toLowerCase());
   return customFields.find((field) => normalizedNames.includes(field.name?.trim().toLowerCase()))?.id || "";
@@ -140,7 +188,8 @@ function getContactCustomFieldValue(contact: any, customFields: any[], names: st
 }
 
 function normalizeCompanyContact(contact: any, customFields: any[] = []): CompanyContact {
-  const name = `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.name || contact.email || "Unknown";
+  const rawName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.name || "";
+  const name = formatPersonName(rawName) || contact.email || "Unknown";
   const title =
     contact.title ||
     contact.jobTitle ||
@@ -171,7 +220,9 @@ function getTaskAssigneeName(task: TaskRecord, users: any[]) {
   const assignedUser = task.assigned_user_id
     ? users.find((user) => getUserId(user) === task.assigned_user_id)
     : null;
-  return task.assigned_user?.full_name || task.assigned_user?.email || (assignedUser ? getUserName(assignedUser) : "Unassigned");
+  return task.assigned_user?.full_name
+    ? formatPersonName(task.assigned_user.full_name)
+    : task.assigned_user?.email || (assignedUser ? getUserName(assignedUser) : "Unassigned");
 }
 
 function getCachedCompany(companyId?: string, routeCompany?: GhlBusiness) {
@@ -203,11 +254,13 @@ function CompanyTagAddButton({
   options,
   currentTags,
   onAddTag,
+  onCreateTag,
   disabled,
 }: {
   options: string[];
   currentTags: string[];
   onAddTag: (tagName: string) => Promise<void>;
+  onCreateTag: (tagName: string) => Promise<string | void> | string | void;
   disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
@@ -242,10 +295,13 @@ function CompanyTagAddButton({
     const viewportPadding = 16;
     const gap = 6;
     const menuWidth = 260;
-    const estimatedHeight = 260;
-    const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
-    const availableAbove = rect.top - viewportPadding;
-    const openAbove = availableBelow < estimatedHeight && availableAbove > availableBelow;
+    const desiredHeight = 320;
+    const minHeight = 120;
+    const availableBelow = window.innerHeight - rect.bottom - gap - viewportPadding;
+    const availableAbove = rect.top - gap - viewportPadding;
+    const openAbove = availableBelow < desiredHeight && availableAbove > availableBelow;
+    const availableHeight = Math.max(minHeight, openAbove ? availableAbove : availableBelow);
+    const menuHeight = Math.min(desiredHeight, availableHeight);
     const left = Math.min(
       Math.max(viewportPadding, rect.left),
       Math.max(viewportPadding, window.innerWidth - menuWidth - viewportPadding),
@@ -253,8 +309,9 @@ function CompanyTagAddButton({
 
     setMenuStyle({
       left,
-      top: openAbove ? Math.max(viewportPadding, rect.top - estimatedHeight - gap) : rect.bottom + gap,
+      top: openAbove ? Math.max(viewportPadding, rect.top - menuHeight - gap) : rect.bottom + gap,
       width: menuWidth,
+      maxHeight: menuHeight,
     });
   }, []);
 
@@ -273,26 +330,42 @@ function CompanyTagAddButton({
       if (buttonRef.current?.contains(target) || menuRef.current?.contains(target)) return;
       setOpen(false);
     };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
 
     document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
     window.addEventListener("resize", updateMenuPosition);
     window.addEventListener("scroll", updateMenuPosition, true);
     return () => {
       document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("resize", updateMenuPosition);
       window.removeEventListener("scroll", updateMenuPosition, true);
     };
   }, [open, updateMenuPosition]);
 
   const addTag = async (tagName: string) => {
-    const nextTag = tagName.trim();
-    if (!nextTag) return;
-
+    if (!tagName || isSaving) return;
     setIsSaving(true);
     try {
-      await onAddTag(nextTag);
-      setQuery("");
+      await onAddTag(tagName);
       setOpen(false);
+      setQuery("");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const createAndAddTag = async () => {
+    if (!canCreate || isSaving) return;
+    setIsSaving(true);
+    try {
+      const createdName = (await onCreateTag(trimmedQuery)) || trimmedQuery;
+      await onAddTag(createdName);
+      setOpen(false);
+      setQuery("");
     } finally {
       setIsSaving(false);
     }
@@ -303,42 +376,51 @@ function CompanyTagAddButton({
       ? createPortal(
           <div
             ref={menuRef}
-            className="fixed z-[200] rounded-md border border-border bg-background p-0 shadow-lg"
+            className="fixed z-[220] flex flex-col overflow-hidden rounded-md border border-border bg-background shadow-lg"
             style={menuStyle}
           >
             <div className="border-b border-border p-2">
-              <input
+              <Input
                 ref={inputRef}
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  if (filteredOptions[0]) void addTag(filteredOptions[0]);
+                  else if (canCreate) void createAndAddTag();
+                }}
                 placeholder="Search or create tag..."
-                className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                className="h-9"
               />
             </div>
-            <div className="hover-scrollbar max-h-52 overflow-y-auto p-1">
-              {filteredOptions.map((tag) => (
+            <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto p-1">
+              {filteredOptions.length === 0 && !canCreate ? (
+                <div className="px-2 py-3 text-center text-sm text-muted-foreground">No tags available.</div>
+              ) : (
+                filteredOptions.map((tag) => (
+                  <button
+                    key={tag}
+                    type="button"
+                    className="flex w-full items-center rounded-sm px-2 py-2 text-left text-sm hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                    onClick={() => void addTag(tag)}
+                    disabled={isSaving}
+                  >
+                    {tag}
+                  </button>
+                ))
+              )}
+              {canCreate && (
                 <button
-                  key={tag}
                   type="button"
-                  className="flex w-full items-center rounded-sm px-2 py-2 text-left text-sm hover:bg-muted"
-                  onClick={() => void addTag(tag)}
+                  className="mt-1 flex w-full items-center gap-2 border-t px-2 py-2 text-left text-sm font-medium text-primary hover:bg-muted disabled:cursor-not-allowed disabled:opacity-60"
+                  onClick={() => void createAndAddTag()}
+                  disabled={isSaving}
                 >
-                  {tag}
-                </button>
-              ))}
-              {canCreate ? (
-                <button
-                  type="button"
-                  className="mt-1 flex w-full items-center gap-2 border-t px-2 py-2 text-left text-sm font-medium text-primary hover:bg-muted"
-                  onClick={() => void addTag(trimmedQuery)}
-                >
-                  <Plus className="h-4 w-4" />
+                  {isSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
                   <span className="truncate">Create tag "{trimmedQuery}"</span>
                 </button>
-              ) : null}
-              {filteredOptions.length === 0 && !canCreate ? (
-                <div className="px-2 py-3 text-center text-sm text-muted-foreground">No tags found.</div>
-              ) : null}
+              )}
             </div>
           </div>,
           document.body,
@@ -565,7 +647,7 @@ function CompanyTaskCreateSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Create Task
             </Button>
@@ -611,9 +693,54 @@ function CompanyTaskList({ tasks, users }: { tasks: TaskRecord[]; users: any[] }
   );
 }
 
+function CompanyContactActions({
+  disabled,
+  onMakePrimary,
+  onEdit,
+  onDelete,
+}: {
+  disabled?: boolean;
+  onMakePrimary?: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          disabled={disabled}
+        >
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-44">
+        {onMakePrimary ? (
+          <DropdownMenuItem onClick={onMakePrimary}>
+            <UserRound className="mr-2 h-4 w-4" />
+            Make Primary
+          </DropdownMenuItem>
+        ) : null}
+        <DropdownMenuItem onClick={onEdit}>
+          <Pencil className="mr-2 h-4 w-4" />
+          Edit
+        </DropdownMenuItem>
+        <DropdownMenuItem className="text-destructive hover:text-destructive" onClick={onDelete}>
+          <Trash2 className="mr-2 h-4 w-4" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function CompanyDetailPage() {
   const { companyId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const routeCompany = (location.state as { company?: GhlBusiness } | null)?.company;
   const initialCompany = getCachedCompany(companyId, routeCompany);
@@ -624,11 +751,23 @@ export function CompanyDetailPage() {
   const [assignedAttorneyId, setAssignedAttorneyId] = useState("");
   const [companyContacts, setCompanyContacts] = useState<CompanyContact[]>([]);
   const [companyTasks, setCompanyTasks] = useState<TaskRecord[]>([]);
+  const [companyMatters, setCompanyMatters] = useState<CaseRecord[]>([]);
+  const [matterAction, setMatterAction] = useState<MatterActionState>(null);
   const [systemUsers, setSystemUsers] = useState<any[]>([]);
   const [customFields, setCustomFields] = useState<any[]>([]);
+  const [tagOptions, setTagOptions] = useState<GhlTag[]>([]);
+  const [businessCustomFields, setBusinessCustomFields] = useState<GhlCustomField[]>([]);
+  const [industryOptions, setIndustryOptions] = useState<string[]>([]);
+  const [companyIndustry, setCompanyIndustry] = useState("");
   const [isAddContactOpen, setIsAddContactOpen] = useState(false);
+  const [isEditCompanyOpen, setIsEditCompanyOpen] = useState(false);
+  const [editingCompanyContact, setEditingCompanyContact] = useState<CompanyContact | null>(null);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+  const [isCreateMatterOpen, setIsCreateMatterOpen] = useState(false);
   const [isSavingContact, setIsSavingContact] = useState(false);
+  const [isSavingContactEdit, setIsSavingContactEdit] = useState(false);
+  const [removingCompanyContactId, setRemovingCompanyContactId] = useState<string | null>(null);
+  const [savingPrimaryContactId, setSavingPrimaryContactId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialCompany);
   const [tasksLoading, setTasksLoading] = useState(false);
   const [contactForm, setContactForm] = useState({
@@ -636,14 +775,20 @@ export function CompanyDetailPage() {
     title: "",
     email: "",
   });
+  const [contactEditForm, setContactEditForm] = useState({
+    name: "",
+    title: "",
+    email: "",
+  });
 
   const parsedDescription = useMemo(() => parseDescription(company?.description), [company?.description]);
-  const phone = company?.phone ? formatPhoneNumber(company.phone) : "Not set";
-  const address = company ? formatAddress(company) : "Not set";
+  const phone = company?.phone ? formatPhoneNumber(company.phone) : "-";
+  const address = company ? formatAddress(company) : "-";
   const website = company?.website || "";
   const status = parsedDescription.status || "Active";
   const practiceArea = parsedDescription.practiceArea || "General";
   const primaryContact = parsedDescription.primaryContact || "Not set";
+  const industry = companyIndustry || parsedDescription.industry || "";
   const activeTasks = useMemo(() => companyTasks.filter((task) => !isCompletedTask(task)), [companyTasks]);
   const completedTasks = useMemo(() => companyTasks.filter(isCompletedTask), [companyTasks]);
   const companyTags = useMemo(() => {
@@ -652,21 +797,67 @@ export function CompanyDetailPage() {
     const tags = [...rawTags, ...descriptionTags].map((tag) => String(tag).trim()).filter(Boolean);
     return Array.from(new Set(tags));
   }, [company?.tags, parsedDescription.tags]);
+  const primaryContactRecord = useMemo(() => {
+    if (companyContacts.length === 0) return null;
+
+    const normalizedPrimaryContact = primaryContact.trim().toLowerCase();
+    if (!normalizedPrimaryContact || normalizedPrimaryContact === "not set") return companyContacts[0];
+
+    const exactMatch = companyContacts.find((contact) => {
+      const normalizedName = contact.name.trim().toLowerCase();
+      const normalizedEmail = contact.email.trim().toLowerCase();
+      return normalizedName === normalizedPrimaryContact || normalizedEmail === normalizedPrimaryContact;
+    });
+
+    return exactMatch || companyContacts[0];
+  }, [companyContacts, primaryContact]);
+  const secondaryCompanyContacts = useMemo(
+    () => companyContacts.filter((contact) => contact.id !== primaryContactRecord?.id),
+    [companyContacts, primaryContactRecord?.id],
+  );
 
   const resetContactForm = () => {
     setContactForm({ name: "", title: "", email: "" });
   };
 
-  const loadContactCustomFields = async () => {
-    if (!locationId) return customFields;
-    if (customFields.length > 0) return customFields;
+  const openCompanyContactEdit = (contact: CompanyContact) => {
+    setEditingCompanyContact(contact);
+    setContactEditForm({
+      name: contact.name === "Unknown" ? "" : contact.name,
+      title: contact.title || "",
+      email: contact.email === "No email set" ? "" : contact.email,
+    });
+  };
 
-    const fieldsResponse: any = await getCustomFields(locationId).catch((error) => {
+  const closeCompanyContactEdit = () => {
+    setEditingCompanyContact(null);
+    setContactEditForm({ name: "", title: "", email: "" });
+  };
+
+  const loadContactCustomFields = async (ghlLocationId = locationId, forceRefresh = false) => {
+    if (!ghlLocationId) return customFields;
+    if (!forceRefresh && customFields.length > 0) return customFields;
+
+    const fieldsResponse: any = await getCustomFields(ghlLocationId).catch((error) => {
       console.error("Failed to load contact custom fields", error);
       return { customFields: [] };
     });
     const nextCustomFields = getArrayFromResponse(fieldsResponse, "customFields");
     setCustomFields(nextCustomFields);
+    return nextCustomFields;
+  };
+
+  const loadBusinessCustomFields = async (ghlLocationId = locationId) => {
+    if (!ghlLocationId) return businessCustomFields;
+    if (businessCustomFields.length > 0) return businessCustomFields;
+
+    const fieldsResponse = await getBusinessCustomFields(ghlLocationId).catch((error) => {
+      console.error("Failed to load business custom fields", error);
+      return { fields: [] };
+    });
+    const nextCustomFields = getBusinessCustomFieldsCollection(fieldsResponse);
+    setBusinessCustomFields(nextCustomFields);
+    setIndustryOptions(getBusinessIndustryOptions(nextCustomFields));
     return nextCustomFields;
   };
 
@@ -698,6 +889,42 @@ export function CompanyDetailPage() {
     }
   };
 
+  const handleCreateTag = async (name: string) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) return;
+
+    const existingTag = tagOptions.find((tag) => tag.name.toLowerCase() === trimmedName.toLowerCase());
+    if (existingTag) return existingTag.name;
+
+    if (!locationId) {
+      toast({ title: "Tag Not Created", description: "No GHL location is configured.", variant: "destructive" });
+      throw new Error("No GHL location is configured.");
+    }
+
+    try {
+      const createdTag = await createLocationTag(locationId, trimmedName);
+      setTagOptions((current) => {
+        if (
+          current.some(
+            (tag) => tag.id === createdTag.id || tag.name.toLowerCase() === createdTag.name.toLowerCase(),
+          )
+        ) {
+          return current;
+        }
+        return [...current, createdTag];
+      });
+      toast({ title: "Tag Created", description: `${createdTag.name} has been added.` });
+      return createdTag.name;
+    } catch (error) {
+      toast({
+        title: "Tag Not Created",
+        description: getUserFriendlyErrorMessage(error, "Could not create this tag in GHL. Please try again."),
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
   const handleAddTagToCompany = async (tagName: string) => {
     const trimmedName = tagName.trim();
     if (!trimmedName || companyTags.some((tag) => tag.toLowerCase() === trimmedName.toLowerCase())) return;
@@ -710,11 +937,60 @@ export function CompanyDetailPage() {
     await saveCompanyTags(nextTags, `${tagName} has been removed.`);
   };
 
+  const handleEditCompany = async (updatedData: CompanyFormValues) => {
+    if (!company) return;
+
+    const previousCompany = company;
+    const previousIndustry = companyIndustry;
+    const nextCompany: GhlBusiness = {
+      ...company,
+      name: updatedData.name.trim(),
+      email: updatedData.email.trim() || null,
+      phone: updatedData.phone ? formatPhoneNumber(updatedData.phone, "") : null,
+      website: updatedData.website.trim() || null,
+      address: updatedData.address.trim() || null,
+    };
+
+    setCompany(nextCompany);
+    setCompanyIndustry(updatedData.industry);
+    if (companyId && typeof window !== "undefined") {
+      window.sessionStorage.setItem(`company:${companyId}`, JSON.stringify(nextCompany));
+    }
+
+    try {
+      await updateBusiness(company.id, {
+        name: nextCompany.name,
+        email: nextCompany.email,
+        phone: nextCompany.phone,
+        website: nextCompany.website,
+        address: nextCompany.address,
+      });
+
+      if (locationId) {
+        await updateBusinessObjectProperties(locationId, company.id, { industry: updatedData.industry || "" });
+      }
+
+      toast({ title: "Company Updated", description: `${nextCompany.name} has been saved.` });
+    } catch (error) {
+      setCompany(previousCompany);
+      setCompanyIndustry(previousIndustry);
+      if (companyId && typeof window !== "undefined") {
+        window.sessionStorage.setItem(`company:${companyId}`, JSON.stringify(previousCompany));
+      }
+      toast({
+        title: "Company Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not save company changes. Please try again."),
+        variant: "destructive",
+      });
+      throw error;
+    }
+  };
+
   const handleCreateCompanyContact = async (event: FormEvent) => {
     event.preventDefault();
     if (!company || !companyId) return;
 
-    const name = contactForm.name.trim();
+    const name = formatPersonName(contactForm.name.trim());
     const email = contactForm.email.trim();
     const title = contactForm.title.trim();
 
@@ -746,18 +1022,15 @@ export function CompanyDetailPage() {
         name,
         email,
         companyName: company.name,
-        businessId: companyId,
         tags: ["Company Contact"],
       };
 
-      const availableCustomFields = await loadContactCustomFields();
+      const availableCustomFields = await loadContactCustomFields(locationId, true);
       const titleFieldId = getCustomFieldId(availableCustomFields, ["title", "job title", "contact title"]);
       if (title) {
-        payload.title = title;
-        payload.jobTitle = title;
-      }
-      if (titleFieldId && title) {
-        payload.customFields = [{ id: titleFieldId, field_value: title }];
+        if (titleFieldId) {
+          payload.customFields = [{ id: titleFieldId, field_value: title }];
+        }
       }
 
       const response: any = await createContact(payload);
@@ -787,6 +1060,134 @@ export function CompanyDetailPage() {
     }
   };
 
+  const handleUpdateCompanyContact = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingCompanyContact) return;
+
+    const name = formatPersonName(contactEditForm.name.trim());
+    const email = contactEditForm.email.trim();
+    const title = contactEditForm.title.trim();
+
+    if (!name || !email) {
+      toast({
+        title: "Contact Details Required",
+        description: "Please enter a contact name and email.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsSavingContactEdit(true);
+    const previousContacts = companyContacts;
+
+    try {
+      const [firstName, ...rest] = name.split(/\s+/);
+      const payload: Record<string, any> = {
+        firstName,
+        lastName: rest.join(" "),
+        email,
+      };
+
+      const availableCustomFields = await loadContactCustomFields(locationId, true);
+      const titleFieldId = getCustomFieldId(availableCustomFields, ["title", "job title", "contact title"]);
+      if (titleFieldId) {
+        payload.customFields = [{ id: titleFieldId, field_value: title }];
+      }
+
+      await updateContact(editingCompanyContact.id, payload);
+
+      const updatedContact = normalizeCompanyContact(
+        {
+          ...editingCompanyContact,
+          firstName,
+          lastName: rest.join(" "),
+          name,
+          email,
+          title,
+        },
+        availableCustomFields,
+      );
+
+      setCompanyContacts((current) =>
+        current.map((contact) => (contact.id === editingCompanyContact.id ? updatedContact : contact)),
+      );
+      closeCompanyContactEdit();
+      toast({ title: "Contact Updated", description: `${updatedContact.name} has been saved.` });
+    } catch (error) {
+      setCompanyContacts(previousContacts);
+      toast({
+        variant: "destructive",
+        title: "Contact Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not save this company contact. Please try again."),
+      });
+    } finally {
+      setIsSavingContactEdit(false);
+    }
+  };
+
+  const handleRemoveCompanyContactConnection = async (contact: CompanyContact) => {
+    if (!locationId) {
+      toast({
+        title: "Contact Not Removed",
+        description: "No location is configured for this company.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const previousContacts = companyContacts;
+    setRemovingCompanyContactId(contact.id);
+    setCompanyContacts((current) => current.filter((candidate) => candidate.id !== contact.id));
+    if (editingCompanyContact?.id === contact.id) closeCompanyContactEdit();
+
+    try {
+      await removeContactsFromBusiness(locationId, [contact.id]);
+      toast({
+        title: "Connection Removed",
+        description: `${contact.name} was removed from this company. The contact record was not deleted.`,
+      });
+    } catch (error) {
+      setCompanyContacts(previousContacts);
+      toast({
+        variant: "destructive",
+        title: "Connection Not Removed",
+        description: getUserFriendlyErrorMessage(error, "Could not remove this contact from the company. Please try again."),
+      });
+    } finally {
+      setRemovingCompanyContactId(null);
+    }
+  };
+
+  const handleMakePrimaryCompanyContact = async (contact: CompanyContact) => {
+    if (!company) return;
+
+    const previousCompany = company;
+    const nextDescription = upsertDescriptionLine(company.description, "Primary Contact", contact.name);
+    const nextCompany = { ...company, description: nextDescription };
+    setSavingPrimaryContactId(contact.id);
+    setCompany(nextCompany);
+    if (companyId && typeof window !== "undefined") {
+      window.sessionStorage.setItem(`company:${companyId}`, JSON.stringify(nextCompany));
+    }
+
+    try {
+      await updateBusiness(company.id, { description: nextDescription });
+      toast({ title: "Primary Contact Updated", description: `${contact.name} is now the primary contact.` });
+    } catch (error) {
+      setCompany(previousCompany);
+      if (companyId && typeof window !== "undefined") {
+        window.sessionStorage.setItem(`company:${companyId}`, JSON.stringify(previousCompany));
+      }
+      toast({
+        variant: "destructive",
+        title: "Primary Contact Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update the primary contact. Please try again."),
+      });
+    } finally {
+      setSavingPrimaryContactId(null);
+    }
+  };
+
   useEffect(() => {
     const loadCompany = async () => {
       if (!companyId) return;
@@ -797,6 +1198,14 @@ export function CompanyDetailPage() {
         const context = await getAppLocationContext();
         const ghlLocationId = context.location?.ghlLocationId || "";
         setLocationId(ghlLocationId);
+        const nextBusinessCustomFields = await loadBusinessCustomFields(ghlLocationId);
+        if (ghlLocationId) {
+          const fetchedTags = await getLocationTags(ghlLocationId).catch((error) => {
+            console.error("Failed to load location tags", error);
+            return [];
+          });
+          setTagOptions(fetchedTags);
+        }
 
         const locationRecordId = context.location?.id || "";
         setAppLocationId(locationRecordId);
@@ -812,17 +1221,54 @@ export function CompanyDetailPage() {
           if (!hasCachedCompany) throw error;
         }
 
-        const contactsResponse = await getContactsByBusinessId(companyId).catch((error) => {
+        if (ghlLocationId) {
+          const businessRecordResponse = await getBusinessObjectRecord(ghlLocationId, companyId).catch((error) => {
+            console.error("Failed to load business object record", error);
+            return null;
+          });
+          const businessProperties = getBusinessPropertiesFromRecord(businessRecordResponse);
+          setCompanyIndustry(getBusinessIndustryLabel(businessProperties.industry, nextBusinessCustomFields));
+        }
+
+        const contactsResponse = await getContactsByBusinessId(ghlLocationId, companyId).catch((error) => {
           console.error("Failed to load company contacts", error);
           return { contacts: [] };
         });
-        setCompanyContacts(
-          getArrayFromResponse(contactsResponse, "contacts").map((contact: any) =>
-            normalizeCompanyContact(contact),
-          ),
+        const linkedContacts = getArrayFromResponse(contactsResponse, "contacts");
+        const contactCustomFields = await loadContactCustomFields(ghlLocationId, true);
+        const hydratedContacts = await Promise.all(
+          linkedContacts.map(async (contact: any) => {
+            const contactId = contact.id || contact._id;
+            if (!contactId) return contact;
+
+            const detailResponse: any = await getContact(String(contactId)).catch((error) => {
+              console.error("Failed to load linked contact detail", error);
+              return null;
+            });
+            const detail = detailResponse?.contact || detailResponse?.data?.contact || detailResponse?.data || detailResponse;
+            return detail ? { ...contact, ...detail, id: detail.id || contactId } : contact;
+          }),
         );
 
+        setCompanyContacts(hydratedContacts.map((contact: any) => normalizeCompanyContact(contact, contactCustomFields)));
+
         if (locationRecordId) {
+          const linkedContactIds = new Set(
+            hydratedContacts
+              .map((contact: any) => String(contact.id || contact._id || ""))
+              .filter(Boolean),
+          );
+          const caseRows = await listCases({ locationId: locationRecordId }).catch((error) => {
+            console.error("Failed to load company matters", error);
+            return [];
+          });
+          setCompanyMatters(
+            caseRows.filter((caseRecord) => {
+              const matterContactId = String(caseRecord.ghl_contact_id || "");
+              return matterContactId === companyId || linkedContactIds.has(matterContactId);
+            }),
+          );
+
           const assignableUsers = await getAssignableUsers().catch((error) => {
             console.error("Failed to fetch assigned user details", error);
             return [];
@@ -901,6 +1347,49 @@ export function CompanyDetailPage() {
 
   return (
     <div className="mx-auto flex h-[calc(100vh-80px)] w-full flex-col overflow-hidden px-4 pb-2 pt-2 sm:px-6">
+      <EditCompanyDialog
+        open={isEditCompanyOpen}
+        onOpenChange={setIsEditCompanyOpen}
+        company={company}
+        industry={industry}
+        industryOptions={industryOptions}
+        onEditCompany={handleEditCompany}
+      />
+
+      <MatterActionSheet
+        open={Boolean(matterAction)}
+        onOpenChange={(open) => !open && setMatterAction(null)}
+        mode={matterAction?.mode || null}
+        matter={matterAction?.matter || null}
+        locationId={appLocationId}
+        onSaved={(updatedMatter) => {
+          setCompanyMatters((current) =>
+            current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
+          );
+        }}
+        onDeleted={(matterId) => {
+          setCompanyMatters((current) => current.filter((matter) => matter.id !== matterId));
+        }}
+      />
+      <MatterCreateSheet
+        open={isCreateMatterOpen}
+        onOpenChange={setIsCreateMatterOpen}
+        locationId={appLocationId}
+        contact={
+          primaryContactRecord
+            ? {
+                id: primaryContactRecord.id,
+                name: primaryContactRecord.name,
+                email: primaryContactRecord.email,
+                assignedUserId: assignedAttorneyId,
+              }
+            : null
+        }
+        onCreated={(matter) => {
+          setCompanyMatters((current) => [matter, ...current]);
+        }}
+      />
+
       <CompanyTaskCreateSheet
         open={isCreateTaskOpen}
         onOpenChange={setIsCreateTaskOpen}
@@ -957,8 +1446,57 @@ export function CompanyDetailPage() {
               <Button type="button" variant="outline" onClick={() => setIsAddContactOpen(false)} disabled={isSavingContact}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={isSavingContact}>
+              <Button type="submit" className="hover:bg-[#0484C8]" disabled={isSavingContact}>
                 {isSavingContact ? "Saving..." : "Save Contact"}
+              </Button>
+            </div>
+          </form>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={Boolean(editingCompanyContact)}
+        onOpenChange={(open) => {
+          if (!open) closeCompanyContactEdit();
+        }}
+      >
+        <SheetContent className="flex h-screen w-full flex-col overflow-hidden p-0 sm:max-w-md">
+          <SheetHeader className="shrink-0 space-y-1 px-6 pb-4 pt-6">
+            <SheetTitle className="text-lg font-semibold">Edit Company Contact</SheetTitle>
+          </SheetHeader>
+          <form onSubmit={handleUpdateCompanyContact} className="flex min-h-0 flex-1 flex-col">
+            <div className="hover-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto px-6 pb-6">
+              <div className="space-y-2">
+                <Label>Name</Label>
+                <Input
+                  value={contactEditForm.name}
+                  onChange={(event) => setContactEditForm((current) => ({ ...current, name: event.target.value }))}
+                  placeholder="Jane Doe"
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Title</Label>
+                <Input
+                  value={contactEditForm.title}
+                  onChange={(event) => setContactEditForm((current) => ({ ...current, title: event.target.value }))}
+                  placeholder="Chief Operating Officer"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label>Email</Label>
+                <Input
+                  type="email"
+                  value={contactEditForm.email}
+                  onChange={(event) => setContactEditForm((current) => ({ ...current, email: event.target.value }))}
+                  placeholder="jane@example.com"
+                  required
+                />
+              </div>
+            </div>
+            <div className="shrink-0 border-t border-border bg-background px-6 py-4">
+              <Button type="submit" className="w-full hover:bg-[#0484C8]" disabled={isSavingContactEdit}>
+                {isSavingContactEdit ? "Saving..." : "Save Contact"}
               </Button>
             </div>
           </form>
@@ -992,59 +1530,75 @@ export function CompanyDetailPage() {
             </div>
           </div>
           <div className="flex w-full gap-3 md:w-auto">
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full p-0"
-              disabled={!company.email}
-              title="Email"
-              aria-label="Email"
-              onClick={() => {
-                if (company.email) window.location.href = `mailto:${company.email}`;
-              }}
-            >
-              <Mail className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              disabled={!company.phone}
-              title="Call"
-              aria-label="Call"
-              onClick={() => {
-                if (company.phone) window.location.href = `tel:${company.phone}`;
-              }}
-            >
-              <Phone className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              title="Edit"
-              aria-label="Edit"
-              onClick={() => {
-                toast({ title: "Company Editing Coming Soon", description: "Company records can be managed in Companies for now." });
-              }}
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              title="Add Task"
-              aria-label="Add Task"
-              onClick={() => setIsCreateTaskOpen(true)}
-            >
-              <CheckSquare className="h-4 w-4" />
-            </Button>
-            <Button
-              size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
-              title="Add Contact"
-              aria-label="Add Contact"
-              onClick={() => setIsAddContactOpen(true)}
-            >
-              <UserRound className="h-4 w-4" />
-            </Button>
+            <HeaderIconTooltip label="Email">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full p-0 hover:bg-[#0484C8]"
+                disabled={!company.email}
+                aria-label="Email"
+                onClick={() => {
+                  if (company.email) window.location.href = `mailto:${company.email}`;
+                }}
+              >
+                <Mail className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Call">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                disabled={!company.phone}
+                aria-label="Call"
+                onClick={() => {
+                  if (company.phone) window.location.href = `tel:${company.phone}`;
+                }}
+              >
+                <Phone className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Edit">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Edit"
+                onClick={() => {
+                  setIsEditCompanyOpen(true);
+                }}
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Add Task">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Add Task"
+                onClick={() => setIsCreateTaskOpen(true)}
+              >
+                <CheckSquare className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Add Contact">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Add Contact"
+                onClick={() => setIsAddContactOpen(true)}
+              >
+                <UserRound className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label={primaryContactRecord ? "Add Matter" : "Add a contact before creating a matter"}>
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                disabled={!primaryContactRecord}
+                aria-label="Add Matter"
+                onClick={() => setIsCreateMatterOpen(true)}
+              >
+                <Briefcase className="h-4 w-4 shrink-0" />
+              </Button>
+            </HeaderIconTooltip>
           </div>
         </div>
       </div>
@@ -1073,13 +1627,13 @@ export function CompanyDetailPage() {
                           {company.email}
                         </a>
                       ) : (
-                        "N/A"
+                        "-"
                       )}
                     </span>
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Phone</span>
-                    <span>{phone}</span>
+                    <span>{formatDetailValue(phone)}</span>
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Website</span>
@@ -1089,13 +1643,13 @@ export function CompanyDetailPage() {
                           {website}
                         </a>
                       ) : (
-                        "N/A"
+                        "-"
                       )}
                     </span>
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Address</span>
-                    <span className="whitespace-pre-line">{address}</span>
+                    <span className="whitespace-pre-line">{formatDetailValue(address)}</span>
                   </div>
                 </div>
               </AccordionContent>
@@ -1107,7 +1661,7 @@ export function CompanyDetailPage() {
                 <div className="space-y-3 pt-2">
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Industry</span>
-                    <span>{parsedDescription.industry || "N/A"}</span>
+                    <span>{formatDetailValue(industry)}</span>
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Practice Area</span>
@@ -1115,11 +1669,29 @@ export function CompanyDetailPage() {
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Assigned Attorney</span>
-                    <span>{assignedAttorney}</span>
+                    <span>{formatDetailValue(assignedAttorney)}</span>
                   </div>
                   <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
                     <span className="whitespace-nowrap font-medium text-foreground/70">Primary Contact</span>
-                    <span>{primaryContact}</span>
+                    <span className="flex min-w-0 items-center gap-2">
+                      {primaryContactRecord ? (
+                        <>
+                          <button
+                            type="button"
+                            className="min-w-0 cursor-pointer truncate text-left text-[#2384CA] hover:text-[#1b6da8]"
+                            onClick={() => navigate(`/contact/${primaryContactRecord.id}`)}
+                          >
+                            {primaryContact === "Not set" ? primaryContactRecord.name : formatPersonName(primaryContact)}
+                          </button>
+                        </>
+                      ) : (
+                        formatDetailValue(primaryContact)
+                      )}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-[9rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm">
+                    <span className="whitespace-nowrap font-medium text-foreground/70">Status</span>
+                    <span>{status}</span>
                   </div>
                 </div>
               </AccordionContent>
@@ -1134,12 +1706,13 @@ export function CompanyDetailPage() {
                       <Badge
                         key={tag}
                         variant="outline"
-                        className="h-6 gap-1.5 border-transparent bg-primary/5 px-2.5 text-xs font-medium text-primary"
+                        className="h-6 gap-1.5 px-2.5 text-xs font-medium"
+                        style={getTagPastelStyle(tag)}
                       >
                         {tag}
                         <button
                           type="button"
-                          className="-mr-1 rounded-full p-0.5 text-primary/70 transition-colors hover:bg-primary/10 hover:text-primary"
+                          className="-mr-1 rounded-full p-0.5 opacity-70 transition-opacity hover:opacity-100"
                           title={`Remove ${tag}`}
                           onClick={(event) => {
                             event.preventDefault();
@@ -1152,18 +1725,20 @@ export function CompanyDetailPage() {
                       </Badge>
                     ))}
                     <CompanyTagAddButton
-                      options={companyTags}
+                      options={tagOptions.map((tag) => tag.name)}
                       currentTags={companyTags}
                       onAddTag={handleAddTagToCompany}
+                      onCreateTag={handleCreateTag}
                     />
                   </div>
                 ) : (
                   <div className="flex items-center gap-2 pt-2">
                     <span className="text-sm text-muted-foreground">No tags</span>
                     <CompanyTagAddButton
-                      options={companyTags}
+                      options={tagOptions.map((tag) => tag.name)}
                       currentTags={companyTags}
                       onAddTag={handleAddTagToCompany}
+                      onCreateTag={handleCreateTag}
                     />
                   </div>
                 )}
@@ -1262,9 +1837,62 @@ export function CompanyDetailPage() {
               <AccordionTrigger>Matter Overview</AccordionTrigger>
               <AccordionContent>
                 <div className="pt-2">
-                  <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30 p-4 text-sm text-muted-foreground">
-                    Matter overview details will appear here.
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <div className="text-sm font-medium text-foreground">
+                      {companyMatters.length === 1 ? "Matter" : "Matters"} ({companyMatters.length})
+                    </div>
+                    <Link to="/cases" className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]">
+                      View all matters
+                    </Link>
                   </div>
+
+                  {companyMatters.length > 0 ? (
+                    <div className="divide-y divide-border rounded-lg bg-card">
+                      {companyMatters.map((matter) => (
+                        <div key={matter.id} className="px-3 py-3 first:pt-3 last:pb-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="min-w-0">
+                              <Link
+                                to={`/case/${matter.id}`}
+                                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                              >
+                                {matter.case_name || matter.case_number || "Untitled Matter"}
+                              </Link>
+                              {matter.case_number ? (
+                                <div className="mt-0.5 truncate text-xs text-muted-foreground">{matter.case_number}</div>
+                              ) : null}
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <Badge variant="outline" className="border-transparent bg-muted text-xs capitalize text-foreground/80">
+                                {String(matter.status || "-").replace(/_/g, " ")}
+                              </Badge>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                                    <MoreVertical className="h-4 w-4" />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end" className="w-40">
+                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "edit", matter })}>
+                                    <Pencil className="mr-2 h-4 w-4" />
+                                    Edit
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "delete", matter })}>
+                                    <Trash2 className="mr-2 h-4 w-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30 p-4 text-sm text-muted-foreground">
+                      No matters linked to this company yet.
+                    </div>
+                  )}
                 </div>
               </AccordionContent>
             </AccordionItem>
@@ -1279,31 +1907,71 @@ export function CompanyDetailPage() {
                         <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
                           <UserRound className="h-4 w-4" />
                         </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold">{primaryContact}</div>
-                          <div className="truncate text-xs text-muted-foreground">{company.email || "No email set"}</div>
+                        <div className="min-w-0 space-y-0.5">
+                          {primaryContactRecord ? (
+                            <button
+                              type="button"
+                              className="block max-w-full cursor-pointer truncate text-left text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                              onClick={() => navigate(`/contact/${primaryContactRecord.id}`)}
+                            >
+                              {primaryContact === "Not set" ? primaryContactRecord.name : formatPersonName(primaryContact)}
+                            </button>
+                          ) : (
+                            <div className="truncate text-sm font-semibold">{primaryContact}</div>
+                          )}
+                          <div className="truncate text-xs text-muted-foreground">
+                            {primaryContactRecord?.title || "No title set"}
+                          </div>
+                          {primaryContactRecord ? (
+                            <div className="truncate text-xs text-[#2384CA]">
+                              {primaryContactRecord.email}
+                            </div>
+                          ) : null}
                         </div>
                       </div>
-                      <Badge variant="outline" className="shrink-0 border-primary/20 bg-primary/5 text-xs font-medium text-primary">
-                        Primary Contact
-                      </Badge>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <Badge variant="outline" className="border-primary/20 bg-primary/5 text-xs font-medium text-primary">
+                          Primary Contact
+                        </Badge>
+                        {primaryContactRecord ? (
+                          <CompanyContactActions
+                            disabled={removingCompanyContactId === primaryContactRecord.id}
+                            onEdit={() => openCompanyContactEdit(primaryContactRecord)}
+                            onDelete={() => handleRemoveCompanyContactConnection(primaryContactRecord)}
+                          />
+                        ) : null}
+                      </div>
                     </div>
                   </div>
 
-                  {companyContacts.map((contact) => (
+                  {secondaryCompanyContacts.map((contact) => (
                     <div key={contact.id} className="py-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
-                          {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          type="button"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-md text-left transition-colors hover:bg-muted/40"
+                          onClick={() => navigate(`/contact/${contact.id}`)}
+                        >
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
+                            {getAvatarInitials({ fullName: contact.name, email: contact.email }, "C")}
+                          </div>
+                          <div className="min-w-0 space-y-0.5">
+                            <div className="block truncate text-sm font-semibold text-[#2384CA]">
+                              {contact.name}
+                            </div>
+                            {contact.title ? <div className="text-xs text-muted-foreground">{contact.title}</div> : null}
+                            <span className="block truncate text-xs text-[#2384CA]">
+                              {contact.email}
+                            </span>
+                          </div>
+                        </button>
+                        <CompanyContactActions
+                          disabled={removingCompanyContactId === contact.id || savingPrimaryContactId === contact.id}
+                          onMakePrimary={() => handleMakePrimaryCompanyContact(contact)}
+                          onEdit={() => openCompanyContactEdit(contact)}
+                          onDelete={() => handleRemoveCompanyContactConnection(contact)}
+                        />
                         </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-semibold">{contact.name}</div>
-                          {contact.title ? <div className="text-xs text-muted-foreground">{contact.title}</div> : null}
-                          <a href={`mailto:${contact.email}`} className="block truncate text-xs text-[#2384CA] hover:underline">
-                            {contact.email}
-                          </a>
-                        </div>
-                      </div>
                     </div>
                   ))}
                 </div>

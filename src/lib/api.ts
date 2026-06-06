@@ -50,6 +50,27 @@ export type GhlBusiness = {
   tags?: string[] | null;
 };
 
+export type GhlCustomFieldOption = {
+  key?: string;
+  label?: string;
+  value?: string;
+  name?: string;
+};
+
+export type GhlCustomField = {
+  id: string;
+  name?: string;
+  label?: string;
+  fieldKey?: string;
+  key?: string;
+  dataType?: string;
+  type?: string;
+  model?: string;
+  objectKey?: string;
+  options?: Array<string | GhlCustomFieldOption>;
+  picklistOptions?: Array<string | GhlCustomFieldOption>;
+};
+
 export async function getAppLocationContext(): Promise<AppLocationContext> {
   const { data, error } = await supabase.functions.invoke("app-location-context", {
     body: {},
@@ -152,10 +173,14 @@ export async function getContacts(locationId: string) {
   );
 }
 
-export async function getContactsByBusinessId(businessId: string) {
+export async function getContactsByBusinessId(locationId: string, businessId: string) {
   return apiClient<{ contacts?: unknown[]; data?: unknown[] }>(
-    `/contacts/business/${encodeURIComponent(businessId)}`,
+    `/contacts/business/${encodeURIComponent(businessId)}?locationId=${encodeURIComponent(locationId)}`,
   );
+}
+
+export async function getContact(contactId: string) {
+  return apiClient<{ contact?: unknown; data?: unknown }>(`/contacts/${encodeURIComponent(contactId)}`);
 }
 
 export async function createContact(payload: Record<string, unknown>) {
@@ -187,6 +212,10 @@ export async function addContactsToBusiness(locationId: string, contactIds: stri
       businessId,
     }),
   });
+}
+
+export async function removeContactsFromBusiness(locationId: string, contactIds: string[]) {
+  return addContactsToBusiness(locationId, contactIds, null);
 }
 
 export async function getBusinesses(locationId: string) {
@@ -222,6 +251,32 @@ export async function deleteBusiness(businessId: string) {
   return apiClient<{ ok?: boolean; success?: boolean }>(`/businesses/${encodeURIComponent(businessId)}`, {
     method: "DELETE",
   });
+}
+
+export async function getBusinessCustomFields(locationId: string) {
+  return apiClient<{ fields?: GhlCustomField[]; customFields?: GhlCustomField[] }>(
+    `/custom-fields/object-key/business?locationId=${encodeURIComponent(locationId)}`,
+  );
+}
+
+export async function getBusinessObjectRecord(locationId: string, businessId: string) {
+  return apiClient<{ record?: { properties?: Record<string, unknown> }; data?: { record?: { properties?: Record<string, unknown> } } }>(
+    `/objects/business/records/${encodeURIComponent(businessId)}?locationId=${encodeURIComponent(locationId)}`,
+  );
+}
+
+export async function updateBusinessObjectProperties(
+  locationId: string,
+  businessId: string,
+  properties: Record<string, unknown>,
+) {
+  return apiClient<{ record?: { properties?: Record<string, unknown> } }>(
+    `/objects/business/records/${encodeURIComponent(businessId)}?locationId=${encodeURIComponent(locationId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ properties }),
+    },
+  );
 }
 
 function normalizeTag(rawTag: any): GhlTag {

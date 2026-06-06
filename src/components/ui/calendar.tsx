@@ -9,7 +9,15 @@ type CalendarProps = {
   onMonthChange?: (date: Date) => void;
   disabled?: (date: Date) => boolean;
   className?: string;
+  monthYearPicker?: boolean;
+  fromYear?: number;
+  toYear?: number;
 };
+
+const MONTH_OPTIONS = Array.from({ length: 12 }, (_, index) => ({
+  value: index,
+  label: new Date(2000, index, 1).toLocaleDateString(undefined, { month: "long" }),
+}));
 
 export function Calendar({
   selected,
@@ -18,15 +26,30 @@ export function Calendar({
   onMonthChange,
   disabled,
   className,
+  monthYearPicker = false,
+  fromYear,
+  toYear,
 }: CalendarProps) {
   const firstDay = new Date(month.getFullYear(), month.getMonth(), 1);
   const startOffset = firstDay.getDay();
   const visibleDays = Array.from({ length: 42 }, (_, index) => {
     return new Date(month.getFullYear(), month.getMonth(), index - startOffset + 1);
   });
+  const currentYear = new Date().getFullYear();
+  const startYear = fromYear ?? currentYear - 120;
+  const endYear = toYear ?? currentYear + 10;
+  const yearOptions = Array.from({ length: Math.max(0, endYear - startYear + 1) }, (_, index) => startYear + index);
 
   const moveMonth = (offset: number) => {
     onMonthChange?.(new Date(month.getFullYear(), month.getMonth() + offset, 1));
+  };
+
+  const updateMonth = (nextMonth: number) => {
+    onMonthChange?.(new Date(month.getFullYear(), nextMonth, 1));
+  };
+
+  const updateYear = (nextYear: number) => {
+    onMonthChange?.(new Date(nextYear, month.getMonth(), 1));
   };
 
   return (
@@ -35,9 +58,36 @@ export function Calendar({
         <button className="rounded-md p-1 hover:bg-muted" onClick={() => moveMonth(-1)} type="button">
           <ChevronLeft className="h-4 w-4" />
         </button>
-        <div className="text-sm font-medium">
-          {month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
-        </div>
+        {monthYearPicker ? (
+          <div className="grid min-w-0 flex-1 grid-cols-[minmax(0,1fr)_5rem] gap-2 px-2">
+            <select
+              value={month.getMonth()}
+              onChange={(event) => updateMonth(Number(event.target.value))}
+              className="h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              {MONTH_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              value={month.getFullYear()}
+              onChange={(event) => updateYear(Number(event.target.value))}
+              className="h-8 rounded-md border border-border bg-background px-2 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+            >
+              {yearOptions.map((year) => (
+                <option key={year} value={year}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="text-sm font-medium">
+            {month.toLocaleDateString(undefined, { month: "long", year: "numeric" })}
+          </div>
+        )}
         <button className="rounded-md p-1 hover:bg-muted" onClick={() => moveMonth(1)} type="button">
           <ChevronRight className="h-4 w-4" />
         </button>

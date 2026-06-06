@@ -43,6 +43,7 @@ import {
   uploadCaseDocument,
 } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { formatPersonName } from "@/lib/names";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
@@ -83,14 +84,6 @@ function getStatusClass(status: string) {
 
 function money(amountCents?: number, currency = "USD") {
   return new Intl.NumberFormat(undefined, { style: "currency", currency }).format((amountCents || 0) / 100);
-}
-
-function toTitleCase(value: string) {
-  return value
-    .split(" ")
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(" ");
 }
 
 function formatContactAddress(rawContact: any) {
@@ -216,7 +209,7 @@ export function CaseDetailPage() {
     "";
   const contactEmail = detail.case.primary_contact_email || "";
   const contactPhone = detail.case.primary_contact_phone || "";
-  const clientName = toTitleCase(detail.case.primary_contact_name || "Unknown contact");
+  const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
 
   return (
     <div className="mx-auto flex h-[calc(100vh-80px)] w-full flex-col overflow-hidden px-4 pb-2 pt-2 sm:px-6">
@@ -575,7 +568,7 @@ function EditCaseSheet({
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" className="flex-1" disabled={submitting}>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting}>
               {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
               Save Changes
             </Button>
@@ -599,6 +592,7 @@ function OverviewTab({
 }) {
   const [stage, setStage] = useState(detail.case.stage);
   const [status, setStatus] = useState(detail.case.status);
+  const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
 
   useEffect(() => {
     setStage(detail.case.stage);
@@ -627,7 +621,7 @@ function OverviewTab({
         </div>
         <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
           <div className="mb-1 text-xs uppercase text-muted-foreground">Primary Contact</div>
-          <div className="text-sm font-semibold">{detail.case.primary_contact_name || detail.case.ghl_contact_id}</div>
+          <div className="text-sm font-semibold">{clientName}</div>
         </div>
         <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
           <div className="mb-1 text-xs uppercase text-muted-foreground">Last Updated</div>

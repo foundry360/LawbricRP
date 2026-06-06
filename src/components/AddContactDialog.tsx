@@ -15,6 +15,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { formatPersonName } from "@/lib/names";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import {
   Sheet,
@@ -104,6 +105,7 @@ type AddContactDialogProps = {
   locationId: string;
   accountTypeOptions?: string[];
   practiceAreaOptions?: string[];
+  industryOptions?: string[];
   languageOptions?: string[];
   tagOptions?: string[];
   onCreateTag?: (name: string) => Promise<string | void> | string | void;
@@ -112,13 +114,12 @@ type AddContactDialogProps = {
 };
 
 function getUserName(user: SystemUser) {
-  return (
+  const name =
     user.name ||
     user.full_name ||
-    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim() ||
-    user.email ||
-    user.id
-  );
+    `${user.firstName || user.first_name || ""} ${user.lastName || user.last_name || ""}`.trim();
+
+  return name ? formatPersonName(name) : user.email || user.id;
 }
 
 export function AddContactDialog({
@@ -128,6 +129,7 @@ export function AddContactDialog({
   locationId,
   accountTypeOptions = [],
   practiceAreaOptions = [],
+  industryOptions = [],
   languageOptions = [],
   tagOptions = [],
   onCreateTag,
@@ -277,6 +279,10 @@ export function AddContactDialog({
                           value={field.value || ""}
                           onValueChange={field.onChange}
                           placeholder="Select date of birth"
+                          monthYearPicker
+                          fromYear={1900}
+                          toYear={new Date().getFullYear()}
+                          maxDate={new Date()}
                         />
                       </FormControl>
                       <FormMessage />
@@ -464,9 +470,22 @@ export function AddContactDialog({
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Industry</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g. Real Estate" {...field} />
-                      </FormControl>
+                      {industryOptions.length > 0 ? (
+                        <FormControl>
+                          <SearchableSelect
+                            value={field.value || ""}
+                            onValueChange={field.onChange}
+                            options={industryOptions}
+                            placeholder="Select industry"
+                            searchPlaceholder="Search industries..."
+                            emptyMessage="No industries found."
+                          />
+                        </FormControl>
+                      ) : (
+                        <FormControl>
+                          <Input placeholder="e.g. Real Estate" {...field} />
+                        </FormControl>
+                      )}
                       <FormMessage />
                     </FormItem>
                   )}
@@ -650,7 +669,7 @@ export function AddContactDialog({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={form.formState.isSubmitting}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={form.formState.isSubmitting}>
+              <Button type="submit" className="hover:bg-[#0484C8]" disabled={form.formState.isSubmitting}>
                 {form.formState.isSubmitting ? "Saving..." : "Save Contact"}
               </Button>
             </div>
