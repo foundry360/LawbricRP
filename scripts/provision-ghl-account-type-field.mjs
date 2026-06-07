@@ -7,7 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 const API_BASE_URL = process.env.GHL_API_BASE_URL || "https://services.leadconnectorhq.com";
 const API_VERSION = process.env.GHL_API_VERSION || "2021-07-28";
 const ACCOUNT_TYPE_OPTIONS = [
-  "Prospect",
+  "Lead",
   "Client (Active)",
   "Client (Former)",
   "Referral Partner",
@@ -100,6 +100,10 @@ function getFieldOptions(field) {
 function isSingleSelectField(field) {
   const dataType = normalize(field?.dataType || field?.type).toUpperCase();
   return ["SINGLE_OPTIONS", "SINGLE_SELECT", "SELECT", "DROPDOWN"].includes(dataType);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function summarizeField(field) {
@@ -232,7 +236,7 @@ async function main() {
       body: {
         name: accountTypeField.name || "Account Type",
         dataType: "SINGLE_OPTIONS",
-        placeholder: "Prospect",
+        placeholder: "Lead",
         options: ACCOUNT_TYPE_OPTIONS,
         model: "contact",
         position: accountTypeField.position ?? contactFields.length,
@@ -244,18 +248,25 @@ async function main() {
   console.log("Updated Account Type field:");
   console.log(JSON.stringify(summarizeField({ ...accountTypeField, ...updatedField }), null, 2));
 
-  const verifyResponse = await ghlRequest(
-    `/locations/${encodeURIComponent(locationId)}/customFields?model=contact`,
-    { token },
-  );
-  const verifiedField =
-    getCollection(verifyResponse, "customFields").find((field) => field.id === accountTypeField.id) ||
-    getCollection(verifyResponse, "customFields").find(isAccountTypeField);
+  let verifiedField = null;
+  let missingOptions = ACCOUNT_TYPE_OPTIONS;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    if (attempt > 0) await sleep(750);
 
-  const verifiedOptions = getFieldOptions(verifiedField);
-  const missingOptions = ACCOUNT_TYPE_OPTIONS.filter(
-    (option) => !verifiedOptions.some((verifiedOption) => normalize(verifiedOption) === normalize(option)),
-  );
+    const verifyResponse = await ghlRequest(
+      `/locations/${encodeURIComponent(locationId)}/customFields?model=contact`,
+      { token },
+    );
+    verifiedField =
+      getCollection(verifyResponse, "customFields").find((field) => field.id === accountTypeField.id) ||
+      getCollection(verifyResponse, "customFields").find(isAccountTypeField);
+
+    const verifiedOptions = getFieldOptions(verifiedField);
+    missingOptions = ACCOUNT_TYPE_OPTIONS.filter(
+      (option) => !verifiedOptions.some((verifiedOption) => normalize(verifiedOption) === normalize(option)),
+    );
+    if (verifiedField && isSingleSelectField(verifiedField) && missingOptions.length === 0) break;
+  }
 
   if (!verifiedField || !isSingleSelectField(verifiedField) || missingOptions.length > 0) {
     throw new Error(`Account Type update verification failed. Missing options: ${missingOptions.join(", ") || "none"}`);

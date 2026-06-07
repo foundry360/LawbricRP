@@ -3,6 +3,7 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { clearCachedAppLocationContext, clearCachedGhlListData, clearCachedGhlReferenceData } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
@@ -198,6 +199,9 @@ export function AccountActivationSettings() {
       }
 
       toast({ title: "Account Activation settings saved successfully" });
+      clearCachedAppLocationContext();
+      clearCachedGhlReferenceData();
+      clearCachedGhlListData();
       await fetchData();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(

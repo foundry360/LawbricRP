@@ -47,7 +47,7 @@ type CreateListViewSheetProps = {
 };
 
 const DEFAULT_ACCOUNT_TYPE_OPTIONS = [
-  "Prospect",
+  "Lead",
   "Client (Active)",
   "Client (Former)",
   "Referral Partner",

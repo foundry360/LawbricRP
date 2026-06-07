@@ -81,8 +81,27 @@ async function invokeCaseFunction<T>(name: string, body: Record<string, unknown>
 }
 
 export async function listCases(params: Record<string, unknown> = {}) {
-  const data = await invokeCaseFunction<{ cases: CaseRecord[] }>("list_cases", params);
-  return data.cases || [];
+  const locationId = String(params.locationId || await getLocationId());
+  const limit = Math.min(Number(params.limit) || 100, 200);
+  let query = supabase
+    .from("cases")
+    .select("*")
+    .eq("location_id", locationId)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+
+  const status = String(params.status || "");
+  if (status && status !== "all") query = query.eq("status", status);
+
+  const caseType = String(params.caseType || "");
+  if (caseType && caseType !== "all") query = query.eq("case_type", caseType);
+
+  const search = String(params.search || "").replace(/%/g, "").trim();
+  if (search) query = query.or(`case_name.ilike.%${search}%,case_number.ilike.%${search}%,primary_contact_name.ilike.%${search}%`);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data || []) as CaseRecord[];
 }
 
 export async function getCase(caseId: string) {

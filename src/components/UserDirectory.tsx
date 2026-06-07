@@ -43,6 +43,7 @@ import { useToast } from "@/hooks/use-toast";
 import { getActiveGhlLocationId } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { clearCachedAssignableUsers } from "@/lib/users";
 import { formatPersonName } from "@/lib/names";
 import { getPasswordResetSkippedMessage, isPasswordResetCooldown } from "@/lib/password-reset";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -139,6 +140,11 @@ export function UserDirectory() {
     fetchUsers();
   }, []);
 
+  const handleUsersChanged = () => {
+    clearCachedAssignableUsers();
+    fetchUsers();
+  };
+
   const handleResetPassword = async () => {
     if (!userToResetPassword) return;
 
@@ -203,6 +209,7 @@ export function UserDirectory() {
       if (data?.error) throw new Error(data.error);
 
       toast({ title: "User deactivated successfully" });
+      clearCachedAssignableUsers();
       fetchUsers();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(error, "Failed to deactivate user. Please try again.");
@@ -224,6 +231,7 @@ export function UserDirectory() {
       if (data?.error) throw new Error(data.error);
 
       toast({ title: "User reactivated successfully" });
+      clearCachedAssignableUsers();
       fetchUsers();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(error, "Failed to reactivate user. Please try again.");
@@ -247,6 +255,7 @@ export function UserDirectory() {
       if (data?.error) throw new Error(data.error);
 
       toast({ title: "User deleted successfully" });
+      clearCachedAssignableUsers();
       setUsers((current) => current.filter((user) => user.id !== userToDelete.id));
       setUserToDelete(null);
     } catch (error) {
@@ -318,7 +327,7 @@ export function UserDirectory() {
               }}
             />
           </div>
-          <AddUserSheet locationId={locationId} onSuccess={fetchUsers} />
+          <AddUserSheet locationId={locationId} onSuccess={handleUsersChanged} />
         </div>
       </div>
 
@@ -526,7 +535,7 @@ export function UserDirectory() {
         user={editingUser}
         open={Boolean(editingUser)}
         onOpenChange={(open) => !open && setEditingUser(null)}
-        onSuccess={fetchUsers}
+        onSuccess={handleUsersChanged}
       />
 
       <Dialog open={Boolean(userToView)} onOpenChange={(open) => !open && setUserToView(null)}>

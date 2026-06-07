@@ -75,8 +75,39 @@ async function invokeTaskFunction<T>(name: string, body: Record<string, unknown>
 }
 
 export async function listTasks(params: Record<string, unknown> = {}) {
-  const data = await invokeTaskFunction<{ tasks: TaskRecord[] }>("list_tasks", params);
-  return data.tasks || [];
+  const locationId = String(params.locationId || await getLocationId());
+  const limit = Math.min(Number(params.limit) || 200, 500);
+  let query = supabase
+    .from("tasks")
+    .select(`
+      *,
+      case:cases(id, case_number, case_name, primary_contact_name),
+      assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
+    `)
+    .eq("location_id", locationId)
+    .order("due_at", { ascending: true, nullsFirst: false })
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+
+  const status = String(params.status || "");
+  if (status && status !== "all") query = query.eq("status", status);
+
+  const relatedType = String(params.relatedType || "");
+  if (relatedType && relatedType !== "all") query = query.eq("related_type", relatedType);
+
+  const assignedUserId = String(params.assignedUserId || "");
+  if (assignedUserId && assignedUserId !== "all") query = query.eq("assigned_user_id", assignedUserId);
+
+  const search = String(params.search || "").replace(/%/g, "").trim();
+  if (search) {
+    query = query.or(
+      `title.ilike.%${search}%,description.ilike.%${search}%,ghl_contact_name.ilike.%${search}%,ghl_opportunity_name.ilike.%${search}%`,
+    );
+  }
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+  return (data || []) as TaskRecord[];
 }
 
 export async function createTask(payload: Record<string, unknown>) {

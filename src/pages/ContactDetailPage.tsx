@@ -23,12 +23,19 @@ import {
   createLocationTag,
   getAppLocationContext,
   getCustomFields,
+  getContacts,
   getLocationTags,
   type GhlTag,
   updateContact,
 } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { listCases, type CaseRecord } from "@/lib/cases";
+import {
+  getRelatedContactId,
+  listContactRelationships,
+  saveContactRelationships,
+  type ContactRelationship,
+} from "@/lib/contact-relationships";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -55,7 +62,7 @@ const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
 const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"] as const;
 const ACCOUNT_TYPE_OPTIONS = [
-  "Prospect",
+  "Lead",
   "Client (Active)",
   "Client (Former)",
   "Referral Partner",
@@ -66,13 +73,21 @@ const ACCOUNT_TYPE_OPTIONS = [
   "Court / Agency",
   "Internal",
 ];
-const LEGACY_ACCOUNT_TYPE_TAGS = ["Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
+const LEGACY_ACCOUNT_TYPE_TAGS = ["Prospect", "Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
 const DEFAULT_ACCOUNT_TYPE = ACCOUNT_TYPE_OPTIONS[0];
 
 type MatterActionState = {
   mode: "view" | "edit" | "delete";
   matter: CaseRecord;
 } | null;
+
+type RelatedContactDisplay = {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  relationshipType: string;
+};
 
 function HeaderIconTooltip({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -120,6 +135,11 @@ function getFieldOptions(field: any) {
   }
 
   return [];
+}
+
+function normalizeAccountTypeOptions(options: string[]) {
+  const normalizedOptions = options.filter((option) => option && option !== "Lead" && option !== "Prospect");
+  return ["Lead", ...normalizedOptions];
 }
 
 function normalizeCustomFieldName(value: unknown) {
@@ -212,6 +232,26 @@ function formatDetailValue(value?: string | null) {
   const text = String(value || "").trim();
   if (!text || ["n/a", "not set", "unassigned"].includes(text.toLowerCase())) return "-";
   return text;
+}
+
+function normalizeContactMatchValue(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getContactDisplayName(contact: any) {
+  return formatPersonName(`${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || "") ||
+    contact?.email ||
+    "Unknown contact";
+}
+
+function toRelatedContactDisplay(contact: any, relationshipType = ""): RelatedContactDisplay {
+  return {
+    id: String(contact?.id || contact?._id || ""),
+    name: getContactDisplayName(contact),
+    email: contact?.email || "",
+    phone: formatPhoneNumber(contact?.phone, ""),
+    relationshipType,
+  };
 }
 
 function getTaskRelatedLabel(task: TaskRecord) {
@@ -500,6 +540,70 @@ function ContactTaskList({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+function ContactMatterList({
+  matters,
+  emptyText,
+  onEdit,
+  onDelete,
+}: {
+  matters: CaseRecord[];
+  emptyText: string;
+  onEdit: (matter: CaseRecord) => void;
+  onDelete: (matter: CaseRecord) => void;
+}) {
+  if (matters.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30 p-4 text-sm text-muted-foreground">
+        {emptyText}
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-border rounded-lg bg-card">
+      {matters.map((matter) => (
+        <div key={matter.id} className="px-3 py-3 first:pt-3 last:pb-3">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <Link
+                to={`/case/${matter.id}`}
+                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+              >
+                {matter.case_name || matter.case_number || "Untitled Matter"}
+              </Link>
+              {matter.case_number ? (
+                <div className="mt-0.5 truncate text-xs text-muted-foreground">{matter.case_number}</div>
+              ) : null}
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge variant="outline" className="border-transparent bg-muted text-xs capitalize text-foreground/80">
+                {String(matter.status || "-").replace(/_/g, " ")}
+              </Badge>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                    <MoreVertical className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-40">
+                  <DropdownMenuItem onClick={() => onEdit(matter)}>
+                    <Pencil className="mr-2 h-4 w-4" />
+                    Edit
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => onDelete(matter)}>
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -929,6 +1033,9 @@ export function ContactDetailPage() {
   const [contact, setContact] = useState<any>(null);
   const [contactTasks, setContactTasks] = useState<TaskRecord[]>([]);
   const [contactMatters, setContactMatters] = useState<CaseRecord[]>([]);
+  const [relatedMatters, setRelatedMatters] = useState<CaseRecord[]>([]);
+  const [allContactOptions, setAllContactOptions] = useState<RelatedContactDisplay[]>([]);
+  const [relatedContacts, setRelatedContacts] = useState<RelatedContactDisplay[]>([]);
   const [matterAction, setMatterAction] = useState<MatterActionState>(null);
   const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
   const [tasksLoading, setTasksLoading] = useState(false);
@@ -945,6 +1052,8 @@ export function ContactDetailPage() {
   const [userAvatarMap, setUserAvatarMap] = useState<Record<string, string>>({});
   const [locationId, setLocationId] = useState("");
   const [locationRecordId, setLocationRecordId] = useState("");
+  const relatedContactOptionsLoadedRef = useRef(false);
+  const relatedContactOptionsLoadingRef = useRef(false);
   const effectivePracticeAreaOptions = Array.from(new Set([...PRACTICE_AREAS, ...practiceAreaOptions]));
   const activeTasks = useMemo(() => contactTasks.filter((task) => !isCompletedTask(task)), [contactTasks]);
   const completedTasks = useMemo(() => contactTasks.filter(isCompletedTask), [contactTasks]);
@@ -1127,6 +1236,54 @@ export function ContactDetailPage() {
     }
   };
 
+  const loadRelatedContactOptions = useCallback(async () => {
+    if (!locationId || !contact?.id || relatedContactOptionsLoadedRef.current || relatedContactOptionsLoadingRef.current) {
+      return allContactOptions;
+    }
+
+    relatedContactOptionsLoadingRef.current = true;
+
+    try {
+      const contactsResponse = await getContacts(locationId);
+      const contactOptions = getArrayFromResponse(contactsResponse, "contacts")
+        .map((candidate: any) => toRelatedContactDisplay(candidate))
+        .filter((candidate: RelatedContactDisplay) => candidate.id && candidate.id !== contact.id);
+
+      setAllContactOptions(contactOptions);
+      setRelatedContacts((current) =>
+        current.map((relationship) => {
+          const matchedContact = contactOptions.find((candidate: RelatedContactDisplay) => candidate.id === relationship.id);
+          return matchedContact
+            ? {
+                ...relationship,
+                name: matchedContact.name,
+                email: matchedContact.email,
+                phone: matchedContact.phone,
+              }
+            : relationship;
+        }),
+      );
+      relatedContactOptionsLoadedRef.current = true;
+      return contactOptions;
+    } catch (error) {
+      console.error("Failed to fetch contacts for relationships", error);
+      toast({
+        variant: "destructive",
+        title: "Related Contacts Not Loaded",
+        description: getUserFriendlyErrorMessage(error, "Could not load contact options. Please try again."),
+      });
+      return allContactOptions;
+    } finally {
+      relatedContactOptionsLoadingRef.current = false;
+    }
+  }, [allContactOptions, contact?.id, locationId, toast]);
+
+  useEffect(() => {
+    if (isEditModalOpen) {
+      void loadRelatedContactOptions();
+    }
+  }, [isEditModalOpen, loadRelatedContactOptions]);
+
   useEffect(() => {
     const fetchFields = async () => {
       try {
@@ -1165,7 +1322,9 @@ export function ContactDetailPage() {
         };
 
         const nextAccountTypeOptions = getFieldOptions(findField("account type"));
-        setAccountTypeOptions(nextAccountTypeOptions.length > 0 ? nextAccountTypeOptions : ACCOUNT_TYPE_OPTIONS);
+        setAccountTypeOptions(
+          nextAccountTypeOptions.length > 0 ? normalizeAccountTypeOptions(nextAccountTypeOptions) : ACCOUNT_TYPE_OPTIONS,
+        );
         setPracticeAreaOptions(getFieldOptions(findField("practice area")));
         setLanguageOptions(getFieldOptions(findField("language")));
       } catch (error) {
@@ -1207,7 +1366,7 @@ export function ContactDetailPage() {
       }
 
       let latestCustomFields = crmCustomFields;
-      if (locationId) {
+      if (latestCustomFields.length === 0 && locationId) {
         const fieldsResponse: any = await getCustomFields(locationId);
         latestCustomFields = getArrayFromResponse(fieldsResponse, "customFields");
         setCrmCustomFields(latestCustomFields);
@@ -1245,6 +1404,19 @@ export function ContactDetailPage() {
 
       await updateContact(contact.id, payload);
       await saveContactAssignment(contact.id, selectedAssignedUser ? getUserId(selectedAssignedUser) : "");
+      await saveContactRelationships(locationRecordId, contact.id, updatedData.relatedContacts || []);
+      setRelatedContacts(
+        (updatedData.relatedContacts || []).map((relationship) => {
+          const matchedContact = allContactOptions.find((candidate) => candidate.id === relationship.relatedContactId);
+          return {
+            id: relationship.relatedContactId,
+            name: matchedContact?.name || relationship.relatedContactId,
+            email: matchedContact?.email || "",
+            phone: matchedContact?.phone || "",
+            relationshipType: relationship.relationshipType,
+          };
+        }),
+      );
       toast({
         title: "Contact Updated",
         description: `${updatedData.name}'s details have been saved.`,
@@ -1286,10 +1458,64 @@ export function ContactDetailPage() {
         const customFieldsMap = buildCustomFieldsMap(contactCustomFields);
         setContactTasks([]);
         setContactMatters([]);
+        setRelatedMatters([]);
+        setRelatedContacts([]);
+        setAllContactOptions([]);
+        relatedContactOptionsLoadedRef.current = false;
+        relatedContactOptionsLoadingRef.current = false;
         if (locRecordId && rawContact.id) {
+          listContactRelationships(locRecordId, rawContact.id)
+            .then((relationships) => {
+              setRelatedContacts(
+                relationships.map((relationship: ContactRelationship) => {
+                  const relatedContactId = getRelatedContactId(relationship, rawContact.id);
+                  return {
+                    id: relatedContactId,
+                    name: relatedContactId,
+                    email: "",
+                    phone: "",
+                    relationshipType: relationship.relationship_type,
+                  };
+                }),
+              );
+            })
+            .catch((error) => {
+              console.error("Failed to fetch related contacts", error);
+              toast({
+                variant: "destructive",
+                title: "Related Contacts Not Loaded",
+                description: getUserFriendlyErrorMessage(error, "Could not load related contacts. Please try again."),
+              });
+            });
+
           listCases({ locationId: locRecordId })
-            .then((cases) => {
-              setContactMatters(cases.filter((caseRecord) => caseRecord.ghl_contact_id === rawContact.id));
+            .then(async (cases) => {
+              const directMatters = cases.filter((caseRecord) => caseRecord.ghl_contact_id === rawContact.id);
+              setContactMatters(directMatters);
+
+              const directMatterIds = new Set(directMatters.map((caseRecord) => caseRecord.id));
+              const rawName = `${rawContact.firstName || ""} ${rawContact.lastName || ""}`.trim() || rawContact.name || "";
+              const contactEmail = normalizeContactMatchValue(rawContact.email);
+              const contactName = normalizeContactMatchValue(rawName);
+              const { data: parties, error: partiesError } = await supabase
+                .from("case_parties")
+                .select("case_id, ghl_contact_id, email, name")
+                .eq("location_id", locRecordId);
+
+              if (partiesError) throw new Error(partiesError.message);
+
+              const relatedMatterIds = new Set(
+                (parties || [])
+                  .filter((party) => {
+                    if (directMatterIds.has(party.case_id)) return false;
+                    const matchesContactId = party.ghl_contact_id && party.ghl_contact_id === rawContact.id;
+                    const matchesEmail = contactEmail && normalizeContactMatchValue(party.email) === contactEmail;
+                    const matchesName = contactName && normalizeContactMatchValue(party.name) === contactName;
+                    return matchesContactId || matchesEmail || matchesName;
+                  })
+                  .map((party) => party.case_id),
+              );
+              setRelatedMatters(cases.filter((caseRecord) => relatedMatterIds.has(caseRecord.id)));
             })
             .catch((error) => {
               console.error("Failed to fetch contact matters", error);
@@ -1461,9 +1687,13 @@ export function ContactDetailPage() {
           setContactMatters((current) =>
             current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
           );
+          setRelatedMatters((current) =>
+            current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
+          );
         }}
         onDeleted={(matterId) => {
           setContactMatters((current) => current.filter((matter) => matter.id !== matterId));
+          setRelatedMatters((current) => current.filter((matter) => matter.id !== matterId));
         }}
       />
       <MatterCreateSheet
@@ -1597,7 +1827,7 @@ export function ContactDetailPage() {
               Contact Details
             </h2>
           </div>
-          <Accordion type="multiple" defaultValue={["personal", "demographics", "tags", "record"]} className="w-full">
+          <Accordion type="multiple" defaultValue={["personal", "related-contacts", "demographics", "tags", "record"]} className="w-full">
             <AccordionItem value="personal">
               <AccordionTrigger>Personal Information</AccordionTrigger>
               <AccordionContent>
@@ -1633,6 +1863,36 @@ export function ContactDetailPage() {
                     <span className="col-span-2">{formatDetailValue(contact.gender)}</span>
                   </div>
                 </div>
+              </AccordionContent>
+            </AccordionItem>
+            <AccordionItem value="related-contacts">
+              <AccordionTrigger>Related Contacts ({relatedContacts.length})</AccordionTrigger>
+              <AccordionContent>
+                {relatedContacts.length > 0 ? (
+                  <div className="divide-y divide-border pt-2">
+                    {relatedContacts.map((relatedContact) => (
+                      <div key={relatedContact.id} className="py-3 first:pt-0">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <Link
+                              to={`/contact/${relatedContact.id}`}
+                              className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                            >
+                              {relatedContact.name}
+                            </Link>
+                            <div className="mt-0.5 truncate text-xs text-muted-foreground">
+                              {relatedContact.relationshipType || "Related"}
+                              {" - "}
+                              {relatedContact.email || relatedContact.phone || "No contact info"}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="pt-2 text-sm text-muted-foreground">No related contacts.</div>
+                )}
               </AccordionContent>
             </AccordionItem>
             <AccordionItem value="demographics">
@@ -1792,67 +2052,47 @@ export function ContactDetailPage() {
         </div>
 
         <div className="h-full overflow-y-auto py-6 lg:pl-6">
-          <Accordion type="multiple" defaultValue={["matter"]} className="w-full">
+          <Accordion type="multiple" defaultValue={["matter", "related-matters"]} className="w-full">
             <AccordionItem value="matter">
-              <AccordionTrigger>Matter Overview</AccordionTrigger>
+              <AccordionTrigger
+                action={
+                  <Link to="/cases" className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]">
+                    View all matters
+                  </Link>
+                }
+              >
+                Matters ({contactMatters.length})
+              </AccordionTrigger>
               <AccordionContent>
                 <div className="pt-2">
-                  <div className="mb-3 flex items-center justify-between gap-3">
-                    <div className="text-sm font-medium text-foreground">
-                      {contactMatters.length === 1 ? "Matter" : "Matters"} ({contactMatters.length})
-                    </div>
-                    <Link to="/cases" className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]">
-                      View all matters
-                    </Link>
-                  </div>
+                  <ContactMatterList
+                    matters={contactMatters}
+                    emptyText="No matters associated to this contact yet."
+                    onEdit={(matter) => setMatterAction({ mode: "edit", matter })}
+                    onDelete={(matter) => setMatterAction({ mode: "delete", matter })}
+                  />
+                </div>
+              </AccordionContent>
+            </AccordionItem>
 
-                  {contactMatters.length > 0 ? (
-                    <div className="divide-y divide-border rounded-lg bg-card">
-                      {contactMatters.map((matter) => (
-                        <div key={matter.id} className="px-3 py-3 first:pt-3 last:pb-3">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <Link
-                                to={`/case/${matter.id}`}
-                                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
-                              >
-                                {matter.case_name || matter.case_number || "Untitled Matter"}
-                              </Link>
-                              {matter.case_number ? (
-                                <div className="mt-0.5 truncate text-xs text-muted-foreground">{matter.case_number}</div>
-                              ) : null}
-                            </div>
-                            <div className="flex shrink-0 items-center gap-2">
-                              <Badge variant="outline" className="border-transparent bg-muted text-xs capitalize text-foreground/80">
-                                {String(matter.status || "-").replace(/_/g, " ")}
-                              </Badge>
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
-                                    <MoreVertical className="h-4 w-4" />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent align="end" className="w-40">
-                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "edit", matter })}>
-                                    <Pencil className="mr-2 h-4 w-4" />
-                                    Edit
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "delete", matter })}>
-                                    <Trash2 className="mr-2 h-4 w-4" />
-                                    Delete
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="rounded-lg border border-dashed border-muted-foreground/30 bg-muted/30 p-4 text-sm text-muted-foreground">
-                      No matters linked to this contact yet.
-                    </div>
-                  )}
+            <AccordionItem value="related-matters">
+              <AccordionTrigger
+                action={
+                  <Link to="/cases" className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]">
+                    View all matters
+                  </Link>
+                }
+              >
+                Related Matters ({relatedMatters.length})
+              </AccordionTrigger>
+              <AccordionContent>
+                <div className="pt-2">
+                  <ContactMatterList
+                    matters={relatedMatters}
+                    emptyText="No related matters found for this contact."
+                    onEdit={(matter) => setMatterAction({ mode: "edit", matter })}
+                    onDelete={(matter) => setMatterAction({ mode: "delete", matter })}
+                  />
                 </div>
               </AccordionContent>
             </AccordionItem>
@@ -1871,6 +2111,12 @@ export function ContactDetailPage() {
         tagOptions={tagOptions.map((tag) => tag.name)}
         onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
+        locationId={locationRecordId}
+        relatedContactOptions={allContactOptions.map((relatedContact) => ({
+          id: relatedContact.id,
+          name: relatedContact.name,
+          email: relatedContact.email,
+        }))}
       />
     </div>
   );

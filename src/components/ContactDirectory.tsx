@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useMemo, useState } from "react";
+import { ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
@@ -82,6 +82,7 @@ import {
   getBusinessIndustryLabel,
   getBusinessIndustryOptions,
 } from "@/lib/business-custom-fields";
+import { saveContactRelationships } from "@/lib/contact-relationships";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -98,7 +99,7 @@ const CONTACT_VIEW_MODE_STORAGE_KEY = "lawbric.contacts.viewMode";
 const CONTACT_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.contacts.pinnedViewMode";
 const CONTACT_PINNED_VIEW_MODE_METADATA_KEY = "contactPinnedViewMode";
 const ACCOUNT_TYPE_OPTIONS = [
-  "Prospect",
+  "Lead",
   "Client (Active)",
   "Client (Former)",
   "Referral Partner",
@@ -109,7 +110,7 @@ const ACCOUNT_TYPE_OPTIONS = [
   "Court / Agency",
   "Internal",
 ];
-const LEGACY_ACCOUNT_TYPE_TAGS = ["Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
+const LEGACY_ACCOUNT_TYPE_TAGS = ["Prospect", "Client", "Attorney", "Expert Witness", "Opposing Counsel", "Lead"];
 const DEFAULT_ACCOUNT_TYPE = ACCOUNT_TYPE_OPTIONS[0];
 
 type Contact = {
@@ -243,6 +244,11 @@ function getFieldOptions(field: any) {
   );
 }
 
+function normalizeAccountTypeOptions(options: string[]) {
+  const normalizedOptions = options.filter((option) => option && option !== "Lead" && option !== "Prospect");
+  return ["Lead", ...normalizedOptions];
+}
+
 function getUserAvatarUrl(user: any) {
   return user?.avatar_url || user?.profilePhoto || user?.avatarUrl || user?.profile_photo || "";
 }
@@ -299,6 +305,37 @@ function normalizeContactStatus(value: unknown): ContactStatus | null {
   const rawValue = Array.isArray(value) ? value[0] : value;
   const normalized = String(rawValue || "").trim().toLowerCase();
   return CONTACT_STATUS_OPTIONS.find((status) => status.toLowerCase() === normalized) || null;
+}
+
+function mapBusinessToContact(
+  business: any,
+  assignmentMap: Map<string, string>,
+  users: any[],
+  businessFields: GhlCustomField[],
+): Contact {
+  const dateValue = business.updatedAt || business.createdAt;
+  const date = dateValue ? new Date(dateValue) : null;
+  const assignedUserId = assignmentMap.get(business.id) || "";
+  const assignedUser = assignedUserId ? users.find((user) => getUserId(user) === assignedUserId) : null;
+  const industry =
+    getBusinessIndustryLabel(business.properties?.industry || business.industry, businessFields) ||
+    getDescriptionValue(business.description, "Industry");
+
+  return {
+    id: business.id,
+    recordKind: "company",
+    name: business.name || business.email || "Unknown Company",
+    email: business.email || "N/A",
+    phone: formatPhoneNumber(business.phone),
+    type: "Company",
+    status: "Active",
+    caseType: "General",
+    attorneyAssigned: assignedUser ? getUserName(assignedUser) : "Unassigned",
+    attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
+    lastContact: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "Recently",
+    tags: ["Company"],
+    companyDetails: { ...business, industry },
+  };
 }
 
 function buildContactCustomFields(customFields: any[], data: ContactFormValues) {
@@ -370,6 +407,7 @@ export function ContactDirectory() {
   const [isDeletingContact, setIsDeletingContact] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingCompanies, setIsLoadingCompanies] = useState(false);
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [sortColumn, setSortColumn] = useState<keyof Contact>("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
@@ -389,6 +427,8 @@ export function ContactDirectory() {
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
   const [editingListView, setEditingListView] = useState<ListView | null>(null);
+  const hasLoadedCompaniesRef = useRef(false);
+  const isLoadingCompaniesRef = useRef(false);
 
   useEffect(() => {
     const loadContactPreferences = async () => {
@@ -562,18 +602,6 @@ export function ContactDirectory() {
         const customFieldsList = getArrayFromResponse(fieldsResponse, "customFields");
         setCrmCustomFields(customFieldsList);
 
-        let businessFieldsList: GhlCustomField[] = [];
-        try {
-          const businessFieldsResponse = await getBusinessCustomFields(locId);
-          businessFieldsList = getBusinessCustomFieldsCollection(businessFieldsResponse);
-          setBusinessCustomFields(businessFieldsList);
-          setIndustryOptions(getBusinessIndustryOptions(businessFieldsList));
-        } catch (error) {
-          console.error("Failed to fetch business custom fields", error);
-          setBusinessCustomFields([]);
-          setIndustryOptions([]);
-        }
-
         let fetchedTags: GhlTag[] = [];
         try {
           fetchedTags = locId ? await getLocationTags(locId) : [];
@@ -597,17 +625,6 @@ export function ContactDirectory() {
         }
 
         const response: any = await getContacts(locId);
-        let businessesResponse: any = { businesses: [] };
-        try {
-          businessesResponse = locId ? await getBusinesses(locId) : { businesses: [] };
-        } catch (error) {
-          console.error("Failed to fetch CRM companies", error);
-          toast({
-            variant: "destructive",
-            title: "Company Sync Failed",
-            description: "Could not load GHL company records. Check the private integration business scopes.",
-          });
-        }
 
         const customFieldsMap = buildCustomFieldsMap(customFieldsList);
 
@@ -628,7 +645,7 @@ export function ContactDirectory() {
         const paOptions = getFieldOptions(practiceAreaField);
         const langOptions = getFieldOptions(languageField);
 
-        setAccountTypeOptions(accOptions.length > 0 ? accOptions : ACCOUNT_TYPE_OPTIONS);
+        setAccountTypeOptions(accOptions.length > 0 ? normalizeAccountTypeOptions(accOptions) : ACCOUNT_TYPE_OPTIONS);
         if (paOptions.length > 0) setPracticeAreaOptions(paOptions);
         if (langOptions.length > 0) setLanguageOptions(langOptions);
 
@@ -705,35 +722,7 @@ export function ContactDirectory() {
           };
         });
 
-        const mappedBusinesses = getArrayFromResponse(businessesResponse, "businesses").map((business: any): Contact => {
-          const dateValue = business.updatedAt || business.createdAt;
-          const date = dateValue ? new Date(dateValue) : null;
-          const assignedUserId = assignmentMap.get(business.id) || "";
-          const assignedUser = assignedUserId
-            ? fetchedUsers.find((user) => getUserId(user) === assignedUserId)
-            : null;
-          const industry =
-            getBusinessIndustryLabel(business.properties?.industry || business.industry, businessFieldsList) ||
-            getDescriptionValue(business.description, "Industry");
-
-          return {
-            id: business.id,
-            recordKind: "company",
-            name: business.name || business.email || "Unknown Company",
-            email: business.email || "N/A",
-            phone: formatPhoneNumber(business.phone),
-            type: "Company",
-            status: "Active",
-            caseType: "General",
-            attorneyAssigned: assignedUser ? getUserName(assignedUser) : "Unassigned",
-            attorneyAssignedId: assignedUser ? getUserId(assignedUser) : "",
-            lastContact: date && !Number.isNaN(date.getTime()) ? date.toLocaleDateString() : "Recently",
-            tags: ["Company"],
-            companyDetails: { ...business, industry },
-          };
-        });
-
-        setContacts([...mappedBusinesses, ...mappedContacts]);
+        setContacts(mappedContacts);
       } catch (error) {
         const message = getUserFriendlyErrorMessage(error, "We couldn't load your contacts right now.");
         console.error("Failed to fetch CRM contacts:", error);
@@ -777,7 +766,7 @@ export function ContactDirectory() {
     return customFieldsList;
   };
 
-  const loadLatestBusinessCustomFields = async () => {
+  const loadLatestBusinessCustomFields = useCallback(async () => {
     if (!locationId) return businessCustomFields;
 
     const fieldsResponse = await getBusinessCustomFields(locationId);
@@ -785,7 +774,82 @@ export function ContactDirectory() {
     setBusinessCustomFields(customFieldsList);
     setIndustryOptions(getBusinessIndustryOptions(customFieldsList));
     return customFieldsList;
-  };
+  }, [businessCustomFields, locationId]);
+
+  const loadCompanyRecords = useCallback(
+    async ({ force = false }: { force?: boolean } = {}) => {
+      if (!locationId || (!force && hasLoadedCompaniesRef.current) || isLoadingCompaniesRef.current) return;
+
+      isLoadingCompaniesRef.current = true;
+      setIsLoadingCompanies(true);
+
+      try {
+        let latestBusinessCustomFields = businessCustomFields;
+        if (latestBusinessCustomFields.length === 0) {
+          try {
+            latestBusinessCustomFields = await loadLatestBusinessCustomFields();
+          } catch (error) {
+            console.error("Failed to fetch business custom fields", error);
+            latestBusinessCustomFields = [];
+            setBusinessCustomFields([]);
+            setIndustryOptions([]);
+          }
+        }
+
+        const assignmentMap = new Map<string, string>();
+        if (locationRecordId) {
+          const { data: assignments, error: assignmentsError } = await supabase
+            .from("contact_assignments")
+            .select("ghl_contact_id, assigned_user_id")
+            .eq("location_id", locationRecordId);
+
+          if (assignmentsError) {
+            console.error("Failed to fetch company assignments", assignmentsError);
+          } else {
+            (assignments ?? []).forEach((assignment) => {
+              if (assignment.ghl_contact_id && assignment.assigned_user_id) {
+                assignmentMap.set(assignment.ghl_contact_id, assignment.assigned_user_id);
+              }
+            });
+          }
+        }
+
+        const businessesResponse: any = await getBusinesses(locationId);
+        const mappedBusinesses: Contact[] = getArrayFromResponse(businessesResponse, "businesses").map((business: any) =>
+          mapBusinessToContact(business, assignmentMap, systemUsers, latestBusinessCustomFields),
+        );
+        const mappedBusinessIds = new Set(mappedBusinesses.map((business) => business.id));
+
+        setContacts((current) => [
+          ...current.filter((contact) => contact.recordKind === "company" && !mappedBusinessIds.has(contact.id)),
+          ...mappedBusinesses,
+          ...current.filter((contact) => contact.recordKind !== "company"),
+        ]);
+        hasLoadedCompaniesRef.current = true;
+      } catch (error) {
+        console.error("Failed to fetch CRM companies", error);
+        toast({
+          variant: "destructive",
+          title: "Company Sync Failed",
+          description: "Could not load GHL company records. Check the private integration business scopes.",
+        });
+      } finally {
+        isLoadingCompaniesRef.current = false;
+        setIsLoadingCompanies(false);
+      }
+    },
+    [businessCustomFields, loadLatestBusinessCustomFields, locationId, locationRecordId, systemUsers, toast],
+  );
+
+  const handleCompanyModeSelected = useCallback(async () => {
+    try {
+      await loadLatestBusinessCustomFields();
+    } catch (error) {
+      console.error("Failed to fetch business custom fields", error);
+      setBusinessCustomFields([]);
+      setIndustryOptions([]);
+    }
+  }, [loadLatestBusinessCustomFields]);
 
   const handleCreateTag = async (name: string) => {
     const trimmedName = name.trim();
@@ -981,6 +1045,7 @@ export function ContactDirectory() {
       if (assignedUser) {
         await saveContactAssignment(createdContactId, getUserId(assignedUser));
       }
+      await saveContactRelationships(locationId, createdContactId, newContactData.relatedContacts || []);
 
       const newContact: Contact = {
         id: createdContactId,
@@ -1051,6 +1116,7 @@ export function ContactDirectory() {
 
       await updateContact(contactToEdit.id, payload);
       await saveContactAssignment(contactToEdit.id, assignedUser ? getUserId(assignedUser) : "");
+      await saveContactRelationships(locationId, contactToEdit.id, updatedData.relatedContacts || []);
       toast({ title: "Contact Updated", description: `${updatedContact.name}'s details have been saved.` });
     } catch (error) {
       setContacts(previousContacts);
@@ -1089,8 +1155,16 @@ export function ContactDirectory() {
   };
 
   const activeListView = listViews.find((listView) => listView.id === activeListViewId) || listViews[0];
+  const companyRecordsRequested = typeFilter === "Company" || activeListView?.filters.type === "Company";
+
+  useEffect(() => {
+    if (companyRecordsRequested) {
+      void loadCompanyRecords();
+    }
+  }, [companyRecordsRequested, loadCompanyRecords]);
+
   const contactTypeOptions = useMemo(
-    () => [...new Set([...accountTypeOptions, ...contacts.map((contact) => contact.type).filter(Boolean)])],
+    () => [...new Set([...accountTypeOptions, "Company", ...contacts.map((contact) => contact.type).filter(Boolean)])],
     [accountTypeOptions, contacts],
   );
   const contactPracticeAreaOptions = useMemo(
@@ -1603,9 +1677,19 @@ export function ContactDirectory() {
 
           {filteredContacts.length === 0 && (
             <div className="rounded-lg border-2 border-dashed border-muted-foreground/40 bg-card py-12 text-center">
-              <Briefcase className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
-              <h3 className="text-lg font-medium text-foreground">No contacts found</h3>
-              <p className="mt-1 text-muted-foreground">Try adjusting your search or filters.</p>
+              {isLoadingCompanies && companyRecordsRequested ? (
+                <>
+                  <Loader2 className="mx-auto mb-4 h-12 w-12 animate-spin text-primary" />
+                  <h3 className="text-lg font-medium text-foreground">Loading companies...</h3>
+                  <p className="mt-1 text-muted-foreground">Company records are syncing from CRM.</p>
+                </>
+              ) : (
+                <>
+                  <Briefcase className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
+                  <h3 className="text-lg font-medium text-foreground">No contacts found</h3>
+                  <p className="mt-1 text-muted-foreground">Try adjusting your search or filters.</p>
+                </>
+              )}
             </div>
           )}
 
@@ -1711,8 +1795,12 @@ export function ContactDirectory() {
         languageOptions={languageOptions}
         tagOptions={tagOptions.map((tag) => tag.name)}
         onCreateTag={handleCreateTag}
+        onCompanyModeSelected={handleCompanyModeSelected}
         systemUsers={systemUsers}
         companyContactOptions={contacts
+          .filter((contact) => contact.recordKind === "contact")
+          .map((contact) => ({ id: contact.id, name: contact.name, email: contact.email }))}
+        relatedContactOptions={contacts
           .filter((contact) => contact.recordKind === "contact")
           .map((contact) => ({ id: contact.id, name: contact.name, email: contact.email }))}
       />
@@ -1752,6 +1840,10 @@ export function ContactDirectory() {
         tagOptions={tagOptions.map((tag) => tag.name)}
         onCreateTag={handleCreateTag}
         systemUsers={systemUsers}
+        locationId={locationId}
+        relatedContactOptions={contacts
+          .filter((contact) => contact.recordKind === "contact")
+          .map((contact) => ({ id: contact.id, name: contact.name, email: contact.email }))}
       />
 
       <DeleteConfirmationDialog

@@ -23,13 +23,13 @@ import { cn } from "@/lib/utils";
 
 const PIPELINE_CLASSIFICATIONS: Array<{ value: PipelineClassification; label: string }> = [
   { value: "unclassified", label: "Unclassified" },
-  { value: "prospecting", label: "Prospecting" },
-  { value: "matter", label: "Matter" },
+  { value: "prospecting", label: "Leads" },
+  { value: "matter", label: "Matters" },
 ];
 
 const ACCOUNT_TYPE_OPTIONS = [
   "Any",
-  "Prospect",
+  "Lead",
   "Client (Active)",
   "Client (Former)",
   "Referral Partner",
@@ -40,6 +40,7 @@ const ACCOUNT_TYPE_OPTIONS = [
   "Court / Agency",
   "Internal",
 ];
+const LEAD_ACCOUNT_TYPE = "Lead";
 
 type PipelineRow = {
   pipeline: GhlPipeline;
@@ -58,6 +59,11 @@ function getClassificationLabel(classification?: string | null) {
   return PIPELINE_CLASSIFICATIONS.find((option) => option.value === classification)?.label || "Unclassified";
 }
 
+function pipelineConfigMatchesLeadAccountType(config?: PipelineConfig | null) {
+  const accountTypeRule = String(config?.account_type_rule || "").trim().toLowerCase();
+  return accountTypeRule === LEAD_ACCOUNT_TYPE.toLowerCase();
+}
+
 function getClassificationClass(classification?: string | null) {
   if (classification === "prospecting") return "bg-amber-100 text-amber-800";
   if (classification === "matter") return "bg-blue-100 text-blue-800";
@@ -65,7 +71,7 @@ function getClassificationClass(classification?: string | null) {
 }
 
 function getPipelineDisplaySection(config?: PipelineConfig | null): PipelineDisplaySection {
-  return config?.classification === "prospecting" ? "leads" : "matters";
+  return config?.classification === "prospecting" || pipelineConfigMatchesLeadAccountType(config) ? "leads" : "matters";
 }
 
 function getPipelineDisplaySectionLabel(config?: PipelineConfig | null) {
@@ -186,7 +192,7 @@ export function PipelinesPage() {
         const haystack = [
           pipeline.name,
           pipeline.id,
-          getClassificationLabel(config?.classification),
+          getClassificationLabel(classification),
           getPipelineDisplaySectionLabel(config),
           config?.account_type_rule,
           ...(config?.include_tags || []),
@@ -399,7 +405,7 @@ export function PipelinesPage() {
                   <div className="flex items-center">Pipeline {renderSortIcon("name")}</div>
                 </th>
                 <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("classification")}>
-                  <div className="flex items-center">Classification {renderSortIcon("classification")}</div>
+                  <div className="flex items-center">Section {renderSortIcon("classification")}</div>
                 </th>
                 <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("stages")}>
                   <div className="flex items-center">Stages {renderSortIcon("stages")}</div>
@@ -591,8 +597,11 @@ function PipelineConfigSheet({
 
         <div className="mt-6 space-y-5">
           <div className="space-y-2">
-            <Label>Pipeline Type</Label>
-            <Select value={classification} onValueChange={(value) => setClassification(value as PipelineClassification)}>
+            <Label>Lawbric Section</Label>
+            <Select
+              value={classification}
+              onValueChange={(value) => setClassification(value as PipelineClassification)}
+            >
               <SelectTrigger>
                 <span>{getClassificationLabel(classification)}</span>
               </SelectTrigger>
@@ -608,7 +617,10 @@ function PipelineConfigSheet({
 
           <div className="space-y-2">
             <Label>Account Type Rule</Label>
-            <Select value={accountTypeRule} onValueChange={setAccountTypeRule}>
+            <Select
+              value={accountTypeRule}
+              onValueChange={setAccountTypeRule}
+            >
               <SelectTrigger>
                 <span>{accountTypeRule}</span>
               </SelectTrigger>

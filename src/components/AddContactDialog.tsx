@@ -1,11 +1,14 @@
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Building2, UserRound } from "lucide-react";
+import { useEffect } from "react";
 import { useForm } from "react-hook-form";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/DatePicker";
+import { ContactRelationshipsField, type RelatedContactOption } from "@/components/ContactRelationshipsField";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { TagMultiSelect } from "@/components/TagMultiSelect";
+import { type ContactRelationshipInput } from "@/lib/contact-relationships";
 import {
   Form,
   FormControl,
@@ -49,6 +52,11 @@ const contactSchema = z
     gender: z.string().optional(),
     language: z.string().optional(),
     tags: z.array(z.string()).optional(),
+    relatedContacts: z.array(z.object({
+      relatedContactId: z.string(),
+      relationshipType: z.string(),
+      notes: z.string().optional().nullable(),
+    })).optional(),
   })
   .superRefine((data, context) => {
     const contactKind = data.contactKind || "person";
@@ -76,7 +84,7 @@ const contactSchema = z
   });
 
 const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"];
-const DEFAULT_ACCOUNT_TYPE = "Prospect";
+const DEFAULT_ACCOUNT_TYPE = "Lead";
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 export type ContactFormValues = z.infer<typeof contactSchema>;
@@ -109,8 +117,10 @@ type AddContactDialogProps = {
   languageOptions?: string[];
   tagOptions?: string[];
   onCreateTag?: (name: string) => Promise<string | void> | string | void;
+  onCompanyModeSelected?: () => Promise<void> | void;
   systemUsers?: SystemUser[];
   companyContactOptions?: CompanyContactOption[];
+  relatedContactOptions?: RelatedContactOption[];
 };
 
 function getUserName(user: SystemUser) {
@@ -133,8 +143,10 @@ export function AddContactDialog({
   languageOptions = [],
   tagOptions = [],
   onCreateTag,
+  onCompanyModeSelected,
   systemUsers = [],
   companyContactOptions = [],
+  relatedContactOptions = [],
 }: AddContactDialogProps) {
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
@@ -161,6 +173,7 @@ export function AddContactDialog({
       gender: "",
       language: "",
       tags: [],
+      relatedContacts: [],
     },
   });
 
@@ -217,6 +230,12 @@ export function AddContactDialog({
   };
   const contactKind = form.watch("contactKind") || "person";
   const primaryContactMode = form.watch("primaryContactMode") || "create";
+
+  useEffect(() => {
+    if (open && contactKind === "company") {
+      void onCompanyModeSelected?.();
+    }
+  }, [contactKind, onCompanyModeSelected, open]);
 
   return (
     <Sheet
@@ -504,6 +523,13 @@ export function AddContactDialog({
                   )}
                 />
               </TabsContent>
+              {contactKind === "person" ? (
+                <ContactRelationshipsField
+                  value={(form.watch("relatedContacts") || []) as ContactRelationshipInput[]}
+                  onChange={(relatedContacts) => form.setValue("relatedContacts", relatedContacts)}
+                  contactOptions={relatedContactOptions}
+                />
+              ) : null}
             </Tabs>
 
             <div className="grid grid-cols-1 gap-4">

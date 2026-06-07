@@ -80,16 +80,52 @@ export function AccordionItem({
   );
 }
 
-export function AccordionTrigger({ className, children }: { className?: string; children: ReactNode }) {
+export function AccordionTrigger({
+  className,
+  children,
+  fullWidth = true,
+  action,
+}: {
+  className?: string;
+  children: ReactNode;
+  fullWidth?: boolean;
+  action?: ReactNode;
+}) {
   const accordion = useAccordion();
   const value = useAccordionItem();
   const isOpen = accordion.openValues.includes(value);
+
+  if (action) {
+    return (
+      <div className={cn("flex w-full items-center gap-3 py-4 text-sm font-medium", className)}>
+        <button
+          type="button"
+          className="min-w-0 text-left transition hover:text-primary"
+          onClick={() => accordion.toggleValue(value)}
+          aria-expanded={isOpen}
+        >
+          {children}
+        </button>
+        {action}
+        <button
+          type="button"
+          className="ml-auto flex h-8 w-8 shrink-0 items-center justify-end text-muted-foreground transition hover:text-primary"
+          onClick={() => accordion.toggleValue(value)}
+          aria-expanded={isOpen}
+          aria-label="Toggle section"
+        >
+          <ChevronDown className={cn("h-4 w-4 shrink-0 transition-transform", isOpen && "rotate-180")} />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <button
       type="button"
       className={cn(
-        "flex w-full items-center justify-between py-4 text-left text-sm font-medium transition hover:text-primary",
+        "flex items-center justify-between py-4 text-left text-sm font-medium transition hover:text-primary",
+        fullWidth && "w-full",
         className,
       )}
       onClick={() => accordion.toggleValue(value)}

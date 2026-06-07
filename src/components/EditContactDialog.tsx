@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import * as z from "zod";
 import { Button } from "@/components/ui/button";
 import { DatePicker } from "@/components/DatePicker";
+import { ContactRelationshipsField, type RelatedContactOption } from "@/components/ContactRelationshipsField";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { TagMultiSelect } from "@/components/TagMultiSelect";
 import {
@@ -16,6 +17,11 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  getRelatedContactId,
+  listContactRelationships,
+  type ContactRelationshipInput,
+} from "@/lib/contact-relationships";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneInput, formatPhoneNumber } from "@/lib/phone";
 
@@ -31,10 +37,15 @@ const contactSchema = z.object({
   gender: z.string().optional(),
   language: z.string().optional(),
   tags: z.array(z.string()).optional(),
+  relatedContacts: z.array(z.object({
+    relatedContactId: z.string(),
+    relationshipType: z.string(),
+    notes: z.string().optional().nullable(),
+  })).optional(),
 });
 
 const CONTACT_STATUS_OPTIONS = ["Active", "Inactive"];
-const DEFAULT_ACCOUNT_TYPE = "Prospect";
+const DEFAULT_ACCOUNT_TYPE = "Lead";
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 
 export type ContactFormValues = z.infer<typeof contactSchema>;
@@ -61,6 +72,8 @@ type EditContactDialogProps = {
   tagOptions?: string[];
   onCreateTag?: (name: string) => Promise<string | void> | string | void;
   systemUsers?: SystemUser[];
+  locationId?: string;
+  relatedContactOptions?: RelatedContactOption[];
 };
 
 function getUserName(user: SystemUser) {
@@ -98,6 +111,8 @@ export function EditContactDialog({
   tagOptions = [],
   onCreateTag,
   systemUsers = [],
+  locationId = "",
+  relatedContactOptions = [],
 }: EditContactDialogProps) {
   const form = useForm<ContactFormValues>({
     resolver: zodResolver(contactSchema),
@@ -113,6 +128,7 @@ export function EditContactDialog({
       gender: "",
       language: "",
       tags: [],
+      relatedContacts: [],
     },
   });
 
@@ -142,9 +158,32 @@ export function EditContactDialog({
         tags: Array.isArray(contact.tags)
           ? contact.tags.filter((tag: string) => tagOptions.some((option) => option.toLowerCase() === tag.toLowerCase()))
           : [],
+        relatedContacts: [],
       });
     }
   }, [contact, open, form, accountTypeOptions, practiceAreaOptions, languageOptions, tagOptions, systemUsers]);
+
+  useEffect(() => {
+    if (!contact?.id || !locationId || !open) return;
+
+    let isMounted = true;
+    listContactRelationships(locationId, contact.id)
+      .then((relationships) => {
+        if (!isMounted) return;
+        form.setValue("relatedContacts", relationships.map((relationship) => ({
+          relatedContactId: getRelatedContactId(relationship, contact.id),
+          relationshipType: relationship.relationship_type,
+          notes: relationship.notes || "",
+        })));
+      })
+      .catch((error) => {
+        console.error("Failed to load contact relationships", error);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [contact?.id, form, locationId, open]);
 
   const onSubmit = async (data: ContactFormValues) => {
     await onEditContact(data);
@@ -331,6 +370,13 @@ export function EditContactDialog({
                   <FormMessage />
                 </FormItem>
               )}
+            />
+
+            <ContactRelationshipsField
+              value={(form.watch("relatedContacts") || []) as ContactRelationshipInput[]}
+              onChange={(relatedContacts) => form.setValue("relatedContacts", relatedContacts)}
+              contactOptions={relatedContactOptions}
+              currentContactId={contact?.id}
             />
 
             <div className="grid grid-cols-1 gap-4">

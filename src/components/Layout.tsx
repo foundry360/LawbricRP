@@ -45,12 +45,19 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/lib/supabase";
-import { getAppLocationContext, type AppLocationContext } from "@/lib/api";
+import {
+  clearCachedAppLocationContext,
+  clearCachedGhlReferenceData,
+  clearCachedGhlListData,
+  getAppLocationContext,
+  type AppLocationContext,
+} from "@/lib/api";
 import { SettingsDialog } from "@/components/SettingsDialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { getAvatarInitials } from "@/lib/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { GlobalSearch } from "@/components/GlobalSearch";
+import { clearCachedAssignableUsers } from "@/lib/users";
 
 type NotificationRow = {
   id: string;
@@ -90,6 +97,12 @@ export function Layout({ children }: { children: ReactNode }) {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) {
+        clearCachedAppLocationContext();
+        clearCachedGhlReferenceData();
+        clearCachedGhlListData();
+        clearCachedAssignableUsers();
+      }
       setUserProfile(session?.user);
     });
 
@@ -185,6 +198,10 @@ export function Layout({ children }: { children: ReactNode }) {
   };
 
   const handleLogout = async () => {
+    clearCachedAppLocationContext();
+    clearCachedGhlReferenceData();
+    clearCachedGhlListData();
+    clearCachedAssignableUsers();
     await supabase.auth.signOut();
     localStorage.removeItem("access_token");
     localStorage.removeItem("refresh_token");

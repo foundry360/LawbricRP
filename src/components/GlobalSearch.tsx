@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Building2, Briefcase, CheckSquare, Loader2, MousePointerClick, Search, Sparkles, UserRound } from "lucide-react";
-import { getBusinesses, getContacts, type GhlBusiness } from "@/lib/api";
+import { getCachedBusinessesIfAvailable, getCachedContactsIfAvailable, getContacts, type GhlBusiness } from "@/lib/api";
 import { listCases, type CaseRecord } from "@/lib/cases";
 import { formatPersonName } from "@/lib/names";
 import { listTasks, type TaskRecord } from "@/lib/tasks";
@@ -59,14 +59,103 @@ const resultTypeConfig = {
   task: { label: "Task", icon: CheckSquare },
 } as const;
 
+const GLOBAL_SEARCH_MIN_CHARS = 3;
+const GLOBAL_SEARCH_GHL_MIN_CHARS = 5;
+const GLOBAL_SEARCH_DEBOUNCE_MS = 400;
+
+function mapContactsToResults(contacts: any[]): GlobalSearchResult[] {
+  return contacts.flatMap((contact: any): GlobalSearchResult[] => {
+    const id = String(contact?.id || contact?._id || "");
+    if (!id) return [];
+    const title = getContactName(contact);
+    const subtitle = getContactSubtitle(contact);
+    return [
+      {
+        id,
+        type: "contact" as const,
+        title,
+        subtitle,
+        href: `/contact/${id}`,
+        keywords: buildKeywords(title, subtitle, contact?.tags?.join?.(" ")),
+      },
+    ];
+  });
+}
+
+function mapBusinessesToResults(businesses: GhlBusiness[]): GlobalSearchResult[] {
+  return businesses.flatMap((business: GhlBusiness): GlobalSearchResult[] => {
+    const id = String(business?.id || "");
+    if (!id) return [];
+    const title = business.name || "Unknown company";
+    const subtitle = getBusinessSubtitle(business);
+    return [
+      {
+        id,
+        type: "company" as const,
+        title,
+        subtitle,
+        href: `/company/${id}`,
+        keywords: buildKeywords(title, subtitle, business.address, business.website),
+      },
+    ];
+  });
+}
+
+function mapCasesToResults(cases: CaseRecord[]): GlobalSearchResult[] {
+  return cases.map((caseRecord: CaseRecord) => ({
+    id: caseRecord.id,
+    type: "matter" as const,
+    title: caseRecord.case_name || caseRecord.case_number || "Untitled matter",
+    subtitle: [caseRecord.case_number, caseRecord.primary_contact_name, caseRecord.case_type]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" • "),
+    href: `/case/${caseRecord.id}`,
+    keywords: buildKeywords(
+      caseRecord.case_name,
+      caseRecord.case_number,
+      caseRecord.primary_contact_name,
+      caseRecord.primary_contact_email,
+      caseRecord.case_type,
+      caseRecord.status,
+    ),
+  }));
+}
+
+function mapTasksToResults(tasks: TaskRecord[]): GlobalSearchResult[] {
+  return tasks.map((task: TaskRecord) => ({
+    id: task.id,
+    type: "task" as const,
+    title: task.title || "Untitled task",
+    subtitle: [task.case?.case_name, task.ghl_contact_name, task.status]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean)
+      .join(" • "),
+    href: getTaskHref(task),
+    keywords: buildKeywords(
+      task.title,
+      task.description,
+      task.case?.case_name,
+      task.ghl_contact_name,
+      task.ghl_opportunity_name,
+      task.status,
+      task.priority,
+    ),
+  }));
+}
+
 export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [open, setOpen] = useState(false);
-  const [results, setResults] = useState<GlobalSearchResult[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
-  const [hasLoaded, setHasLoaded] = useState(false);
+  const [appResults, setAppResults] = useState<GlobalSearchResult[]>([]);
+  const [crmResults, setCrmResults] = useState<GlobalSearchResult[]>([]);
+  const [isLoadingAppResults, setIsLoadingAppResults] = useState(false);
+  const [isLoadingCrmResults, setIsLoadingCrmResults] = useState(false);
+  const [hasLoadedAppResults, setHasLoadedAppResults] = useState(false);
+  const [hasCheckedCachedCrmResults, setHasCheckedCachedCrmResults] = useState(false);
+  const [hasLoadedRemoteCrmContacts, setHasLoadedRemoteCrmContacts] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -78,7 +167,7 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
   };
 
   useEffect(() => {
-    const timeout = window.setTimeout(() => setDebouncedQuery(query.trim()), 180);
+    const timeout = window.setTimeout(() => setDebouncedQuery(query.trim()), GLOBAL_SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timeout);
   }, [query]);
 
@@ -102,107 +191,34 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
   }, [open]);
 
   useEffect(() => {
-    setResults([]);
-    setHasLoaded(false);
+    setAppResults([]);
+    setCrmResults([]);
+    setHasLoadedAppResults(false);
+    setHasCheckedCachedCrmResults(false);
+    setHasLoadedRemoteCrmContacts(false);
     setErrorMessage("");
   }, [locationId]);
 
   useEffect(() => {
-    if (!locationId || disabled || hasLoaded || debouncedQuery.length < 2) return;
+    if (!locationId || disabled || hasLoadedAppResults || debouncedQuery.length < GLOBAL_SEARCH_MIN_CHARS) return;
 
     let isMounted = true;
-    setIsLoading(true);
+    setIsLoadingAppResults(true);
     setErrorMessage("");
 
     Promise.allSettled([
-      getContacts(locationId),
-      getBusinesses(locationId),
       listCases({ limit: 100 }),
       listTasks({ limit: 100 }),
     ])
-      .then(([contactsResult, businessesResult, casesResult, tasksResult]) => {
+      .then(([casesResult, tasksResult]) => {
         if (!isMounted) return;
 
-        const contacts = contactsResult.status === "fulfilled" ? getArrayFromResponse(contactsResult.value, "contacts") : [];
-        const businesses = businessesResult.status === "fulfilled" ? getArrayFromResponse(businessesResult.value, "businesses") : [];
         const cases = casesResult.status === "fulfilled" ? casesResult.value : [];
         const tasks = tasksResult.status === "fulfilled" ? tasksResult.value : [];
 
-        const nextResults: GlobalSearchResult[] = [
-          ...contacts
-            .map((contact: any) => {
-              const id = String(contact?.id || contact?._id || "");
-              if (!id) return null;
-              const title = getContactName(contact);
-              const subtitle = getContactSubtitle(contact);
-              return {
-                id,
-                type: "contact" as const,
-                title,
-                subtitle,
-                href: `/contact/${id}`,
-                keywords: buildKeywords(title, subtitle, contact?.tags?.join?.(" ")),
-              };
-            })
-            .filter(Boolean),
-          ...businesses
-            .map((business: GhlBusiness) => {
-              const id = String(business?.id || "");
-              if (!id) return null;
-              const title = business.name || "Unknown company";
-              const subtitle = getBusinessSubtitle(business);
-              return {
-                id,
-                type: "company" as const,
-                title,
-                subtitle,
-                href: `/company/${id}`,
-                keywords: buildKeywords(title, subtitle, business.address, business.website),
-              };
-            })
-            .filter(Boolean),
-          ...cases.map((caseRecord: CaseRecord) => ({
-            id: caseRecord.id,
-            type: "matter" as const,
-            title: caseRecord.case_name || caseRecord.case_number || "Untitled matter",
-            subtitle: [caseRecord.case_number, caseRecord.primary_contact_name, caseRecord.case_type]
-              .map((value) => String(value || "").trim())
-              .filter(Boolean)
-              .join(" • "),
-            href: `/case/${caseRecord.id}`,
-            keywords: buildKeywords(
-              caseRecord.case_name,
-              caseRecord.case_number,
-              caseRecord.primary_contact_name,
-              caseRecord.primary_contact_email,
-              caseRecord.case_type,
-              caseRecord.status,
-            ),
-          })),
-          ...tasks.map((task: TaskRecord) => ({
-            id: task.id,
-            type: "task" as const,
-            title: task.title || "Untitled task",
-            subtitle: [task.case?.case_name, task.ghl_contact_name, task.status]
-              .map((value) => String(value || "").trim())
-              .filter(Boolean)
-              .join(" • "),
-            href: getTaskHref(task),
-            keywords: buildKeywords(
-              task.title,
-              task.description,
-              task.case?.case_name,
-              task.ghl_contact_name,
-              task.ghl_opportunity_name,
-              task.status,
-              task.priority,
-            ),
-          })),
-        ];
-
-        setResults(nextResults);
-        setHasLoaded(true);
-        if ([contactsResult, businessesResult, casesResult, tasksResult].some((result) => result.status === "rejected")) {
+        setAppResults([...mapCasesToResults(cases), ...mapTasksToResults(tasks)]);
+        setHasLoadedAppResults(true);
+        if ([casesResult, tasksResult].some((result) => result.status === "rejected")) {
           setErrorMessage("Some results could not be loaded.");
         }
       })
@@ -211,19 +227,68 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
         if (isMounted) setErrorMessage("Search is unavailable right now.");
       })
       .finally(() => {
-        if (isMounted) setIsLoading(false);
+        if (isMounted) setIsLoadingAppResults(false);
       });
 
     return () => {
       isMounted = false;
     };
-  }, [debouncedQuery.length, disabled, hasLoaded, locationId]);
+  }, [debouncedQuery.length, disabled, hasLoadedAppResults, locationId]);
+
+  useEffect(() => {
+    if (!locationId || disabled || hasCheckedCachedCrmResults || debouncedQuery.length < GLOBAL_SEARCH_MIN_CHARS) return;
+
+    const cachedContacts = getCachedContactsIfAvailable(locationId);
+    const cachedBusinesses = getCachedBusinessesIfAvailable(locationId);
+
+    setCrmResults([
+      ...mapContactsToResults(getArrayFromResponse(cachedContacts, "contacts")),
+      ...mapBusinessesToResults(getArrayFromResponse(cachedBusinesses, "businesses")),
+    ]);
+    setHasCheckedCachedCrmResults(true);
+  }, [debouncedQuery.length, disabled, hasCheckedCachedCrmResults, locationId]);
+
+  useEffect(() => {
+    if (
+      !locationId ||
+      disabled ||
+      hasLoadedRemoteCrmContacts ||
+      debouncedQuery.length < GLOBAL_SEARCH_GHL_MIN_CHARS
+    ) {
+      return;
+    }
+
+    let isMounted = true;
+    setIsLoadingCrmResults(true);
+
+    getContacts(locationId)
+      .then((response) => {
+        if (!isMounted) return;
+        const contactResults = mapContactsToResults(getArrayFromResponse(response, "contacts"));
+        setCrmResults((current) => [
+          ...current.filter((result) => result.type !== "contact"),
+          ...contactResults,
+        ]);
+        setHasLoadedRemoteCrmContacts(true);
+      })
+      .catch((error) => {
+        console.error("Global contact search failed", error);
+        if (isMounted) setErrorMessage("Some CRM contact results could not be loaded.");
+      })
+      .finally(() => {
+        if (isMounted) setIsLoadingCrmResults(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [debouncedQuery.length, disabled, hasLoadedRemoteCrmContacts, locationId]);
 
   const filteredResults = useMemo(() => {
     const search = debouncedQuery.toLowerCase();
-    if (search.length < 2) return [];
+    if (search.length < GLOBAL_SEARCH_MIN_CHARS) return [];
 
-    return results
+    return [...appResults, ...crmResults]
       .filter((result) => result.keywords.includes(search))
       .sort((left, right) => {
         const leftStarts = left.title.toLowerCase().startsWith(search) ? 0 : 1;
@@ -231,9 +296,14 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
         return leftStarts - rightStarts || left.title.localeCompare(right.title);
       })
       .slice(0, 10);
-  }, [debouncedQuery, results]);
+  }, [appResults, crmResults, debouncedQuery]);
 
   const shouldShowPanel = open && query.trim().length > 0;
+  const isLoading = isLoadingAppResults || isLoadingCrmResults;
+  const noResultsMessage =
+    debouncedQuery.length >= GLOBAL_SEARCH_MIN_CHARS && debouncedQuery.length < GLOBAL_SEARCH_GHL_MIN_CHARS
+      ? `No app results found. Type at least ${GLOBAL_SEARCH_GHL_MIN_CHARS} characters to include CRM contacts.`
+      : "No results found.";
 
   const handleResultSelect = (result: GlobalSearchResult) => {
     clearAndCloseSearch();
@@ -262,12 +332,9 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
         <div className="absolute left-1/2 top-full z-[80] mt-2 w-[min(56rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-2xl border border-border bg-background text-foreground shadow-xl">
           <div className="grid grid-cols-2">
             <div className="min-w-0 p-3">
-              {debouncedQuery.length < 2 ? (
-                <div className="px-4 py-4 text-sm text-muted-foreground">Type at least 2 characters to search.</div>
-              ) : isLoading ? (
-                <div className="flex items-center gap-2 px-4 py-4 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Searching...
+              {debouncedQuery.length < GLOBAL_SEARCH_MIN_CHARS ? (
+                <div className="px-4 py-4 text-sm text-muted-foreground">
+                  Type at least {GLOBAL_SEARCH_MIN_CHARS} characters to search.
                 </div>
               ) : filteredResults.length > 0 ? (
                 <div className="no-scrollbar max-h-[28rem] divide-y divide-border overflow-y-auto">
@@ -299,9 +366,20 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
                       </button>
                     );
                   })}
+                  {isLoading ? (
+                    <div className="flex items-center gap-2 px-4 py-3 text-xs text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      Searching more records...
+                    </div>
+                  ) : null}
+                </div>
+              ) : isLoading ? (
+                <div className="flex items-center gap-2 px-4 py-4 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Searching...
                 </div>
               ) : (
-                <div className="px-4 py-4 text-sm text-muted-foreground">No results found.</div>
+                <div className="px-4 py-4 text-sm text-muted-foreground">{noResultsMessage}</div>
               )}
 
               {errorMessage ? (
@@ -323,7 +401,7 @@ export function GlobalSearch({ locationId, disabled }: GlobalSearchProps) {
                 </div>
                 <div className="flex gap-3">
                   <UserRound className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "#344256" }} />
-                  <p>Contacts and companies come from GHL, while matters and tasks come from the app.</p>
+                  <p>Matters and tasks load first. More specific searches can include CRM contacts.</p>
                 </div>
                 <div className="flex gap-3">
                   <MousePointerClick className="mt-0.5 h-4 w-4 shrink-0" style={{ color: "#344256" }} />

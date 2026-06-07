@@ -5,6 +5,7 @@ import { CasesPage } from "@/pages/CasesPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
 import { ContactDetailPage } from "@/pages/ContactDetailPage";
 import { Layout } from "@/components/Layout";
+import { LeadsPage } from "@/pages/LeadsPage";
 import { RequireAuth } from "@/components/RequireAuth";
 import Index from "@/pages/Index";
 import { Login } from "@/pages/Login";
@@ -68,7 +69,7 @@ function LeadsShell() {
   return (
     <RequireAuth>
       <Layout>
-        <CasesPage section="leads" />
+        <LeadsPage />
       </Layout>
     </RequireAuth>
   );

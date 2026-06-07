@@ -1,4 +1,4 @@
-import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
@@ -50,7 +50,14 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { getAppLocationContext, getContacts, getPipelines, type GhlPipeline, type GhlPipelineStage } from "@/lib/api";
+import {
+  getAppLocationContext,
+  getCachedContactsIfAvailable,
+  getContacts,
+  getPipelines,
+  type GhlPipeline,
+  type GhlPipelineStage,
+} from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
 import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
@@ -71,6 +78,7 @@ const CASE_PINNED_VIEW_MODE_METADATA_KEY = "casePinnedViewMode";
 const CASE_PINNED_LIST_VIEW_ID_METADATA_KEY = "casePinnedListViewId";
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
+const LEAD_ACCOUNT_TYPE = "Lead";
 type CaseListView = {
   id: string;
   name: string;
@@ -120,7 +128,7 @@ const SECTION_COPY: Record<
     addTooltip: "Add lead",
     loading: "Loading leads...",
     emptyTitle: "No leads found",
-    emptyDescription: "Prospecting pipeline items will appear here once configured.",
+    emptyDescription: "Lead pipeline items will appear here once configured.",
     noResultsTitle: "No leads found",
     noResultsDescription: "Try adjusting your search or filters.",
     countLabel: "leads",
@@ -149,6 +157,11 @@ function sortPipelinesByDisplayOrder(pipelines: GhlPipeline[], configMap: Map<st
     if (orderComparison !== 0) return orderComparison;
     return a.name.localeCompare(b.name);
   });
+}
+
+function pipelineConfigMatchesLeadAccountType(config?: PipelineConfig | null) {
+  const accountTypeRule = String(config?.account_type_rule || "").trim().toLowerCase();
+  return accountTypeRule === LEAD_ACCOUNT_TYPE.toLowerCase();
 }
 
 function getInitialCaseViewMode(): CaseViewMode {
@@ -292,10 +305,12 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
   const sectionCopy = SECTION_COPY[section];
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
+  const [isLoadingContacts, setIsLoadingContacts] = useState(false);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
   const [pipelineConfigs, setPipelineConfigs] = useState<PipelineConfig[]>([]);
   const [locationId, setLocationId] = useState("");
+  const [ghlLocationId, setGhlLocationId] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
   const [typeFilter, setTypeFilter] = useState("All");
   const [statusFilter, setStatusFilter] = useState("All");
@@ -322,6 +337,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
   const [dragOverPipelineStageId, setDragOverPipelineStageId] = useState("");
   const [updatingCaseStageId, setUpdatingCaseStageId] = useState<string | null>(null);
   const updatingCaseStageRef = useRef<string | null>(null);
+  const loadingContactsRef = useRef(false);
 
   useEffect(() => {
     const loadCasePreferences = async () => {
@@ -446,15 +462,15 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
       try {
         const context = await getAppLocationContext();
         const appLocationId = context.location?.id || "";
-        const ghlLocationId = context.location?.ghlLocationId || "";
+        const nextGhlLocationId = context.location?.ghlLocationId || "";
         setLocationId(appLocationId);
+        setGhlLocationId(nextGhlLocationId);
 
-        const [caseRows, contactResponse, assignableUsers, pipelineRows, pipelineConfigRows] = await Promise.all([
+        const [caseRows, assignableUsers, pipelineRows, pipelineConfigRows] = await Promise.all([
           listCases({ locationId: appLocationId }),
-          ghlLocationId ? getContacts(ghlLocationId) : Promise.resolve({ contacts: [] }),
           getAssignableUsers(),
-          ghlLocationId
-            ? getPipelines(ghlLocationId).catch((error) => {
+          nextGhlLocationId
+            ? getPipelines(nextGhlLocationId).catch((error) => {
                 toast({
                   title: "Pipelines Not Loaded",
                   description: getUserFriendlyErrorMessage(error, `Could not load GHL pipelines for the ${sectionCopy.pinNoun} Kanban.`),
@@ -476,7 +492,6 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
         ]);
 
         setCases(caseRows);
-        setContacts(getArrayFromResponse(contactResponse, "contacts"));
         setUsers(assignableUsers);
         setPipelines(pipelineRows);
         setPipelineConfigs(pipelineConfigRows);
@@ -494,6 +509,31 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
     initialize();
   }, [sectionCopy.countLabel, sectionCopy.pinNoun, toast]);
 
+  const loadMatterContacts = useCallback(async () => {
+    if (!ghlLocationId || contacts.length > 0 || loadingContactsRef.current) return;
+    loadingContactsRef.current = true;
+    setIsLoadingContacts(true);
+    try {
+      const cachedContacts = getArrayFromResponse(getCachedContactsIfAvailable(ghlLocationId), "contacts");
+      if (cachedContacts.length > 0) {
+        setContacts(cachedContacts);
+        return;
+      }
+
+      const contactResponse = await getContacts(ghlLocationId);
+      setContacts(getArrayFromResponse(contactResponse, "contacts"));
+    } catch (error) {
+      toast({
+        title: "Contacts Not Loaded",
+        description: getUserFriendlyErrorMessage(error, "Could not load contacts for the matter form."),
+        variant: "destructive",
+      });
+    } finally {
+      loadingContactsRef.current = false;
+      setIsLoadingContacts(false);
+    }
+  }, [contacts.length, ghlLocationId, toast]);
+
   const pipelineConfigMap = useMemo(
     () => new Map(pipelineConfigs.map((config) => [config.ghl_pipeline_id, config])),
     [pipelineConfigs],
@@ -503,7 +543,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
       sortPipelinesByDisplayOrder(
         pipelines.filter((pipeline) => {
           const config = pipelineConfigMap.get(pipeline.id);
-          return config?.is_active !== false && config?.classification !== "prospecting";
+          return config?.is_active !== false && config?.classification !== "prospecting" && !pipelineConfigMatchesLeadAccountType(config);
         }),
         pipelineConfigMap,
       ),
@@ -513,7 +553,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
     () =>
       new Set(
         pipelineConfigs
-          .filter((config) => config.classification === "prospecting" || config.is_active === false)
+          .filter((config) => config.classification === "prospecting" || pipelineConfigMatchesLeadAccountType(config) || config.is_active === false)
           .map((config) => config.ghl_pipeline_id),
       ),
     [pipelineConfigs],
@@ -522,7 +562,9 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
     () =>
       new Set(
         pipelineConfigs
-          .filter((config) => config.classification === "prospecting" && config.is_active !== false)
+          .filter((config) =>
+            config.is_active !== false && (config.classification === "prospecting" || pipelineConfigMatchesLeadAccountType(config))
+          )
           .map((config) => config.ghl_pipeline_id),
       ),
     [pipelineConfigs],
@@ -792,6 +834,8 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
         open={isCreateOpen}
         onOpenChange={setIsCreateOpen}
         contacts={contacts}
+        isLoadingContacts={isLoadingContacts}
+        onLoadContacts={loadMatterContacts}
         users={users}
         pipelines={sectionPipelines}
         locationId={locationId}
@@ -1911,6 +1955,8 @@ function CreateCaseSheet({
   open,
   onOpenChange,
   contacts,
+  isLoadingContacts,
+  onLoadContacts,
   users,
   pipelines,
   locationId,
@@ -1921,6 +1967,8 @@ function CreateCaseSheet({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   contacts: any[];
+  isLoadingContacts: boolean;
+  onLoadContacts: () => Promise<void>;
   users: AssignableUser[];
   pipelines: GhlPipeline[];
   locationId: string;
@@ -1947,6 +1995,12 @@ function CreateCaseSheet({
   const selectedContact = contacts.find((contact) => contact.id === form.contactId);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+
+  useEffect(() => {
+    if (open && contacts.length === 0) {
+      void onLoadContacts();
+    }
+  }, [contacts.length, onLoadContacts, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -2088,7 +2142,11 @@ function CreateCaseSheet({
                 </span>
               </SelectTrigger>
               <SelectContent className="max-h-72 overflow-y-auto">
-                {contacts.length > 0 ? (
+                {isLoadingContacts ? (
+                  <SelectItem value="loading-contacts" disabled>
+                    Loading contacts...
+                  </SelectItem>
+                ) : contacts.length > 0 ? (
                   contacts.map((contact) => (
                     <SelectItem key={contact.id} value={contact.id}>
                       {formatContactName(contact)}

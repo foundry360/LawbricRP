@@ -1,4 +1,4 @@
-import { type DragEvent, type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
+import { type DragEvent, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   ArrowUpDown,
@@ -51,7 +51,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import { getAppLocationContext, getContacts } from "@/lib/api";
+import { getAppLocationContext, getCachedContactsIfAvailable, getContacts } from "@/lib/api";
 import { type CaseRecord, listCases } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
@@ -239,9 +239,11 @@ export function TasksPage() {
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
+  const [isLoadingContacts, setIsLoadingContacts] = useState(false);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [currentUserId, setCurrentUserId] = useState("");
   const [locationId, setLocationId] = useState("");
+  const [ghlLocationId, setGhlLocationId] = useState("");
   const [loading, setLoading] = useState(true);
   const [isTaskSheetOpen, setIsTaskSheetOpen] = useState(false);
   const [editingTask, setEditingTask] = useState<TaskRecord | null>(null);
@@ -266,27 +268,27 @@ export function TasksPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [sortColumn, setSortColumn] = useState<keyof TaskRecord>("due_at");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const loadingContactsRef = useRef(false);
 
   const loadData = async () => {
     setLoading(true);
     try {
       const context = await getAppLocationContext();
       const appLocationId = context.location?.id || "";
-      const ghlLocationId = context.location?.ghlLocationId || "";
+      const nextGhlLocationId = context.location?.ghlLocationId || "";
       setLocationId(appLocationId);
+      setGhlLocationId(nextGhlLocationId);
 
-      const [{ data: authData }, taskRows, caseRows, contactResponse, assignableUsers] = await Promise.all([
+      const [{ data: authData }, taskRows, caseRows, assignableUsers] = await Promise.all([
         import("@/lib/supabase").then(({ supabase }) => supabase.auth.getUser()),
         listTasks({ locationId: appLocationId }),
         listCases({ locationId: appLocationId }),
-        ghlLocationId ? getContacts(ghlLocationId) : Promise.resolve({ contacts: [] }),
         getAssignableUsers(),
       ]);
 
       setCurrentUserId(authData.user?.id || "");
       setTasks(taskRows);
       setCases(caseRows);
-      setContacts(getArrayFromResponse(contactResponse, "contacts"));
       setUsers(assignableUsers);
     } catch (error) {
       toast({
@@ -327,6 +329,31 @@ export function TasksPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  const loadTaskContacts = useCallback(async () => {
+    if (!ghlLocationId || contacts.length > 0 || loadingContactsRef.current) return;
+    loadingContactsRef.current = true;
+    setIsLoadingContacts(true);
+    try {
+      const cachedContacts = getArrayFromResponse(getCachedContactsIfAvailable(ghlLocationId), "contacts");
+      if (cachedContacts.length > 0) {
+        setContacts(cachedContacts);
+        return;
+      }
+
+      const contactResponse = await getContacts(ghlLocationId);
+      setContacts(getArrayFromResponse(contactResponse, "contacts"));
+    } catch (error) {
+      toast({
+        title: "Contacts Not Loaded",
+        description: getUserFriendlyErrorMessage(error, "Could not load contacts for the task form."),
+        variant: "destructive",
+      });
+    } finally {
+      loadingContactsRef.current = false;
+      setIsLoadingContacts(false);
+    }
+  }, [contacts.length, ghlLocationId, toast]);
 
   useEffect(() => {
     window.localStorage.setItem(TASK_VIEW_MODE_STORAGE_KEY, viewMode);
@@ -557,6 +584,8 @@ export function TasksPage() {
         task={editingTask}
         cases={cases}
         contacts={contacts}
+        isLoadingContacts={isLoadingContacts}
+        onLoadContacts={loadTaskContacts}
         users={users}
         locationId={locationId}
         onSaved={handleTaskSaved}
@@ -1609,6 +1638,8 @@ function TaskSheet({
   task,
   cases,
   contacts,
+  isLoadingContacts,
+  onLoadContacts,
   users,
   locationId,
   onSaved,
@@ -1618,6 +1649,8 @@ function TaskSheet({
   task: TaskRecord | null;
   cases: CaseRecord[];
   contacts: any[];
+  isLoadingContacts: boolean;
+  onLoadContacts: () => Promise<void>;
   users: AssignableUser[];
   locationId: string;
   onSaved: (task: TaskRecord) => void;
@@ -1660,6 +1693,12 @@ function TaskSheet({
   const selectedCase = cases.find((caseRecord) => caseRecord.id === form.caseId);
   const selectedContact = contacts.find((contact) => contact.id === form.contactId);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+
+  useEffect(() => {
+    if (open && form.relatedType === "contact" && contacts.length === 0) {
+      void onLoadContacts();
+    }
+  }, [contacts.length, form.relatedType, onLoadContacts, open]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1768,12 +1807,15 @@ function TaskSheet({
               <Select
                 value={form.relatedType}
                 onValueChange={(relatedType) =>
-                  setForm({
+                  {
+                    if (relatedType === "contact") void onLoadContacts();
+                    setForm({
                     ...form,
                     relatedType,
                     caseId: relatedType === "case" ? form.caseId : "none",
                     contactId: relatedType === "contact" ? form.contactId : "none",
-                  })
+                  });
+                  }
                 }
               >
                 <SelectTrigger>
@@ -1838,11 +1880,21 @@ function TaskSheet({
                 </SelectTrigger>
                 <SelectContent className="max-h-72 overflow-y-auto">
                   <SelectItem value="none">Select contact</SelectItem>
-                  {contacts.map((contact) => (
-                    <SelectItem key={contact.id} value={contact.id}>
-                      {formatContactName(contact)}
+                  {isLoadingContacts ? (
+                    <SelectItem value="loading-contacts" disabled>
+                      Loading contacts...
                     </SelectItem>
-                  ))}
+                  ) : contacts.length > 0 ? (
+                    contacts.map((contact) => (
+                      <SelectItem key={contact.id} value={contact.id}>
+                        {formatContactName(contact)}
+                      </SelectItem>
+                    ))
+                  ) : (
+                    <SelectItem value="no-contacts" disabled>
+                      No contacts available
+                    </SelectItem>
+                  )}
                 </SelectContent>
               </Select>
             </div>

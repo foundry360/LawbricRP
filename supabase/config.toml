@@ -49,52 +49,46 @@ verify_enabled = false
 verify_jwt = false
 
 [functions.admin-users]
-verify_jwt = false
+verify_jwt = true
 
 [functions.assignable-users]
-verify_jwt = false
+verify_jwt = true
 
 [functions.admin-settings]
-verify_jwt = false
+verify_jwt = true
 
 [functions.app-location-context]
-verify_jwt = false
+verify_jwt = true
 
 [functions.create_case]
-verify_jwt = false
+verify_jwt = true
 
 [functions.update_case]
-verify_jwt = false
+verify_jwt = true
 
 [functions.delete_case]
-verify_jwt = false
+verify_jwt = true
 
 [functions.get_case]
-verify_jwt = false
-
-[functions.list_cases]
-verify_jwt = false
+verify_jwt = true
 
 [functions.add_case_party]
-verify_jwt = false
+verify_jwt = true
 
 [functions.create_task]
-verify_jwt = false
-
-[functions.list_tasks]
-verify_jwt = false
+verify_jwt = true
 
 [functions.update_task]
-verify_jwt = false
+verify_jwt = true
 
 [functions.delete_task]
-verify_jwt = false
+verify_jwt = true
 
 [functions.create_event]
-verify_jwt = false
+verify_jwt = true
 
 [functions.upload_document]
-verify_jwt = false
+verify_jwt = true
 
 [functions.create_note]
-verify_jwt = false
+verify_jwt = true

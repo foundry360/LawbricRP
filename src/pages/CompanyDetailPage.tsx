@@ -24,6 +24,8 @@ import {
   createLocationTag,
   getAppLocationContext,
   getBusiness,
+  getCachedBusinessCustomFieldsIfAvailable,
+  getCachedCustomFieldsIfAvailable,
   getBusinessCustomFields,
   getBusinessObjectRecord,
   getContact,
@@ -770,6 +772,7 @@ export function CompanyDetailPage() {
   const [savingPrimaryContactId, setSavingPrimaryContactId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(!initialCompany);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const editingContactDetailRequestRef = useRef("");
   const [contactForm, setContactForm] = useState({
     name: "",
     title: "",
@@ -821,18 +824,63 @@ export function CompanyDetailPage() {
   };
 
   const openCompanyContactEdit = (contact: CompanyContact) => {
+    editingContactDetailRequestRef.current = contact.id;
     setEditingCompanyContact(contact);
     setContactEditForm({
       name: contact.name === "Unknown" ? "" : contact.name,
       title: contact.title || "",
       email: contact.email === "No email set" ? "" : contact.email,
     });
+
+    void Promise.all([
+      getContact(contact.id).catch((error) => {
+        console.error("Failed to load linked contact detail", error);
+        return null;
+      }),
+      loadContactCustomFields(locationId).catch((error) => {
+        console.error("Failed to load contact custom fields", error);
+        return customFields;
+      }),
+    ]).then(([detailResponse, availableCustomFields]) => {
+      if (editingContactDetailRequestRef.current !== contact.id || !detailResponse) return;
+
+      const detail: any = (detailResponse as any)?.contact ||
+        (detailResponse as any)?.data?.contact ||
+        (detailResponse as any)?.data ||
+        detailResponse;
+      const detailedContact = normalizeCompanyContact({ ...contact, ...detail, id: detail.id || contact.id }, availableCustomFields);
+
+      setEditingCompanyContact(detailedContact);
+      setContactEditForm({
+        name: detailedContact.name === "Unknown" ? "" : detailedContact.name,
+        title: detailedContact.title || "",
+        email: detailedContact.email === "No email set" ? "" : detailedContact.email,
+      });
+      setCompanyContacts((current) =>
+        current.map((candidate) => (candidate.id === detailedContact.id ? detailedContact : candidate)),
+      );
+    });
   };
 
   const closeCompanyContactEdit = () => {
+    editingContactDetailRequestRef.current = "";
     setEditingCompanyContact(null);
     setContactEditForm({ name: "", title: "", email: "" });
   };
+
+  const getCachedContactCustomFields = useCallback((ghlLocationId = locationId) => {
+    if (!ghlLocationId) return customFields;
+    if (customFields.length > 0) return customFields;
+
+    const cachedFieldsResponse = getCachedCustomFieldsIfAvailable(ghlLocationId);
+    const cachedFields = getArrayFromResponse(cachedFieldsResponse, "customFields");
+    if (cachedFields.length > 0) {
+      setCustomFields(cachedFields);
+      return cachedFields;
+    }
+
+    return [];
+  }, [customFields, locationId]);
 
   const loadContactCustomFields = async (ghlLocationId = locationId, forceRefresh = false) => {
     if (!ghlLocationId) return customFields;
@@ -847,6 +895,21 @@ export function CompanyDetailPage() {
     return nextCustomFields;
   };
 
+  const getCachedBusinessCustomFields = useCallback((ghlLocationId = locationId) => {
+    if (!ghlLocationId) return businessCustomFields;
+    if (businessCustomFields.length > 0) return businessCustomFields;
+
+    const cachedFieldsResponse = getCachedBusinessCustomFieldsIfAvailable(ghlLocationId);
+    const nextCustomFields = getBusinessCustomFieldsCollection(cachedFieldsResponse);
+    if (nextCustomFields.length > 0) {
+      setBusinessCustomFields(nextCustomFields);
+      setIndustryOptions(getBusinessIndustryOptions(nextCustomFields));
+      return nextCustomFields;
+    }
+
+    return [];
+  }, [businessCustomFields, locationId]);
+
   const loadBusinessCustomFields = async (ghlLocationId = locationId) => {
     if (!ghlLocationId) return businessCustomFields;
     if (businessCustomFields.length > 0) return businessCustomFields;
@@ -860,6 +923,29 @@ export function CompanyDetailPage() {
     setIndustryOptions(getBusinessIndustryOptions(nextCustomFields));
     return nextCustomFields;
   };
+
+  const loadSystemUsers = useCallback(async () => {
+    if (systemUsers.length > 0) return systemUsers;
+
+    const assignableUsers = await getAssignableUsers().catch((error) => {
+      console.error("Failed to fetch assigned user details", error);
+      return [];
+    });
+    setSystemUsers(assignableUsers);
+    return assignableUsers;
+  }, [systemUsers]);
+
+  useEffect(() => {
+    if (isEditCompanyOpen) {
+      void loadBusinessCustomFields();
+    }
+  }, [isEditCompanyOpen]);
+
+  useEffect(() => {
+    if (isCreateTaskOpen) {
+      void loadSystemUsers();
+    }
+  }, [isCreateTaskOpen, loadSystemUsers]);
 
   const handleTaskCreated = (task: TaskRecord) => {
     setCompanyTasks((current) => [task, ...current.filter((candidate) => candidate.id !== task.id)]);
@@ -1198,7 +1284,7 @@ export function CompanyDetailPage() {
         const context = await getAppLocationContext();
         const ghlLocationId = context.location?.ghlLocationId || "";
         setLocationId(ghlLocationId);
-        const nextBusinessCustomFields = await loadBusinessCustomFields(ghlLocationId);
+        const cachedBusinessCustomFields = getCachedBusinessCustomFields(ghlLocationId);
         if (ghlLocationId) {
           const fetchedTags = await getLocationTags(ghlLocationId).catch((error) => {
             console.error("Failed to load location tags", error);
@@ -1227,7 +1313,10 @@ export function CompanyDetailPage() {
             return null;
           });
           const businessProperties = getBusinessPropertiesFromRecord(businessRecordResponse);
-          setCompanyIndustry(getBusinessIndustryLabel(businessProperties.industry, nextBusinessCustomFields));
+          setCompanyIndustry(
+            getBusinessIndustryLabel(businessProperties.industry, cachedBusinessCustomFields) ||
+              String(businessProperties.industry || ""),
+          );
         }
 
         const contactsResponse = await getContactsByBusinessId(ghlLocationId, companyId).catch((error) => {
@@ -1235,26 +1324,12 @@ export function CompanyDetailPage() {
           return { contacts: [] };
         });
         const linkedContacts = getArrayFromResponse(contactsResponse, "contacts");
-        const contactCustomFields = await loadContactCustomFields(ghlLocationId, true);
-        const hydratedContacts = await Promise.all(
-          linkedContacts.map(async (contact: any) => {
-            const contactId = contact.id || contact._id;
-            if (!contactId) return contact;
-
-            const detailResponse: any = await getContact(String(contactId)).catch((error) => {
-              console.error("Failed to load linked contact detail", error);
-              return null;
-            });
-            const detail = detailResponse?.contact || detailResponse?.data?.contact || detailResponse?.data || detailResponse;
-            return detail ? { ...contact, ...detail, id: detail.id || contactId } : contact;
-          }),
-        );
-
-        setCompanyContacts(hydratedContacts.map((contact: any) => normalizeCompanyContact(contact, contactCustomFields)));
+        const contactCustomFields = getCachedContactCustomFields(ghlLocationId);
+        setCompanyContacts(linkedContacts.map((contact: any) => normalizeCompanyContact(contact, contactCustomFields)));
 
         if (locationRecordId) {
           const linkedContactIds = new Set(
-            hydratedContacts
+            linkedContacts
               .map((contact: any) => String(contact.id || contact._id || ""))
               .filter(Boolean),
           );
@@ -1270,11 +1345,6 @@ export function CompanyDetailPage() {
             }),
           );
 
-          const assignableUsers = await getAssignableUsers().catch((error) => {
-            console.error("Failed to fetch assigned user details", error);
-            return [];
-          });
-          setSystemUsers(assignableUsers);
           const { data, error } = await supabase
             .from("contact_assignments")
             .select("assigned_user_id")
@@ -1283,6 +1353,7 @@ export function CompanyDetailPage() {
             .maybeSingle();
 
           if (!error && data?.assigned_user_id) {
+            const assignableUsers = await loadSystemUsers();
             const user = assignableUsers.find((candidate) => getUserId(candidate) === data.assigned_user_id);
             setAssignedAttorneyId(user ? getUserId(user) : "");
             setAssignedAttorney(user ? getUserName(user) : "Unassigned");

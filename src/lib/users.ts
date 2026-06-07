@@ -27,7 +27,15 @@ export function getUserName(user: any) {
   return name ? formatPersonName(name) : user?.email || getUserId(user);
 }
 
-export async function getAssignableUsers() {
+let cachedAssignableUsers: AssignableUser[] | null = null;
+let inFlightAssignableUsers: Promise<AssignableUser[]> | null = null;
+
+export function clearCachedAssignableUsers() {
+  cachedAssignableUsers = null;
+  inFlightAssignableUsers = null;
+}
+
+async function fetchAssignableUsers() {
   const { data: functionData, error: functionError } = await supabase.functions.invoke("assignable-users", {
     body: {},
   });
@@ -55,4 +63,21 @@ export async function getAssignableUsers() {
     })) as AssignableUser[];
 
   return fallbackUsers;
+}
+
+export async function getAssignableUsers(options: { forceRefresh?: boolean } = {}) {
+  if (options.forceRefresh) clearCachedAssignableUsers();
+  if (cachedAssignableUsers) return cachedAssignableUsers;
+  if (inFlightAssignableUsers) return inFlightAssignableUsers;
+
+  inFlightAssignableUsers = fetchAssignableUsers()
+    .then((users) => {
+      cachedAssignableUsers = users;
+      return users;
+    })
+    .finally(() => {
+      inFlightAssignableUsers = null;
+    });
+
+  return inFlightAssignableUsers;
 }
