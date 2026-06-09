@@ -1,5 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { BrowserRouter, Outlet, Route, Routes } from "react-router-dom";
 import { CalendarPage } from "@/pages/CalendarPage";
 import { CaseDetailPage } from "@/pages/CaseDetailPage";
 import { CasesPage } from "@/pages/CasesPage";
@@ -20,6 +20,21 @@ import UserManagement from "@/pages/UserManagement";
 import { UserProfilePage } from "@/pages/UserProfilePage";
 import { hasPermission } from "@/lib/api";
 
+const routePermissionCache = new Map<string, boolean>();
+
+function getRoutePermissionCacheKey(permissionKeys: string[]) {
+  return [...permissionKeys].sort().join("|");
+}
+
+function AccessDenied() {
+  return (
+    <div className="flex h-full min-h-[50vh] flex-col items-center justify-center">
+      <h2 className="text-2xl font-bold">Access Denied</h2>
+      <p className="mt-2 text-muted-foreground">You do not have permission to view this page.</p>
+    </div>
+  );
+}
+
 function PermissionGate({
   permission,
   permissions,
@@ -29,169 +44,57 @@ function PermissionGate({
   permissions?: string[];
   children: ReactNode;
 }) {
-  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const permissionKeys = useMemo(() => permissions ?? (permission ? [permission] : []), [permission, permissions]);
+  const cacheKey = useMemo(() => getRoutePermissionCacheKey(permissionKeys), [permissionKeys]);
+  const [allowed, setAllowed] = useState<boolean | null>(() => (
+    routePermissionCache.has(cacheKey) ? routePermissionCache.get(cacheKey)! : null
+  ));
 
   useEffect(() => {
     let cancelled = false;
-    const permissionKeys = permissions ?? (permission ? [permission] : []);
+    const cachedAllowed = routePermissionCache.get(cacheKey);
+    if (cachedAllowed !== undefined) {
+      setAllowed(cachedAllowed);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     Promise.all(permissionKeys.map((permissionKey) => hasPermission(permissionKey)))
       .then((results) => {
-        if (!cancelled) setAllowed(results.some(Boolean));
+        const nextAllowed = results.some(Boolean);
+        routePermissionCache.set(cacheKey, nextAllowed);
+        if (!cancelled) setAllowed(nextAllowed);
       })
       .catch(() => {
+        routePermissionCache.set(cacheKey, false);
         if (!cancelled) setAllowed(false);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [permission, permissions]);
+  }, [cacheKey, permissionKeys]);
 
-  if (allowed === null) return <PlaceholderPage title="Loading" />;
-  if (!allowed) return <PlaceholderPage title="Access Denied" />;
+  if (allowed === null) return <div className="min-h-[50vh]" />;
+  if (!allowed) return <AccessDenied />;
   return <>{children}</>;
 }
 
-function AppShell({ title }: { title: string }) {
+function AuthenticatedLayout() {
   return (
     <RequireAuth>
       <Layout>
-        <PlaceholderPage title={title} />
+        <Outlet />
       </Layout>
     </RequireAuth>
   );
 }
 
-function DashboardShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permission="dashboards.view">
-          <PlaceholderPage title="Dashboard" />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function UsersShell() {
-  return (
-    <RequireAuth>
-      <UserManagement />
-    </RequireAuth>
-  );
-}
-
-function UserProfileShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <UserProfilePage />
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function ContactDetailShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permissions={["contacts.view_all", "contacts.view_location", "contacts.view_assigned"]}>
-          <ContactDetailPage />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function CompanyDetailShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permissions={["contacts.view_all", "contacts.view_location"]}>
-          <CompanyDetailPage />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function CasesShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permissions={["matters.view_all", "matters.view_assigned", "matters.view_own"]}>
-          <CasesPage />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function LeadsShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permissions={["leads.view_all", "leads.view_assigned"]}>
-          <LeadsPage />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function CaseDetailShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PermissionGate permissions={["matters.view_all", "matters.view_assigned", "matters.view_own"]}>
-          <CaseDetailPage />
-        </PermissionGate>
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function CalendarShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <CalendarPage />
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function TasksShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <TasksPage />
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function PipelinesShell() {
-  return (
-    <RequireAuth>
-      <Layout>
-        <PipelinesPage />
-      </Layout>
-    </RequireAuth>
-  );
-}
-
-function IndexShell() {
-  return (
-    <RequireAuth>
-      <PermissionGate permissions={["contacts.view_all", "contacts.view_location", "contacts.view_assigned"]}>
-        <Index />
-      </PermissionGate>
-    </RequireAuth>
-  );
-}
+const CONTACT_VIEW_PERMISSIONS = ["contacts.view_all", "contacts.view_location", "contacts.view_assigned"];
+const COMPANY_VIEW_PERMISSIONS = ["contacts.view_all", "contacts.view_location"];
+const MATTER_VIEW_PERMISSIONS = ["matters.view_all", "matters.view_assigned", "matters.view_own"];
+const LEAD_VIEW_PERMISSIONS = ["leads.view_all", "leads.view_assigned"];
 
 export function App() {
   return (
@@ -199,22 +102,73 @@ export function App() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/reset-password" element={<ResetPassword />} />
-        <Route path="/" element={<IndexShell />} />
-        <Route path="/contact/:contactId" element={<ContactDetailShell />} />
-        <Route path="/company/:companyId" element={<CompanyDetailShell />} />
-        <Route path="/dashboard" element={<DashboardShell />} />
-        <Route path="/cases" element={<CasesShell />} />
-        <Route path="/case/:caseId" element={<CaseDetailShell />} />
-        <Route path="/calendar" element={<CalendarShell />} />
-        <Route path="/tasks" element={<TasksShell />} />
-        <Route path="/users" element={<UsersShell />} />
-        <Route path="/users/:userId" element={<UserProfileShell />} />
-        <Route path="/leads" element={<LeadsShell />} />
-        <Route path="/tools/data" element={<AppShell title="Data" />} />
-        <Route path="/tools/pipelines" element={<PipelinesShell />} />
-        <Route path="/billing" element={<AppShell title="Billing" />} />
-        <Route path="/documents" element={<AppShell title="Documents" />} />
-        <Route path="/payments" element={<AppShell title="Payments" />} />
+        <Route element={<AuthenticatedLayout />}>
+          <Route
+            path="/"
+            element={(
+              <PermissionGate permissions={CONTACT_VIEW_PERMISSIONS}>
+                <Index />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/contact/:contactId"
+            element={(
+              <PermissionGate permissions={CONTACT_VIEW_PERMISSIONS}>
+                <ContactDetailPage />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/company/:companyId"
+            element={(
+              <PermissionGate permissions={COMPANY_VIEW_PERMISSIONS}>
+                <CompanyDetailPage />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/dashboard"
+            element={(
+              <PermissionGate permission="dashboards.view">
+                <PlaceholderPage title="Dashboard" />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/cases"
+            element={(
+              <PermissionGate permissions={MATTER_VIEW_PERMISSIONS}>
+                <CasesPage />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/case/:caseId"
+            element={(
+              <PermissionGate permissions={MATTER_VIEW_PERMISSIONS}>
+                <CaseDetailPage />
+              </PermissionGate>
+            )}
+          />
+          <Route path="/calendar" element={<CalendarPage />} />
+          <Route path="/tasks" element={<TasksPage />} />
+          <Route path="/users" element={<UserManagement />} />
+          <Route path="/users/:userId" element={<UserProfilePage />} />
+          <Route
+            path="/leads"
+            element={(
+              <PermissionGate permissions={LEAD_VIEW_PERMISSIONS}>
+                <LeadsPage />
+              </PermissionGate>
+            )}
+          />
+          <Route path="/tools/data" element={<PlaceholderPage title="Data" />} />
+          <Route path="/tools/pipelines" element={<PipelinesPage />} />
+          <Route path="/billing" element={<PlaceholderPage title="Billing" />} />
+          <Route path="/documents" element={<PlaceholderPage title="Documents" />} />
+          <Route path="/payments" element={<PlaceholderPage title="Payments" />} />
+        </Route>
         <Route path="*" element={<NotFound />} />
       </Routes>
       <Toaster />

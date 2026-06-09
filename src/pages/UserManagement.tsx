@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
-import { Layout } from "@/components/Layout";
 import { UserDirectory } from "@/components/UserDirectory";
 import { hasPermission } from "@/lib/api";
 
@@ -19,30 +18,24 @@ export default function UserManagement() {
 
   if (canViewUsers === null) {
     return (
-      <Layout>
-        <div className="flex h-screen items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-        </div>
-      </Layout>
+      <div className="flex h-screen items-center justify-center">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+      </div>
     );
   }
 
   if (!canViewUsers) {
     return (
-      <Layout>
-        <div className="flex h-full min-h-[50vh] flex-col items-center justify-center">
-          <h2 className="text-2xl font-bold">Access Denied</h2>
-          <p className="mt-2 text-muted-foreground">You do not have permission to view users.</p>
-        </div>
-      </Layout>
+      <div className="flex h-full min-h-[50vh] flex-col items-center justify-center">
+        <h2 className="text-2xl font-bold">Access Denied</h2>
+        <p className="mt-2 text-muted-foreground">You do not have permission to view users.</p>
+      </div>
     );
   }
 
   return (
-    <Layout>
-      <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6">
-        <UserDirectory />
-      </div>
-    </Layout>
+    <div className="mx-auto w-full max-w-[1600px] px-4 py-8 sm:px-6">
+      <UserDirectory />
+    </div>
   );
 }
