@@ -8,6 +8,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  requireContextPermission,
 } from "../_shared/case-utils.ts";
 
 serve(async (req) => {
@@ -18,6 +19,7 @@ serve(async (req) => {
     const body = await readJsonBody(req);
     const context = await getRequestContext(req, body.locationId);
     if (!body.caseId) return jsonResponse({ error: "Case ID is required" }, 400);
+    await requireContextPermission(context, "matters.delete", "You do not have permission to delete matters.");
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
     const { data: caseTasks, error: tasksError } = await context.supabase

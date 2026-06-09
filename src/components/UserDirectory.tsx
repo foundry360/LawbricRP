@@ -3,6 +3,7 @@ import { Eye, Loader2, Mail, MoreVertical, Pencil, Phone, Search, Trash2 } from 
 import { AddUserSheet } from "@/components/AddUserSheet";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { EditUserSheet } from "@/components/EditUserSheet";
+import { UserLink } from "@/components/UserLink";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -361,15 +362,15 @@ export function UserDirectory() {
                 <tr key={user.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
                   <td className="px-4 py-2">
                     <div className="flex items-center space-x-3">
-                      <Avatar className="h-8 w-8">
+                      <Avatar className="h-10 w-10">
                         {(user.avatar_url || user.profilePhoto) && (
                           <AvatarImage src={user.avatar_url || user.profilePhoto} alt={`${getUserInitials(user)} avatar`} />
                         )}
-                        <AvatarFallback className="bg-primary/10 text-xs text-primary">
+                        <AvatarFallback className="bg-primary/10 text-sm text-primary">
                           {getUserInitials(user)}
                         </AvatarFallback>
                       </Avatar>
-                      <div className="text-[#2384CA] hover:underline">{getDisplayName(user)}</div>
+                      <UserLink userId={user.id} name={getDisplayName(user)} stopPropagation />
                     </div>
                   </td>
                   <td className="px-4 py-2">

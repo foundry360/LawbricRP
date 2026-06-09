@@ -89,3 +89,9 @@ verify_jwt = true
 
 [functions.create_note]
 verify_jwt = true
+
+[functions.update_note]
+verify_jwt = true
+
+[functions.delete_note]
+verify_jwt = true

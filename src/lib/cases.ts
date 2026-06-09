@@ -1,4 +1,4 @@
-import { getAppLocationContext } from "@/lib/api";
+import { getAppLocationContext, requirePermission } from "@/lib/api";
 import { supabase } from "@/lib/supabase";
 
 export type CaseRecord = {
@@ -110,16 +110,25 @@ export async function getCase(caseId: string) {
 }
 
 export async function createCase(payload: Record<string, unknown>) {
+  await requirePermission("matters.create", "You do not have permission to create matters.");
+  if (payload.assignedUserId !== undefined || payload.sourceAttorneyUserId !== undefined || payload.assignedGhlUserId !== undefined) {
+    await requirePermission("matters.assign", "You do not have permission to assign matters.");
+  }
   const data = await invokeCaseFunction<{ case: CaseRecord }>("create_case", payload);
   return data.case;
 }
 
 export async function updateCase(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to edit matters.");
+  if (payload.assignedUserId !== undefined || payload.sourceAttorneyUserId !== undefined || payload.assignedGhlUserId !== undefined) {
+    await requirePermission("matters.assign", "You do not have permission to assign matters.");
+  }
   const data = await invokeCaseFunction<{ case: CaseRecord }>("update_case", payload);
   return data.case;
 }
 
 export async function deleteCase(payload: Record<string, unknown>) {
+  await requirePermission("matters.delete", "You do not have permission to delete matters.");
   return invokeCaseFunction<{ ok: boolean; caseId: string }>("delete_case", payload);
 }
 
@@ -139,8 +148,20 @@ export async function createCaseEvent(payload: Record<string, unknown>) {
 }
 
 export async function createCaseNote(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to add matter notes.");
   const data = await invokeCaseFunction<{ note: any }>("create_note", payload);
   return data.note;
+}
+
+export async function updateCaseNote(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to edit matter notes.");
+  const data = await invokeCaseFunction<{ note: any }>("update_note", payload);
+  return data.note;
+}
+
+export async function deleteCaseNote(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to delete matter notes.");
+  return invokeCaseFunction<{ ok: boolean; noteId: string }>("delete_note", payload);
 }
 
 export async function uploadCaseDocument(payload: Record<string, unknown>) {

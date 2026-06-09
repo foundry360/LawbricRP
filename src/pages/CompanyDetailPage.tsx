@@ -31,6 +31,7 @@ import {
   getContact,
   getContactsByBusinessId,
   getCustomFields,
+  hasPermission,
   getLocationTags,
   type GhlBusiness,
   type GhlCustomField,
@@ -81,7 +82,7 @@ function HeaderIconTooltip({ label, children }: { label: string; children: React
   return (
     <Tooltip>
       <TooltipTrigger>{children}</TooltipTrigger>
-      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white shadow-md">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -757,6 +758,10 @@ export function CompanyDetailPage() {
   const [companyTasks, setCompanyTasks] = useState<TaskRecord[]>([]);
   const [companyMatters, setCompanyMatters] = useState<CaseRecord[]>([]);
   const [matterAction, setMatterAction] = useState<MatterActionState>(null);
+  const [canDeleteMatters, setCanDeleteMatters] = useState(false);
+  const [canCreateMatters, setCanCreateMatters] = useState(false);
+  const [canEditMatters, setCanEditMatters] = useState(false);
+  const [canAssignMatters, setCanAssignMatters] = useState(false);
   const [systemUsers, setSystemUsers] = useState<any[]>([]);
   const [customFields, setCustomFields] = useState<any[]>([]);
   const [tagOptions, setTagOptions] = useState<GhlTag[]>([]);
@@ -775,6 +780,28 @@ export function CompanyDetailPage() {
   const [isLoading, setIsLoading] = useState(!initialCompany);
   const [tasksLoading, setTasksLoading] = useState(false);
   const editingContactDetailRequestRef = useRef("");
+
+  useEffect(() => {
+    Promise.all([
+      hasPermission("matters.delete"),
+      hasPermission("matters.create"),
+      hasPermission("matters.edit"),
+      hasPermission("matters.assign"),
+    ])
+      .then(([canDelete, canCreate, canEdit, canAssign]) => {
+        setCanDeleteMatters(canDelete);
+        setCanCreateMatters(canCreate);
+        setCanEditMatters(canEdit);
+        setCanAssignMatters(canAssign);
+      })
+      .catch((error) => {
+        console.error("Failed to load matter permissions", error);
+        setCanDeleteMatters(false);
+        setCanCreateMatters(false);
+        setCanEditMatters(false);
+        setCanAssignMatters(false);
+      });
+  }, []);
   const [contactForm, setContactForm] = useState({
     name: "",
     title: "",
@@ -1437,6 +1464,9 @@ export function CompanyDetailPage() {
         matter={matterAction?.matter || null}
         locationId={appLocationId}
         users={systemUsers}
+        canEditMatter={canEditMatters}
+        canDeleteMatter={canDeleteMatters}
+        canAssignMatter={canAssignMatters}
         onSaved={(updatedMatter) => {
           setCompanyMatters((current) =>
             current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
@@ -1461,6 +1491,7 @@ export function CompanyDetailPage() {
             : null
         }
         users={systemUsers}
+        canAssignMatter={canAssignMatters}
         relatedCompany={{
           id: companyId || company.id,
           name: company.name || "Company",
@@ -1668,17 +1699,19 @@ export function CompanyDetailPage() {
                 <UserRound className="h-4 w-4" />
               </Button>
             </HeaderIconTooltip>
-            <HeaderIconTooltip label={primaryContactRecord ? "Add Matter" : "Add a contact before creating a matter"}>
-              <Button
-                size="icon"
-                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
-                disabled={!primaryContactRecord}
-                aria-label="Add Matter"
-                onClick={() => setIsCreateMatterOpen(true)}
-              >
-                <Briefcase className="h-4 w-4 shrink-0" />
-              </Button>
-            </HeaderIconTooltip>
+            {canCreateMatters && (
+              <HeaderIconTooltip label={primaryContactRecord ? "Add Matter" : "Add a contact before creating a matter"}>
+                <Button
+                  size="icon"
+                  className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                  disabled={!primaryContactRecord}
+                  aria-label="Add Matter"
+                  onClick={() => setIsCreateMatterOpen(true)}
+                >
+                  <Briefcase className="h-4 w-4 shrink-0" />
+                </Button>
+              </HeaderIconTooltip>
+            )}
           </div>
         </div>
       </div>
@@ -1960,14 +1993,18 @@ export function CompanyDetailPage() {
                                   </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end" className="w-40">
-                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "edit", matter })}>
-                                    <Pencil className="mr-2 h-4 w-4" />
-                                    Edit
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem onClick={() => setMatterAction({ mode: "delete", matter })}>
-                                    <Trash2 className="mr-2 h-4 w-4" />
-                                    Delete
-                                  </DropdownMenuItem>
+                                  {canEditMatters && (
+                                    <DropdownMenuItem onClick={() => setMatterAction({ mode: "edit", matter })}>
+                                      <Pencil className="mr-2 h-4 w-4" />
+                                      Edit
+                                    </DropdownMenuItem>
+                                  )}
+                                  {canDeleteMatters && (
+                                    <DropdownMenuItem onClick={() => setMatterAction({ mode: "delete", matter })}>
+                                      <Trash2 className="mr-2 h-4 w-4" />
+                                      Delete
+                                    </DropdownMenuItem>
+                                  )}
                                 </DropdownMenuContent>
                               </DropdownMenu>
                             </div>

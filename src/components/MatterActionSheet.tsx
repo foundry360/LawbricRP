@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { UserLink } from "@/components/UserLink";
 import { createCase, deleteCase, updateCase, type CaseRecord } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
@@ -24,6 +25,9 @@ type MatterActionSheetProps = {
   onOpenChange: (open: boolean) => void;
   locationId?: string;
   users?: AssignableUser[];
+  canEditMatter?: boolean;
+  canDeleteMatter?: boolean;
+  canAssignMatter?: boolean;
   onSaved: (matter: CaseRecord) => void;
   onDeleted: (matterId: string) => void;
 };
@@ -44,6 +48,7 @@ type MatterCreateSheetProps = {
     name: string;
   } | null;
   users?: AssignableUser[];
+  canAssignMatter?: boolean;
   onCreated: (matter: CaseRecord) => void;
 };
 
@@ -83,7 +88,7 @@ async function loadMatterPipelines() {
   return ghlLocationId ? getPipelines(ghlLocationId) : [];
 }
 
-function DetailRow({ label, value }: { label: string; value?: string | null }) {
+function DetailRow({ label, value }: { label: string; value?: ReactNode }) {
   return (
     <div className="grid grid-cols-[8rem_minmax(0,1fr)] gap-3 text-sm">
       <span className="font-medium text-foreground/70">{label}</span>
@@ -92,7 +97,7 @@ function DetailRow({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-export function MatterCreateSheet({ open, onOpenChange, locationId, contact, relatedCompany, users = [], onCreated }: MatterCreateSheetProps) {
+export function MatterCreateSheet({ open, onOpenChange, locationId, contact, relatedCompany, users = [], canAssignMatter = true, onCreated }: MatterCreateSheetProps) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
   const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
@@ -189,8 +194,8 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
         contactName: contact.name,
         contactEmail: contact.email || "",
         contactPhone: formatPhoneNumber(contact.phone, ""),
-        assignedUserId: form.assignedUserId || null,
-        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
+        ...(canAssignMatter ? { assignedUserId: form.assignedUserId || null } : {}),
+        ...(canAssignMatter ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
@@ -269,6 +274,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
               </SelectContent>
             </Select>
           </div>
+          {canAssignMatter && (
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Status</Label>
@@ -312,6 +318,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
               </Select>
             </div>
           </div>
+          )}
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Lead Attorney</Label>
@@ -379,6 +386,9 @@ export function MatterActionSheet({
   onOpenChange,
   locationId,
   users = [],
+  canEditMatter = true,
+  canDeleteMatter = true,
+  canAssignMatter = true,
   onSaved,
   onDeleted,
 }: MatterActionSheetProps) {
@@ -474,8 +484,8 @@ export function MatterActionSheet({
         stage: form.stage,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
-        assignedUserId: form.assignedUserId || null,
-        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
+        ...(canAssignMatter ? { assignedUserId: form.assignedUserId || null } : {}),
+        ...(canAssignMatter ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         metadata: {
           source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
@@ -518,9 +528,18 @@ export function MatterActionSheet({
 
   const title = mode === "edit" ? "Edit Matter" : mode === "delete" ? "Delete Matter" : "View Matter";
   const caseTypeOptions = PRACTICE_AREAS.includes(form.caseType) ? PRACTICE_AREAS : [form.caseType, ...PRACTICE_AREAS].filter(Boolean);
-  const canDelete = deleteConfirmationText === "DELETE" && !submitting;
+  const canConfirmDelete = canDeleteMatter && deleteConfirmationText === "DELETE" && !submitting;
   const matterLeadAttorney = users.find((user) => getUserId(user) === matter?.assigned_user_id);
-  const matterSourceAttorney = users.find((user) => getUserId(user) === matter?.source_attorney_user_id);
+  const matterSourceAttorneyMetadataName =
+    typeof matter?.metadata?.source_attorney_name === "string" ? matter.metadata.source_attorney_name.trim() : "";
+  const matterSourceAttorney =
+    users.find((user) => getUserId(user) === matter?.source_attorney_user_id) ||
+    users.find(
+      (user) =>
+        matterSourceAttorneyMetadataName &&
+        getUserName(user).toLowerCase() === matterSourceAttorneyMetadataName.toLowerCase(),
+    );
+  const matterSourceAttorneyUserId = matter?.source_attorney_user_id || (matterSourceAttorney ? getUserId(matterSourceAttorney) : "");
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -529,7 +548,7 @@ export function MatterActionSheet({
           <SheetTitle>{title}</SheetTitle>
         </SheetHeader>
 
-        {!matter ? null : mode === "edit" ? (
+        {!matter ? null : mode === "edit" && canEditMatter ? (
           <form onSubmit={handleSave} className="mt-6 space-y-4">
             <div className="space-y-2">
               <Label>Matter Number</Label>
@@ -568,6 +587,7 @@ export function MatterActionSheet({
                 </SelectContent>
               </Select>
             </div>
+            {canAssignMatter && (
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Status</Label>
@@ -611,6 +631,7 @@ export function MatterActionSheet({
                 </Select>
               </div>
             </div>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-2">
                 <Label>Lead Attorney</Label>
@@ -662,7 +683,11 @@ export function MatterActionSheet({
               </Button>
             </div>
           </form>
-        ) : mode === "delete" ? (
+        ) : mode === "edit" ? (
+          <div className="mt-6 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm">
+            You do not have permission to edit matters.
+          </div>
+        ) : mode === "delete" && canDeleteMatter ? (
           <div className="mt-6 space-y-5">
             <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm text-foreground">
               <div>Are you sure you want to delete this matter?</div>
@@ -683,11 +708,15 @@ export function MatterActionSheet({
               <Button type="button" variant="outline" className="flex-1" onClick={closeSheet} disabled={submitting}>
                 Cancel
               </Button>
-              <Button type="button" variant="destructive" className="flex-1" onClick={handleDelete} disabled={!canDelete}>
+              <Button type="button" variant="destructive" className="flex-1" onClick={handleDelete} disabled={!canConfirmDelete}>
                 {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Trash2 className="mr-2 h-4 w-4" />}
                 Delete Matter
               </Button>
             </div>
+          </div>
+        ) : mode === "delete" ? (
+          <div className="mt-6 rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-sm">
+            You do not have permission to delete matters.
           </div>
         ) : (
           <div className="mt-6 space-y-4">
@@ -696,8 +725,20 @@ export function MatterActionSheet({
             <DetailRow label="Status" value={formatMatterStatus(matter.status)} />
             <DetailRow label="Practice Area" value={matter.case_type} />
             <DetailRow label="Stage" value={formatMatterStatus(matter.stage)} />
-            <DetailRow label="Lead Attorney" value={matterLeadAttorney ? getUserName(matterLeadAttorney) : "Unassigned"} />
-            <DetailRow label="Source Attorney" value={matterSourceAttorney ? getUserName(matterSourceAttorney) : "Unassigned"} />
+            <DetailRow
+              label="Lead Attorney"
+              value={<UserLink userId={matter.assigned_user_id} user={matterLeadAttorney} />}
+            />
+            <DetailRow
+              label="Source Attorney"
+              value={
+                <UserLink
+                  userId={matterSourceAttorneyUserId}
+                  user={matterSourceAttorney}
+                  name={matterSourceAttorneyMetadataName || undefined}
+                />
+              }
+            />
             <DetailRow label="Client" value={matter.primary_contact_name || matter.ghl_contact_id} />
             <Link
               to={`/case/${matter.id}`}

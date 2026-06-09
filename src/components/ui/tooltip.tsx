@@ -18,7 +18,7 @@ export function Tooltip({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false);
   return (
     <TooltipContext.Provider value={{ open, setOpen }}>
-      <span className="relative inline-block">{children}</span>
+      <span className="relative inline-flex items-center align-middle">{children}</span>
     </TooltipContext.Provider>
   );
 }
@@ -38,14 +38,14 @@ export function TooltipTrigger({ children, asChild }: { children: ReactNode; asC
     return cloneElement(child, triggerProps);
   }
 
-  return <span {...triggerProps}>{children}</span>;
+  return <span className="inline-flex items-center align-middle" {...triggerProps}>{children}</span>;
 }
 
 export function TooltipContent({ className, children }: { className?: string; children: ReactNode }) {
   const { open } = useTooltip();
   if (!open) return null;
   return (
-    <div className={cn("absolute left-0 top-full z-[160] mt-2 rounded-md bg-background p-2 text-sm shadow-lg", className)}>
+    <div className={cn("absolute left-0 top-full z-[160] mt-2 rounded-md border border-slate-900 bg-slate-900 p-2 text-sm text-white shadow-lg", className)}>
       {children}
     </div>
   );

@@ -248,6 +248,20 @@ export async function getActiveGhlLocationId(): Promise<string> {
   return context.location?.ghlLocationId ?? "";
 }
 
+export async function hasPermission(permissionKey: string) {
+  const { data, error } = await supabase.rpc("has_permission", {
+    permission_key: permissionKey,
+  });
+  if (error) throw error;
+  return Boolean(data);
+}
+
+export async function requirePermission(permissionKey: string, message = "You do not have permission to perform this action.") {
+  if (!await hasPermission(permissionKey)) {
+    throw new Error(message);
+  }
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => globalThis.setTimeout(resolve, ms));
 }
@@ -354,6 +368,7 @@ export async function getContact(contactId: string) {
 }
 
 export async function createContact(payload: Record<string, unknown>) {
+  await requirePermission("contacts.create", "You do not have permission to create contacts.");
   const response = await apiClient<{ contact?: unknown }>("/contacts/", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -363,6 +378,7 @@ export async function createContact(payload: Record<string, unknown>) {
 }
 
 export async function updateContact(contactId: string, payload: Record<string, unknown>) {
+  await requirePermission("contacts.edit", "You do not have permission to edit contacts.");
   const response = await apiClient<{ contact?: unknown }>(`/contacts/${encodeURIComponent(contactId)}`, {
     method: "PUT",
     body: JSON.stringify(payload),
@@ -372,6 +388,7 @@ export async function updateContact(contactId: string, payload: Record<string, u
 }
 
 export async function deleteContact(contactId: string) {
+  await requirePermission("contacts.delete", "You do not have permission to delete contacts.");
   const response = await apiClient<{ ok: boolean }>(`/contacts/${encodeURIComponent(contactId)}`, {
     method: "DELETE",
   });
@@ -380,6 +397,7 @@ export async function deleteContact(contactId: string) {
 }
 
 export async function addContactsToBusiness(locationId: string, contactIds: string[], businessId: string | null) {
+  await requirePermission("contacts.edit", "You do not have permission to edit contacts or companies.");
   const response = await apiClient<{ success?: boolean; ids?: string[] }>("/contacts/bulk/business", {
     method: "POST",
     body: JSON.stringify({
@@ -422,6 +440,7 @@ export async function getBusiness(businessId: string) {
 }
 
 export async function createBusiness(payload: Record<string, unknown>) {
+  await requirePermission("contacts.create", "You do not have permission to create companies.");
   const response = await apiClient<{ business?: GhlBusiness; buiseness?: GhlBusiness; data?: GhlBusiness }>("/businesses/", {
     method: "POST",
     body: JSON.stringify(payload),
@@ -431,6 +450,7 @@ export async function createBusiness(payload: Record<string, unknown>) {
 }
 
 export async function updateBusiness(businessId: string, payload: Record<string, unknown>) {
+  await requirePermission("contacts.edit", "You do not have permission to edit companies.");
   const response = await apiClient<{ business?: GhlBusiness; buiseness?: GhlBusiness; data?: GhlBusiness }>(
     `/businesses/${encodeURIComponent(businessId)}`,
     {
@@ -443,6 +463,7 @@ export async function updateBusiness(businessId: string, payload: Record<string,
 }
 
 export async function deleteBusiness(businessId: string) {
+  await requirePermission("contacts.delete", "You do not have permission to delete contacts or companies.");
   const response = await apiClient<{ ok?: boolean; success?: boolean }>(`/businesses/${encodeURIComponent(businessId)}`, {
     method: "DELETE",
   });

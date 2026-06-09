@@ -3,6 +3,7 @@ import {
   getAppLocationContext,
   getCustomFields,
   getOpportunities,
+  requirePermission,
   updateContact,
   type GhlOpportunity,
   type GhlPipeline,
@@ -336,6 +337,7 @@ export async function ensureLeadContactsHaveOpportunities(
 }
 
 export async function createLead(input: LeadInput) {
+  await requirePermission("leads.create", "You do not have permission to create leads.");
   const { data: { user } } = await supabase.auth.getUser();
   const leadName = getLeadDisplayName(input);
   await updateContactAccountType(input.contactId, LEAD_ACCOUNT_TYPE);
@@ -373,6 +375,7 @@ export async function createLead(input: LeadInput) {
 }
 
 export async function updateLead(leadId: string, input: Partial<LeadInput>) {
+  await requirePermission("leads.edit", "You do not have permission to edit leads.");
   const { data: existing, error: existingError } = await supabase
     .from("lead_opportunities")
     .select("*")
@@ -429,11 +432,13 @@ export async function updateLead(leadId: string, input: Partial<LeadInput>) {
 }
 
 export async function deleteLead(leadId: string) {
+  await requirePermission("leads.delete", "You do not have permission to delete leads.");
   const { error } = await supabase.from("lead_opportunities").delete().eq("id", leadId);
   if (error) throw new Error(error.message);
 }
 
 export async function convertLeadToMatter(lead: LeadRecord) {
+  await requirePermission("leads.convert", "You do not have permission to convert leads.");
   const convertedAt = new Date().toISOString();
   const matter = await createCase({
     locationId: lead.location_id,

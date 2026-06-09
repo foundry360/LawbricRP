@@ -1,7 +1,7 @@
 import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Briefcase, CheckSquare, Clock, IdCard, Loader2, Mail, MoreVertical, NotebookPen, Pencil, Phone, Plus, Trash2, UserX, X } from "lucide-react";
+import { ArrowLeft, Briefcase, CheckSquare, Clock, Eye, IdCard, Loader2, Mail, MoreVertical, NotebookPen, Pencil, Phone, Plus, Trash2, UserX, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { DateTimePicker } from "@/components/DatePicker";
 import { EditContactDialog, type ContactFormValues } from "@/components/EditContactDialog";
 import { MatterActionSheet, MatterCreateSheet } from "@/components/MatterActionSheet";
+import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
@@ -25,6 +26,8 @@ import {
   getCustomFields,
   getContacts,
   getLocationTags,
+  hasPermission,
+  requirePermission,
   type GhlTag,
   updateContact,
 } from "@/lib/api";
@@ -89,6 +92,12 @@ type ContactNote = {
   created_by?: string | null;
 };
 
+function getNoteAuthorName(note: { created_by?: string | null }, users: any[]) {
+  if (!note.created_by) return "Unknown user";
+  const matchedUser = users.find((user) => getUserId(user) === note.created_by);
+  return matchedUser ? getUserName(matchedUser) : "Unknown user";
+}
+
 type RelatedContactDisplay = {
   id: string;
   name: string;
@@ -101,7 +110,7 @@ function HeaderIconTooltip({ label, children }: { label: string; children: React
   return (
     <Tooltip>
       <TooltipTrigger>{children}</TooltipTrigger>
-      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white shadow-md">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -259,6 +268,23 @@ function toRelatedContactDisplay(contact: any, relationshipType = ""): RelatedCo
     email: contact?.email || "",
     phone: formatPhoneNumber(contact?.phone, ""),
     relationshipType,
+  };
+}
+
+function toRelationshipContactDisplay(
+  relationship: ContactRelationship,
+  currentContactId: string,
+  contactOptions: RelatedContactDisplay[] = [],
+): RelatedContactDisplay {
+  const relatedContactId = getRelatedContactId(relationship, currentContactId);
+  const matchedContact = contactOptions.find((candidate) => candidate.id === relatedContactId);
+
+  return {
+    id: relatedContactId,
+    name: matchedContact?.name || relatedContactId,
+    email: matchedContact?.email || "",
+    phone: matchedContact?.phone || "",
+    relationshipType: relationship.relationship_type,
   };
 }
 
@@ -555,11 +581,15 @@ function ContactTaskList({
 function ContactMatterList({
   matters,
   emptyText,
+  canEdit,
+  canDelete,
   onEdit,
   onDelete,
 }: {
   matters: CaseRecord[];
   emptyText: string;
+  canEdit: boolean;
+  canDelete: boolean;
   onEdit: (matter: CaseRecord) => void;
   onDelete: (matter: CaseRecord) => void;
 }) {
@@ -605,14 +635,18 @@ function ContactMatterList({
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end" className="w-40">
-                  <DropdownMenuItem onClick={() => onEdit(matter)}>
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => onDelete(matter)}>
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Delete
-                  </DropdownMenuItem>
+                  {canEdit && (
+                    <DropdownMenuItem onClick={() => onEdit(matter)}>
+                      <Pencil className="mr-2 h-4 w-4" />
+                      Edit
+                    </DropdownMenuItem>
+                  )}
+                  {canDelete && (
+                    <DropdownMenuItem onClick={() => onDelete(matter)}>
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </DropdownMenuItem>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -623,7 +657,19 @@ function ContactMatterList({
   );
 }
 
-function ContactNoteList({ notes }: { notes: ContactNote[] }) {
+function ContactNoteList({
+  notes,
+  users,
+  onViewNote,
+  onEditNote,
+  onDeleteNote,
+}: {
+  notes: ContactNote[];
+  users: any[];
+  onViewNote: (note: ContactNote) => void;
+  onEditNote: (note: ContactNote) => void;
+  onDeleteNote: (note: ContactNote) => void;
+}) {
   if (notes.length === 0) {
     return <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>;
   }
@@ -631,15 +677,72 @@ function ContactNoteList({ notes }: { notes: ContactNote[] }) {
   return (
     <div className="divide-y pt-3">
       {notes.map((note) => (
-        <div key={note.id} className="block w-full py-3 text-left first:pt-0 last:pb-0">
+        <div
+          key={note.id}
+          role="button"
+          tabIndex={0}
+          className="block w-full cursor-pointer py-3 text-left first:pt-0 last:pb-0 transition-colors hover:bg-muted/30"
+          onClick={() => onViewNote(note)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onViewNote(note);
+            }
+          }}
+        >
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
               <NotebookPen className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="line-clamp-3 whitespace-pre-line text-sm text-foreground">{note.body || "Untitled note"}</p>
-              <div className="mt-1 text-xs text-muted-foreground">{formatRecordDate(note.created_at)}</div>
+              <NoteRichTextBody value={note.body || "Untitled note"} className="line-clamp-3 text-sm font-medium text-foreground" />
+              <div className="mt-1 text-xs text-muted-foreground">
+                Created by {getNoteAuthorName(note, users)} · {formatRecordDate(note.created_at)}
+              </div>
             </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="Note actions"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onViewNote(note);
+                  }}
+                >
+                  <Eye className="mr-2 h-4 w-4" />
+                  View
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEditNote(note);
+                  }}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteNote(note);
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       ))}
@@ -1071,21 +1174,30 @@ function ContactNoteSheet({
   onOpenChange,
   locationId,
   contactId,
-  onCreated,
+  selectedNote,
+  mode,
+  users,
+  onSaved,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   locationId: string;
   contactId: string;
-  onCreated: (note: ContactNote) => void;
+  selectedNote?: ContactNote | null;
+  mode: "view" | "edit" | "create";
+  users: any[];
+  onSaved: (note: ContactNote) => void;
 }) {
   const { toast } = useToast();
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const isViewingNote = Boolean(selectedNote) && mode === "view";
+  const isEditingNote = Boolean(selectedNote) && mode === "edit";
+  const sheetTitle = isViewingNote ? "View Note" : isEditingNote ? "Edit Note" : "Add Note";
 
   useEffect(() => {
-    if (open) setNote("");
-  }, [open]);
+    if (open) setNote(selectedNote?.body || "");
+  }, [open, selectedNote]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1100,27 +1212,40 @@ function ContactNoteSheet({
 
     setSubmitting(true);
     try {
+      await requirePermission("contacts.edit", "You do not have permission to save contact notes.");
       const {
         data: { user },
       } = await supabase.auth.getUser();
-      const { data, error } = await supabase
-        .from("contact_notes")
-        .insert({
-          location_id: locationId,
-          ghl_contact_id: contactId,
-          body: note.trim(),
-          created_by: user?.id || null,
-        })
-        .select("*")
-        .single();
+      const query = selectedNote
+        ? supabase
+            .from("contact_notes")
+            .update({
+              body: note.trim(),
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", selectedNote.id)
+            .select("*")
+            .single()
+        : supabase
+            .from("contact_notes")
+            .insert({
+              location_id: locationId,
+              ghl_contact_id: contactId,
+              body: note.trim(),
+              created_by: user?.id || null,
+            })
+            .select("*")
+            .single();
+
+      const { data, error } = await query;
 
       if (error) throw new Error(error.message);
-      onCreated(data as ContactNote);
+      onSaved(data as ContactNote);
       onOpenChange(false);
-      toast({ title: "Note Created", description: "The contact note has been saved." });
+      toast({ title: selectedNote ? "Note Updated" : "Note Created", description: "The contact note has been saved." });
     } catch (error) {
       toast({
-        title: "Note Not Added",
+        title: selectedNote ? "Note Not Updated" : "Note Not Added",
         description: getUserFriendlyErrorMessage(error, "Could not add this contact note. Please try again."),
         variant: "destructive",
       });
@@ -1132,23 +1257,30 @@ function ContactNoteSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
-        <SheetHeader>
-          <SheetTitle>Add Note</SheetTitle>
+        <SheetHeader className="flex flex-row items-center justify-start gap-2">
+          <SheetTitle>{sheetTitle}</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
             <Label>Note</Label>
-            <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={8} placeholder="Add a contact note" />
+            <NoteRichTextEditor value={note} onChange={setNote} readOnly={isViewingNote} placeholder="Add a contact note" />
+            {selectedNote ? (
+              <p className="text-xs text-muted-foreground">
+                Created by {getNoteAuthorName(selectedNote, users)} · {formatRecordDate(selectedNote.created_at)}
+              </p>
+            ) : null}
           </div>
-          <div className="flex gap-3 pt-2">
+          <div className="flex flex-wrap gap-3 pt-2">
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
-              Cancel
+              {isViewingNote ? "Close" : "Cancel"}
             </Button>
-            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
-              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Save Note
-            </Button>
+            {!isViewingNote ? (
+              <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
+                {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {isEditingNote ? "Save Changes" : "Save Note"}
+              </Button>
+            ) : null}
           </div>
         </form>
       </SheetContent>
@@ -1174,6 +1306,8 @@ export function ContactDetailPage() {
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [isCreateMatterOpen, setIsCreateMatterOpen] = useState(false);
   const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
+  const [selectedNote, setSelectedNote] = useState<ContactNote | null>(null);
+  const [noteSheetMode, setNoteSheetMode] = useState<"view" | "edit" | "create">("create");
   const [activeContactTab, setActiveContactTab] = useState("tasks");
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
@@ -1184,11 +1318,37 @@ export function ContactDetailPage() {
   const [userAvatarMap, setUserAvatarMap] = useState<Record<string, string>>({});
   const [locationId, setLocationId] = useState("");
   const [locationRecordId, setLocationRecordId] = useState("");
+  const [canDeleteMatters, setCanDeleteMatters] = useState(false);
+  const [canCreateMatters, setCanCreateMatters] = useState(false);
+  const [canEditMatters, setCanEditMatters] = useState(false);
+  const [canAssignMatters, setCanAssignMatters] = useState(false);
   const relatedContactOptionsLoadedRef = useRef(false);
   const relatedContactOptionsLoadingRef = useRef(false);
   const effectivePracticeAreaOptions = Array.from(new Set([...PRACTICE_AREAS, ...practiceAreaOptions]));
   const activeTasks = useMemo(() => contactTasks.filter((task) => !isCompletedTask(task)), [contactTasks]);
   const completedTasks = useMemo(() => contactTasks.filter(isCompletedTask), [contactTasks]);
+
+  useEffect(() => {
+    Promise.all([
+      hasPermission("matters.delete"),
+      hasPermission("matters.create"),
+      hasPermission("matters.edit"),
+      hasPermission("matters.assign"),
+    ])
+      .then(([canDelete, canCreate, canEdit, canAssign]) => {
+        setCanDeleteMatters(canDelete);
+        setCanCreateMatters(canCreate);
+        setCanEditMatters(canEdit);
+        setCanAssignMatters(canAssign);
+      })
+      .catch((error) => {
+        console.error("Failed to load matter permissions", error);
+        setCanDeleteMatters(false);
+        setCanCreateMatters(false);
+        setCanEditMatters(false);
+        setCanAssignMatters(false);
+      });
+  }, []);
 
   const handleTaskSaved = (savedTask: TaskRecord) => {
     setContactTasks((current) => current.map((task) => (task.id === savedTask.id ? { ...task, ...savedTask } : task)));
@@ -1197,6 +1357,39 @@ export function ContactDetailPage() {
 
   const handleTaskCreated = (savedTask: TaskRecord) => {
     setContactTasks((current) => [savedTask, ...current.filter((task) => task.id !== savedTask.id)]);
+  };
+
+  const handleNoteSaved = (savedNote: ContactNote) => {
+    setContactNotes((current) => [savedNote, ...current.filter((note) => note.id !== savedNote.id)]);
+    setActiveContactTab("notes");
+    setSelectedNote(null);
+    setNoteSheetMode("create");
+  };
+
+  const handleNoteDeleted = (noteId: string) => {
+    setContactNotes((current) => current.filter((note) => note.id !== noteId));
+    setActiveContactTab("notes");
+    setSelectedNote(null);
+    setNoteSheetMode("create");
+  };
+
+  const handleDeleteContactNote = async (note: ContactNote) => {
+    if (!window.confirm("Delete this note? This cannot be undone.")) return;
+
+    try {
+      await requirePermission("contacts.edit", "You do not have permission to delete contact notes.");
+      const { error } = await supabase.from("contact_notes").delete().eq("id", note.id);
+      if (error) throw new Error(error.message);
+
+      handleNoteDeleted(note.id);
+      toast({ title: "Note Deleted", description: "The contact note has been deleted." });
+    } catch (error) {
+      toast({
+        title: "Note Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this contact note. Please try again."),
+        variant: "destructive",
+      });
+    }
   };
 
   useEffect(() => {
@@ -1417,6 +1610,43 @@ export function ContactDetailPage() {
   }, [isEditModalOpen, loadRelatedContactOptions]);
 
   useEffect(() => {
+    if (contact?.id && locationId) {
+      void loadRelatedContactOptions();
+    }
+  }, [contact?.id, loadRelatedContactOptions, locationId]);
+
+  useEffect(() => {
+    if (allContactOptions.length === 0 || relatedContacts.length === 0) return;
+
+    setRelatedContacts((current) => {
+      let changed = false;
+      const nextRelatedContacts = current.map((relationship) => {
+        const matchedContact = allContactOptions.find((candidate) => candidate.id === relationship.id);
+        if (
+          !matchedContact ||
+          (
+            relationship.name === matchedContact.name &&
+            relationship.email === matchedContact.email &&
+            relationship.phone === matchedContact.phone
+          )
+        ) {
+          return relationship;
+        }
+
+        changed = true;
+        return {
+          ...relationship,
+          name: matchedContact.name,
+          email: matchedContact.email,
+          phone: matchedContact.phone,
+        };
+      });
+
+      return changed ? nextRelatedContacts : current;
+    });
+  }, [allContactOptions, relatedContacts.length]);
+
+  useEffect(() => {
     const fetchFields = async () => {
       try {
         const context = await getAppLocationContext();
@@ -1600,16 +1830,9 @@ export function ContactDetailPage() {
           listContactRelationships(locRecordId, rawContact.id)
             .then((relationships) => {
               setRelatedContacts(
-                relationships.map((relationship: ContactRelationship) => {
-                  const relatedContactId = getRelatedContactId(relationship, rawContact.id);
-                  return {
-                    id: relatedContactId,
-                    name: relatedContactId,
-                    email: "",
-                    phone: "",
-                    relationshipType: relationship.relationship_type,
-                  };
-                }),
+                relationships.map((relationship: ContactRelationship) =>
+                  toRelationshipContactDisplay(relationship, rawContact.id),
+                ),
               );
             })
             .catch((error) => {
@@ -1838,6 +2061,9 @@ export function ContactDetailPage() {
         matter={matterAction?.matter || null}
         locationId={locationRecordId}
         users={systemUsers}
+        canEditMatter={canEditMatters}
+        canDeleteMatter={canDeleteMatters}
+        canAssignMatter={canAssignMatters}
         onSaved={(updatedMatter) => {
           setContactMatters((current) =>
             current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
@@ -1863,6 +2089,7 @@ export function ContactDetailPage() {
           assignedUserId: contact.assignedAttorneyId,
         }}
         users={systemUsers}
+        canAssignMatter={canAssignMatters}
         onCreated={(matter) => {
           setContactMatters((current) => [matter, ...current]);
         }}
@@ -1888,13 +2115,19 @@ export function ContactDetailPage() {
       />
       <ContactNoteSheet
         open={isNoteSheetOpen}
-        onOpenChange={setIsNoteSheetOpen}
+        onOpenChange={(open) => {
+          setIsNoteSheetOpen(open);
+          if (!open) {
+            setSelectedNote(null);
+            setNoteSheetMode("create");
+          }
+        }}
         locationId={locationRecordId}
         contactId={contact.id}
-        onCreated={(note) => {
-          setContactNotes((current) => [note, ...current.filter((currentNote) => currentNote.id !== note.id)]);
-          setActiveContactTab("notes");
-        }}
+        selectedNote={selectedNote}
+        mode={noteSheetMode}
+        users={systemUsers}
+        onSaved={handleNoteSaved}
       />
       <div className="shrink-0 border-b border-border pb-4">
         <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
@@ -1974,21 +2207,27 @@ export function ContactDetailPage() {
                 size="icon"
                 className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
                 aria-label="Add Note"
-                onClick={() => setIsNoteSheetOpen(true)}
+                onClick={() => {
+                  setSelectedNote(null);
+                  setNoteSheetMode("create");
+                  setIsNoteSheetOpen(true);
+                }}
               >
                 <NotebookPen className="h-4 w-4" />
               </Button>
             </HeaderIconTooltip>
-            <HeaderIconTooltip label="Add Matter">
-              <Button
-                size="icon"
-                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
-                aria-label="Add Matter"
-                onClick={() => setIsCreateMatterOpen(true)}
-              >
-                <Briefcase className="h-4 w-4 shrink-0" />
-              </Button>
-            </HeaderIconTooltip>
+            {canCreateMatters && (
+              <HeaderIconTooltip label="Add Matter">
+                <Button
+                  size="icon"
+                  className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                  aria-label="Add Matter"
+                  onClick={() => setIsCreateMatterOpen(true)}
+                >
+                  <Briefcase className="h-4 w-4 shrink-0" />
+                </Button>
+              </HeaderIconTooltip>
+            )}
           </div>
         </div>
       </div>
@@ -2215,7 +2454,21 @@ export function ContactDetailPage() {
                 <AccordionItem value="recent-notes">
                   <AccordionTrigger>Recent Notes ({contactNotes.length})</AccordionTrigger>
                   <AccordionContent>
-                    <ContactNoteList notes={contactNotes} />
+                    <ContactNoteList
+                      notes={contactNotes}
+                      users={systemUsers}
+                      onViewNote={(note) => {
+                        setSelectedNote(note);
+                        setNoteSheetMode("view");
+                        setIsNoteSheetOpen(true);
+                      }}
+                      onEditNote={(note) => {
+                        setSelectedNote(note);
+                        setNoteSheetMode("edit");
+                        setIsNoteSheetOpen(true);
+                      }}
+                      onDeleteNote={handleDeleteContactNote}
+                    />
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>
@@ -2244,6 +2497,8 @@ export function ContactDetailPage() {
                   <ContactMatterList
                     matters={contactMatters}
                     emptyText="No matters associated to this contact yet."
+                    canEdit={canEditMatters}
+                    canDelete={canDeleteMatters}
                     onEdit={(matter) => setMatterAction({ mode: "edit", matter })}
                     onDelete={(matter) => setMatterAction({ mode: "delete", matter })}
                   />
@@ -2266,6 +2521,8 @@ export function ContactDetailPage() {
                   <ContactMatterList
                     matters={relatedMatters}
                     emptyText="No related matters found for this contact."
+                    canEdit={canEditMatters}
+                    canDelete={canDeleteMatters}
                     onEdit={(matter) => setMatterAction({ mode: "edit", matter })}
                     onDelete={(matter) => setMatterAction({ mode: "delete", matter })}
                   />

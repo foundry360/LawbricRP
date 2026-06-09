@@ -9,13 +9,16 @@ import {
   CheckSquare,
   Clock,
   DollarSign,
+  Eye,
   FileText,
   Loader2,
   Mail,
+  MoreVertical,
   NotebookPen,
   Pencil,
   Phone,
   Plus,
+  Trash2,
   Upload,
   UserRound,
   Users,
@@ -25,14 +28,17 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/DatePicker";
+import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { UserLink } from "@/components/UserLink";
 import { useToast } from "@/hooks/use-toast";
 import { apiClient, getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
 import {
@@ -40,9 +46,11 @@ import {
   createCaseEvent,
   createCaseNote,
   createCaseTask,
+  deleteCaseNote,
   getCase,
   type CaseDetail,
   updateCase,
+  updateCaseNote,
   uploadCaseDocument,
 } from "@/lib/cases";
 import { formatTaskStatusLabel, updateTask } from "@/lib/tasks";
@@ -173,6 +181,12 @@ function getMatterPartyDisplayName(party: any) {
   return formatPersonName(party?.name || "") || party?.email || party?.phone || "Unnamed contact";
 }
 
+function getNoteAuthorName(note: { created_by?: string | null }, users: AssignableUser[]) {
+  if (!note.created_by) return "Unknown user";
+  const matchedUser = users.find((user) => getUserId(user) === note.created_by);
+  return matchedUser ? getUserName(matchedUser) : "Unknown user";
+}
+
 export function CaseDetailPage() {
   const { caseId } = useParams();
   const { toast } = useToast();
@@ -182,6 +196,8 @@ export function CaseDetailPage() {
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<any | null>(null);
   const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
+  const [selectedNote, setSelectedNote] = useState<any | null>(null);
+  const [noteSheetMode, setNoteSheetMode] = useState<"view" | "edit" | "create">("create");
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
   const [activeDetailTab, setActiveDetailTab] = useState("tasks");
   const [contactAddress, setContactAddress] = useState("Not set");
@@ -225,6 +241,24 @@ export function CaseDetailPage() {
       .catch((error) => console.error("Failed to load assignable users", error));
   }, []);
 
+  const handleDeleteMatterNote = async (note: any) => {
+    if (!window.confirm("Delete this note? This cannot be undone.")) return;
+
+    try {
+      await deleteCaseNote({ noteId: note.id });
+      setSelectedNote(null);
+      setNoteSheetMode("create");
+      await loadCase();
+      toast({ title: "Note Deleted", description: "The matter note has been deleted." });
+    } catch (error) {
+      toast({
+        title: "Note Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this matter note. Please try again."),
+        variant: "destructive",
+      });
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-[calc(100vh-64px)] items-center justify-center">
@@ -267,9 +301,16 @@ export function CaseDetailPage() {
     detail.contactAssignment?.assigned_user_id ||
     "";
   const sourceAttorneyUserId = detail.case.source_attorney_user_id || "";
-  const sourceAttorneyUser = users.find((user) => getUserId(user) === sourceAttorneyUserId);
   const sourceAttorneyMetadataName =
     typeof detail.case.metadata?.source_attorney_name === "string" ? detail.case.metadata.source_attorney_name.trim() : "";
+  const sourceAttorneyUser =
+    users.find((user) => getUserId(user) === sourceAttorneyUserId) ||
+    users.find(
+      (user) =>
+        sourceAttorneyMetadataName &&
+        getUserName(user).toLowerCase() === sourceAttorneyMetadataName.toLowerCase(),
+    );
+  const sourceAttorneyLinkUserId = sourceAttorneyUserId || (sourceAttorneyUser ? getUserId(sourceAttorneyUser) : "");
   const sourceAttorneyName = sourceAttorneyUser ? getUserName(sourceAttorneyUser) : sourceAttorneyMetadataName || "Unassigned";
   const contactEmail = detail.case.primary_contact_email || "";
   const contactPhone = detail.case.primary_contact_phone || "";
@@ -302,10 +343,20 @@ export function CaseDetailPage() {
       />
       <MatterNoteSheet
         open={isNoteSheetOpen}
-        onOpenChange={setIsNoteSheetOpen}
+        onOpenChange={(open) => {
+          setIsNoteSheetOpen(open);
+          if (!open) {
+            setSelectedNote(null);
+            setNoteSheetMode("create");
+          }
+        }}
         detail={detail}
-        onCreated={() => {
-          setActiveDetailTab("timeline");
+        noteRecord={selectedNote}
+        mode={noteSheetMode}
+        users={users}
+        onChanged={() => {
+          setSelectedNote(null);
+          setNoteSheetMode("create");
           loadCase();
         }}
       />
@@ -381,7 +432,11 @@ export function CaseDetailPage() {
               className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
               title="Add Note"
               aria-label="Add Note"
-              onClick={() => setIsNoteSheetOpen(true)}
+              onClick={() => {
+                setSelectedNote(null);
+                setNoteSheetMode("create");
+                setIsNoteSheetOpen(true);
+              }}
             >
               <NotebookPen className="h-4 w-4" />
             </Button>
@@ -411,8 +466,11 @@ export function CaseDetailPage() {
                 <div className="space-y-3 pt-2">
                   <DetailRow label="Matter Number" value={detail.case.case_number} />
                   <DetailRow label="Practice Area" value={detail.case.case_type} />
-                  <DetailRow label="Lead Attorney" value={assignedUserName} />
-                  <DetailRow label="Source Attorney" value={sourceAttorneyName} />
+                  <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
+                  <DetailRow
+                    label="Source Attorney"
+                    value={<UserLink userId={sourceAttorneyLinkUserId} user={sourceAttorneyUser} name={sourceAttorneyName} />}
+                  />
                   <DetailRow label="Status" value={detail.case.status} className="capitalize" />
                   <DetailRow label="Stage" value={detail.case.stage.replace(/_/g, " ")} className="capitalize" />
                   <DetailRow label="Opened" value={formatDateTime(detail.case.created_at)} />
@@ -441,7 +499,7 @@ export function CaseDetailPage() {
               <AccordionTrigger>System Information</AccordionTrigger>
               <AccordionContent>
                 <div className="space-y-3 pt-2">
-                  <DetailRow label="Lead Attorney" value={assignedUserName} />
+                  <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
                   <DetailRow label="Updated" value={formatDateTime(detail.case.updated_at)} />
                 </div>
               </AccordionContent>
@@ -496,7 +554,19 @@ export function CaseDetailPage() {
           <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pl-6">
             <OverviewTab
               detail={detail}
+              users={users}
               onViewAllDocuments={() => setActiveDetailTab("documents")}
+              onViewNote={(note) => {
+                setSelectedNote(note);
+                setNoteSheetMode("view");
+                setIsNoteSheetOpen(true);
+              }}
+              onEditNote={(note) => {
+                setSelectedNote(note);
+                setNoteSheetMode("edit");
+                setIsNoteSheetOpen(true);
+              }}
+              onDeleteNote={handleDeleteMatterNote}
               onToggleCollapse={() => setIsOverviewCollapsed(true)}
             />
           </div>
@@ -1042,20 +1112,29 @@ function MatterNoteSheet({
   open,
   onOpenChange,
   detail,
-  onCreated,
+  noteRecord,
+  mode,
+  users,
+  onChanged,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   detail: CaseDetail;
-  onCreated: () => void;
+  noteRecord?: any | null;
+  mode: "view" | "edit" | "create";
+  users: AssignableUser[];
+  onChanged: () => void;
 }) {
   const { toast } = useToast();
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const isViewingNote = Boolean(noteRecord) && mode === "view";
+  const isEditingNote = Boolean(noteRecord) && mode === "edit";
+  const sheetTitle = isViewingNote ? "View Note" : isEditingNote ? "Edit Note" : "Add Note";
 
   useEffect(() => {
-    if (open) setNote("");
-  }, [open]);
+    if (open) setNote(noteRecord?.body || "");
+  }, [open, noteRecord]);
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
@@ -1066,14 +1145,18 @@ function MatterNoteSheet({
 
     setSubmitting(true);
     try {
-      await createCaseNote({ caseId: detail.case.id, body: note });
-      onCreated();
+      if (isEditingNote) {
+        await updateCaseNote({ noteId: noteRecord.id, body: note });
+      } else {
+        await createCaseNote({ caseId: detail.case.id, body: note });
+      }
+      onChanged();
       onOpenChange(false);
-      toast({ title: "Note Created", description: "The matter note has been saved." });
+      toast({ title: isEditingNote ? "Note Updated" : "Note Created", description: "The matter note has been saved." });
     } catch (error) {
       toast({
-        title: "Note Not Added",
-        description: getUserFriendlyErrorMessage(error, "Could not add this matter note. Please try again."),
+        title: isEditingNote ? "Note Not Updated" : "Note Not Added",
+        description: getUserFriendlyErrorMessage(error, "Could not save this matter note. Please try again."),
         variant: "destructive",
       });
     } finally {
@@ -1084,28 +1167,30 @@ function MatterNoteSheet({
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
-        <SheetHeader>
-          <SheetTitle>Add Note</SheetTitle>
+        <SheetHeader className="flex flex-row items-center justify-start gap-2">
+          <SheetTitle>{sheetTitle}</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
           <div className="space-y-2">
             <Label>Note</Label>
-            <Textarea
-              value={note}
-              onChange={(event) => setNote(event.target.value)}
-              rows={8}
-              placeholder="Add a matter note"
-            />
+            <NoteRichTextEditor value={note} onChange={setNote} readOnly={isViewingNote} placeholder="Add a matter note" />
+            {noteRecord ? (
+              <p className="text-xs text-muted-foreground">
+                Created by {getNoteAuthorName(noteRecord, users)} · {formatDateTime(noteRecord?.created_at)}
+              </p>
+            ) : null}
           </div>
-          <div className="flex gap-3 pt-2">
+          <div className="flex flex-wrap gap-3 pt-2">
             <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
-              Cancel
+              {isViewingNote ? "Close" : "Cancel"}
             </Button>
-            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
-              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Save Note
-            </Button>
+            {!isViewingNote ? (
+              <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
+                {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                {isEditingNote ? "Save Changes" : "Save Note"}
+              </Button>
+            ) : null}
           </div>
         </form>
       </SheetContent>
@@ -1115,11 +1200,19 @@ function MatterNoteSheet({
 
 function OverviewTab({
   detail,
+  users,
   onViewAllDocuments,
+  onViewNote,
+  onEditNote,
+  onDeleteNote,
   onToggleCollapse,
 }: {
   detail: CaseDetail;
+  users: AssignableUser[];
   onViewAllDocuments: () => void;
+  onViewNote: (note: any) => void;
+  onEditNote: (note: any) => void;
+  onDeleteNote: (note: any) => void;
   onToggleCollapse: () => void;
 }) {
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
@@ -1243,7 +1336,7 @@ function OverviewTab({
           <AccordionItem value="notes">
             <AccordionTrigger>Notes ({recentNotes.length})</AccordionTrigger>
             <AccordionContent>
-              <MatterNoteList notes={recentNotes} />
+              <MatterNoteList notes={recentNotes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
             </AccordionContent>
           </AccordionItem>
         </Accordion>
@@ -1282,7 +1375,7 @@ function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
           </CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={5} placeholder="Add a matter note" />
+          <NoteRichTextEditor value={note} onChange={setNote} placeholder="Add a matter note" />
           <Button className="w-full" disabled={submitting || !note.trim()} onClick={handleAddNote}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
             Add Note
@@ -1303,7 +1396,13 @@ function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
                   <div className="font-medium">{item.title}</div>
                   <Badge variant="outline" className="capitalize">{item.type}</Badge>
                 </div>
-                {item.body ? <p className="mt-1 text-sm text-muted-foreground">{item.body}</p> : null}
+                {item.body ? (
+                  item.type === "note" ? (
+                    <NoteRichTextBody value={item.body} className="mt-1 text-sm text-muted-foreground" />
+                  ) : (
+                    <p className="mt-1 text-sm text-muted-foreground">{item.body}</p>
+                  )
+                ) : null}
                 <p className="mt-2 text-xs text-muted-foreground">{formatDateTime(item.occurred_at)}</p>
               </div>
             ))
@@ -1416,11 +1515,18 @@ function MatterTaskList({
         const dueLabel = completed ? "Completed" : formatTaskDate(task.due_at);
 
         return (
-          <button
+          <div
             key={task.id}
-            type="button"
-            className="block w-full py-3 text-left first:pt-0 last:pb-0 hover:bg-muted/30"
+            role="button"
+            tabIndex={0}
+            className="block w-full cursor-pointer py-3 text-left first:pt-0 last:pb-0 hover:bg-muted/30"
             onClick={() => onTaskClick(task)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                onTaskClick(task);
+              }
+            }}
           >
             <div className="flex items-start gap-3">
               <Avatar className="mt-0.5 h-8 w-8 shrink-0">
@@ -1453,9 +1559,18 @@ function MatterTaskList({
                     <span>{dueLabel}</span>
                   </div>
                 </div>
+                <div className="mt-1 text-xs text-muted-foreground">
+                  Assigned to{" "}
+                  <UserLink
+                    userId={assignedUserId}
+                    user={matchedUser}
+                    name={assignedUserName || "Unassigned"}
+                    stopPropagation
+                  />
+                </div>
               </div>
             </div>
-          </button>
+          </div>
         );
       })}
     </div>
@@ -1507,7 +1622,19 @@ function MatterDocumentList({ documents }: { documents: any[] }) {
   );
 }
 
-function MatterNoteList({ notes }: { notes: any[] }) {
+function MatterNoteList({
+  notes,
+  users,
+  onViewNote,
+  onEditNote,
+  onDeleteNote,
+}: {
+  notes: any[];
+  users: AssignableUser[];
+  onViewNote: (note: any) => void;
+  onEditNote: (note: any) => void;
+  onDeleteNote: (note: any) => void;
+}) {
   if (notes.length === 0) {
     return <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>;
   }
@@ -1515,17 +1642,72 @@ function MatterNoteList({ notes }: { notes: any[] }) {
   return (
     <div className="divide-y pt-3">
       {notes.map((note) => (
-        <div key={note.id || note.created_at} className="block w-full py-3 text-left first:pt-0 last:pb-0">
+        <div
+          key={note.id || note.created_at}
+          role="button"
+          tabIndex={0}
+          className="block w-full cursor-pointer py-3 text-left first:pt-0 last:pb-0 transition-colors hover:bg-muted/30"
+          onClick={() => onViewNote(note)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onViewNote(note);
+            }
+          }}
+        >
           <div className="flex items-start gap-3">
             <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
               <NotebookPen className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <p className="line-clamp-3 whitespace-pre-line text-sm text-foreground">
-                {note.body || "Untitled note"}
-              </p>
-              <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(note.created_at)}</div>
+              <NoteRichTextBody value={note.body || "Untitled note"} className="line-clamp-3 text-sm font-medium text-foreground" />
+              <div className="mt-1 text-xs text-muted-foreground">
+                Created by {getNoteAuthorName(note, users)} · {formatDateTime(note.created_at)}
+              </div>
             </div>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+                  aria-label="Note actions"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <MoreVertical className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onViewNote(note);
+                  }}
+                >
+                  <Eye className="mr-2 h-4 w-4" />
+                  View
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onEditNote(note);
+                  }}
+                >
+                  <Pencil className="mr-2 h-4 w-4" />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDeleteNote(note);
+                  }}
+                >
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </div>
       ))}

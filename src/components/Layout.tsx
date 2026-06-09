@@ -50,6 +50,7 @@ import {
   clearCachedGhlReferenceData,
   clearCachedGhlListData,
   getAppLocationContext,
+  hasPermission,
   type AppLocationContext,
 } from "@/lib/api";
 import { SettingsDialog } from "@/components/SettingsDialog";
@@ -86,8 +87,57 @@ export function Layout({ children }: { children: ReactNode }) {
   const [userLastName, setUserLastName] = useState("");
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [appContext, setAppContext] = useState<AppLocationContext | null>(null);
+  const [canViewDashboard, setCanViewDashboard] = useState(false);
+  const [canViewUsers, setCanViewUsers] = useState(false);
+  const [canViewContacts, setCanViewContacts] = useState(false);
+  const [canViewMatters, setCanViewMatters] = useState(false);
+  const [canViewLeads, setCanViewLeads] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const userIdRef = useRef("");
+
+  useEffect(() => {
+    Promise.all([
+      hasPermission("dashboards.view"),
+      hasPermission("user_profiles.view_limited"),
+      hasPermission("user_profiles.view_all"),
+      hasPermission("user_profiles.view_attorneys"),
+      hasPermission("contacts.view_all"),
+      hasPermission("contacts.view_location"),
+      hasPermission("contacts.view_assigned"),
+      hasPermission("matters.view_all"),
+      hasPermission("matters.view_assigned"),
+      hasPermission("matters.view_own"),
+      hasPermission("leads.view_all"),
+      hasPermission("leads.view_assigned"),
+    ])
+      .then(([
+        dashboardAccess,
+        userProfilesLimited,
+        userProfilesAll,
+        userProfilesAttorneys,
+        contactsAll,
+        contactsLocation,
+        contactsAssigned,
+        mattersAll,
+        mattersAssigned,
+        mattersOwn,
+        leadsAll,
+        leadsAssigned,
+      ]) => {
+        setCanViewDashboard(dashboardAccess);
+        setCanViewUsers(userProfilesLimited || userProfilesAll || userProfilesAttorneys);
+        setCanViewContacts(contactsAll || contactsLocation || contactsAssigned);
+        setCanViewMatters(mattersAll || mattersAssigned || mattersOwn);
+        setCanViewLeads(leadsAll || leadsAssigned);
+      })
+      .catch(() => {
+        setCanViewDashboard(false);
+        setCanViewUsers(false);
+        setCanViewContacts(false);
+        setCanViewMatters(false);
+        setCanViewLeads(false);
+      });
+  }, []);
 
   useEffect(() => {
     const setUserProfile = (user?: { id?: string; email?: string; user_metadata?: Record<string, unknown> } | null) => {
@@ -270,6 +320,124 @@ export function Layout({ children }: { children: ReactNode }) {
     navigate("/login");
   };
 
+  const notificationSheet = (
+    <Sheet open={isNotificationsOpen} onOpenChange={setIsNotificationsOpen}>
+      <SheetTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="relative text-header-foreground hover:bg-header-foreground/10 hover:text-header-foreground"
+          title="Notifications"
+        >
+          <Bell size={20} strokeWidth={1.5} />
+          {unreadCount > 0 && (
+            <span className="absolute -right-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-header-background bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          )}
+        </Button>
+      </SheetTrigger>
+      <SheetContent side="right" className="z-[100] flex w-full flex-col p-0 sm:w-[400px]">
+        <SheetHeader className="border-b px-4 pb-3 pt-10 text-left">
+          <div className="flex items-center justify-between">
+            <SheetTitle className="text-sm font-semibold">
+              Notifications {unreadCount > 0 && `(${unreadCount})`}
+            </SheetTitle>
+            {unreadCount > 0 && (
+              <button
+                onClick={markAllAsRead}
+                className="ml-auto text-right text-xs text-muted-foreground hover:text-foreground"
+              >
+                Mark all as read
+              </button>
+            )}
+          </div>
+        </SheetHeader>
+        <div className="flex flex-1 flex-col overflow-y-auto">
+          {notifications.length === 0 ? (
+            <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
+              <Bell className="mb-2 h-8 w-8 opacity-20" />
+              <p className="text-sm">No new notifications</p>
+            </div>
+          ) : (
+            notifications.map((notification) => (
+              <div
+                key={notification.id}
+                className={`flex border-b transition-colors hover:bg-muted/50 ${
+                  notification.is_read ? "opacity-60" : ""
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => void handleNotificationClick(notification)}
+                  className="min-w-0 flex-1 px-4 py-3 text-left"
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                        notification.is_read ? "bg-transparent" : "bg-red-500"
+                      }`}
+                    />
+                    <div className="min-w-0">
+                      <p className="mb-1 text-sm font-medium leading-none">{notification.title}</p>
+                      <p className="line-clamp-2 text-xs text-muted-foreground">
+                        {notification.message}
+                      </p>
+                      <p className="mt-1 text-[10px] text-muted-foreground">
+                        {notification.created_at
+                          ? formatDistanceToNow(new Date(notification.created_at), {
+                              addSuffix: true,
+                            })
+                          : "Just now"}
+                      </p>
+                    </div>
+                  </div>
+                </button>
+                <div className="px-2 py-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                        aria-label="Notification actions"
+                      >
+                        <span className="text-lg leading-none">...</span>
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="z-[150]">
+                      <DropdownMenuItem
+                        onClick={() =>
+                          notification.is_read
+                            ? void markAsUnread(notification.id)
+                            : void markAsRead(notification.id)
+                        }
+                      >
+                        {notification.is_read ? "Mark unread" : "Mark read"}
+                      </DropdownMenuItem>
+                      <DropdownMenuItem
+                        className="text-destructive focus:text-destructive"
+                        onClick={() => void deleteNotification(notification.id)}
+                      >
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+        <div className="mt-auto border-t bg-muted/20 p-2 text-center">
+          <Button variant="ghost" className="h-8 w-full text-xs">
+            View all notifications
+          </Button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+
   return (
     <SidebarProvider>
       <header className="fixed left-0 right-0 top-0 z-50 grid h-16 grid-cols-[1fr_auto_1fr] items-center gap-4 border-b bg-header px-4 text-header-foreground lg:px-6">
@@ -303,122 +471,6 @@ export function Layout({ children }: { children: ReactNode }) {
                 )}
               </Button>
 
-              <Sheet open={isNotificationsOpen} onOpenChange={setIsNotificationsOpen}>
-                <SheetTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="relative text-header-foreground hover:bg-header-foreground/10 hover:text-header-foreground"
-                    title="Notifications"
-                  >
-                    <Bell size={20} strokeWidth={1.5} />
-                    {unreadCount > 0 && (
-                      <span className="absolute -right-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-header-background bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
-                        {unreadCount > 99 ? "99+" : unreadCount}
-                      </span>
-                    )}
-                  </Button>
-                </SheetTrigger>
-                <SheetContent side="right" className="z-[100] flex w-full flex-col p-0 sm:w-[400px]">
-                  <SheetHeader className="border-b px-4 pb-3 pt-10 text-left">
-                    <div className="flex items-center justify-between">
-                      <SheetTitle className="text-sm font-semibold">
-                        Notifications {unreadCount > 0 && `(${unreadCount})`}
-                      </SheetTitle>
-                      {unreadCount > 0 && (
-                        <button
-                          onClick={markAllAsRead}
-                          className="ml-auto text-right text-xs text-muted-foreground hover:text-foreground"
-                        >
-                          Mark all as read
-                        </button>
-                      )}
-                    </div>
-                  </SheetHeader>
-                  <div className="flex flex-1 flex-col overflow-y-auto">
-                    {notifications.length === 0 ? (
-                      <div className="flex h-40 flex-col items-center justify-center text-muted-foreground">
-                        <Bell className="mb-2 h-8 w-8 opacity-20" />
-                        <p className="text-sm">No new notifications</p>
-                      </div>
-                    ) : (
-                      notifications.map((notification) => (
-                        <div
-                          key={notification.id}
-                          className={`flex border-b transition-colors hover:bg-muted/50 ${
-                            notification.is_read ? "opacity-60" : ""
-                          }`}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void handleNotificationClick(notification)}
-                            className="min-w-0 flex-1 px-4 py-3 text-left"
-                          >
-                            <div className="flex items-start gap-3">
-                              <div
-                                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-                                  notification.is_read ? "bg-transparent" : "bg-red-500"
-                                }`}
-                              />
-                              <div className="min-w-0">
-                                <p className="mb-1 text-sm font-medium leading-none">{notification.title}</p>
-                                <p className="line-clamp-2 text-xs text-muted-foreground">
-                                  {notification.message}
-                                </p>
-                                <p className="mt-1 text-[10px] text-muted-foreground">
-                                  {notification.created_at
-                                    ? formatDistanceToNow(new Date(notification.created_at), {
-                                        addSuffix: true,
-                                      })
-                                    : "Just now"}
-                                </p>
-                              </div>
-                            </div>
-                          </button>
-                          <div className="px-2 py-2">
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
-                                  aria-label="Notification actions"
-                                >
-                                  <span className="text-lg leading-none">...</span>
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end" className="z-[150]">
-                                <DropdownMenuItem
-                                  onClick={() =>
-                                    notification.is_read
-                                      ? void markAsUnread(notification.id)
-                                      : void markAsRead(notification.id)
-                                  }
-                                >
-                                  {notification.is_read ? "Mark unread" : "Mark read"}
-                                </DropdownMenuItem>
-                                <DropdownMenuItem
-                                  className="text-destructive focus:text-destructive"
-                                  onClick={() => void deleteNotification(notification.id)}
-                                >
-                                  Delete
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                  <div className="mt-auto border-t bg-muted/20 p-2 text-center">
-                    <Button variant="ghost" className="h-8 w-full text-xs">
-                      View all notifications
-                    </Button>
-                  </div>
-                </SheetContent>
-              </Sheet>
-
               <Button
                 variant="ghost"
                 size="icon"
@@ -438,6 +490,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 <LogOut size={20} strokeWidth={1.5} />
               </Button>
             </div>
+            {notificationSheet}
             {userEmail && <span className="text-sm font-medium">{userEmail}</span>}
             <Avatar className="h-8 w-8">
               {userAvatar ? <AvatarImage src={userAvatar} alt={`${userInitials} avatar`} /> : null}
@@ -467,14 +520,18 @@ export function Layout({ children }: { children: ReactNode }) {
                       </SidebarMenuButton>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent side="right" align="start" className="w-48 text-[13px]">
-                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/")}>
-                        <Users className="mr-2 h-4 w-4" strokeWidth={1.5} />
-                        <span>Contact</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/cases")}>
-                        <Briefcase className="mr-2 h-4 w-4" strokeWidth={1.5} />
-                        <span>Matters</span>
-                      </DropdownMenuItem>
+                      {canViewContacts && (
+                        <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/")}>
+                          <Users className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                          <span>Contact</span>
+                        </DropdownMenuItem>
+                      )}
+                      {canViewMatters && (
+                        <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/cases")}>
+                          <Briefcase className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                          <span>Matters</span>
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/tasks")}>
                         <CheckSquare className="mr-2 h-4 w-4" strokeWidth={1.5} />
                         <span>Tasks</span>
@@ -483,26 +540,38 @@ export function Layout({ children }: { children: ReactNode }) {
                         <Calendar className="mr-2 h-4 w-4" strokeWidth={1.5} />
                         <span>Calendars</span>
                       </DropdownMenuItem>
-                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/users")}>
-                        <UserCog className="mr-2 h-4 w-4" strokeWidth={1.5} />
-                        <span>Users</span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/leads")}>
-                        <Scale className="mr-2 h-4 w-4" strokeWidth={1.5} />
-                        <span>Lead</span>
-                      </DropdownMenuItem>
+                      {canViewUsers && (
+                        <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/users")}>
+                          <UserCog className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                          <span>Users</span>
+                        </DropdownMenuItem>
+                      )}
+                      {canViewLeads && (
+                        <DropdownMenuItem className="text-[13px]" onClick={() => navigate("/leads")}>
+                          <Scale className="mr-2 h-4 w-4" strokeWidth={1.5} />
+                          <span>Lead</span>
+                        </DropdownMenuItem>
+                      )}
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </SidebarMenuItem>
                 <div className="mx-4 mb-2 mt-6 h-px bg-border group-data-[collapsible=icon]:mx-2" />
-                <NavItem icon={LayoutGrid} label="Dashboard" to="/dashboard" active={location.pathname === "/dashboard"} />
-                <NavItem icon={Users} label="Contacts" to="/" active={location.pathname === "/" || location.pathname.startsWith("/contact") || location.pathname.startsWith("/company")} />
-                <NavItem icon={Briefcase} label="Matters" to="/cases" active={location.pathname === "/cases" || location.pathname.startsWith("/case/")} />
+                {canViewDashboard && (
+                  <NavItem icon={LayoutGrid} label="Dashboard" to="/dashboard" active={location.pathname === "/dashboard"} />
+                )}
+                {canViewContacts && (
+                  <NavItem icon={Users} label="Contacts" to="/" active={location.pathname === "/" || location.pathname.startsWith("/contact") || location.pathname.startsWith("/company")} />
+                )}
+                {canViewMatters && (
+                  <NavItem icon={Briefcase} label="Matters" to="/cases" active={location.pathname === "/cases" || location.pathname.startsWith("/case/")} />
+                )}
                 <NavItem icon={Calendar} label="Calendar" to="/calendar" active={location.pathname === "/calendar"} />
                 <NavItem icon={CheckSquare} label="Tasks" to="/tasks" active={location.pathname === "/tasks"} />
-                <NavItem icon={UserCog} label="User Management" to="/users" active={location.pathname === "/users"} />
+                {canViewUsers && (
+                  <NavItem icon={UserCog} label="User Management" to="/users" active={location.pathname.startsWith("/users")} />
+                )}
                 <div className="mx-4 my-2 h-px bg-border group-data-[collapsible=icon]:mx-2" />
-                <NavItem icon={Target} label="Leads" to="/leads" active={location.pathname === "/leads"} />
+                {canViewLeads && <NavItem icon={Target} label="Leads" to="/leads" active={location.pathname === "/leads"} />}
                 <NavItem icon={CreditCard} label="Billing" to="/billing" active={location.pathname === "/billing"} />
                 <NavItem icon={FileText} label="Documents" to="/documents" active={location.pathname === "/documents"} />
                 <NavItem icon={DollarSign} label="Payments" to="/payments" active={location.pathname === "/payments"} />

@@ -63,7 +63,7 @@ export function Popover({
 
   return (
     <PopoverContext.Provider value={{ open, setOpen }}>
-      <div ref={containerRef} className="relative">{children}</div>
+      <div ref={containerRef} className="relative inline-flex items-center align-middle">{children}</div>
     </PopoverContext.Provider>
   );
 }

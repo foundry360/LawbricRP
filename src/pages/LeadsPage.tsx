@@ -40,7 +40,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
-import { getAppLocationContext, getCachedContactsIfAvailable, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
+import { getAppLocationContext, getCachedContactsIfAvailable, getContacts, getPipelines, hasPermission, type GhlPipeline } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import {
   convertLeadToMatter,
@@ -217,8 +217,8 @@ function getPipelineSelection(pipelines: GhlPipeline[], pipelineId?: string | nu
 function ControlTooltip({ label, children }: { label: string; children: ReactNode }) {
   return (
     <Tooltip>
-      <TooltipTrigger asChild>{children}</TooltipTrigger>
-      <TooltipContent className="whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+      <TooltipTrigger>{children}</TooltipTrigger>
+      <TooltipContent className="whitespace-nowrap border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white shadow-md">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -258,8 +258,34 @@ export function LeadsPage() {
   const [isConvertingLead, setIsConvertingLead] = useState(false);
   const [dragOverStageId, setDragOverStageId] = useState("");
   const [updatingLeadStageId, setUpdatingLeadStageId] = useState<string | null>(null);
+  const [canDeleteLeads, setCanDeleteLeads] = useState(false);
+  const [canCreateLeads, setCanCreateLeads] = useState(false);
+  const [canEditLeads, setCanEditLeads] = useState(false);
+  const [canConvertLeads, setCanConvertLeads] = useState(false);
   const updatingLeadStageRef = useRef<string | null>(null);
   const loadingContactsRef = useRef(false);
+
+  useEffect(() => {
+    Promise.all([
+      hasPermission("leads.delete"),
+      hasPermission("leads.create"),
+      hasPermission("leads.edit"),
+      hasPermission("leads.convert"),
+    ])
+      .then(([canDelete, canCreate, canEdit, canConvert]) => {
+        setCanDeleteLeads(canDelete);
+        setCanCreateLeads(canCreate);
+        setCanEditLeads(canEdit);
+        setCanConvertLeads(canConvert);
+      })
+      .catch((error) => {
+        console.error("Failed to load lead permissions", error);
+        setCanDeleteLeads(false);
+        setCanCreateLeads(false);
+        setCanEditLeads(false);
+        setCanConvertLeads(false);
+      });
+  }, []);
 
   useEffect(() => {
     window.localStorage.setItem(LEAD_VIEW_MODE_STORAGE_KEY, viewMode);
@@ -624,6 +650,7 @@ export function LeadsPage() {
   };
 
   const handleStageChange = async (lead: LeadRecord, pipeline: GhlPipeline, pipelineStageId: string) => {
+    if (!canEditLeads) return;
     if (updatingLeadStageRef.current === lead.id) return;
     const stage = pipeline.stages?.find((item) => item.id === pipelineStageId);
     if (!stage || lead.ghl_pipeline_stage_id === pipelineStageId) return;
@@ -705,34 +732,38 @@ export function LeadsPage() {
                   </DropdownMenuContent>
                 </DropdownMenu>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-8 shrink-0 rounded-full px-3 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
-                onClick={() => {
-                  setEditingListView(null);
-                  setIsListViewPanelOpen(true);
-                }}
-              >
-                <Plus className="mr-1 h-4 w-4" /> Add List
-              </Button>
+              <ControlTooltip label="Add list view">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 shrink-0 rounded-full px-3 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                  onClick={() => {
+                    setEditingListView(null);
+                    setIsListViewPanelOpen(true);
+                  }}
+                >
+                  <Plus className="mr-1 h-4 w-4" /> Add List
+                </Button>
+              </ControlTooltip>
             </div>
           </Tabs>
         </div>
 
         <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 xl:w-auto">
           {activeListView && !activeListView.system && (
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-10 shrink-0 rounded-full px-4 text-muted-foreground"
-              onClick={() => {
-                setEditingListView(activeListView);
-                setIsListViewPanelOpen(true);
-              }}
-            >
-              <Pencil className="mr-2 h-4 w-4" /> Edit List
-            </Button>
+            <ControlTooltip label="Edit list view">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-10 shrink-0 rounded-full px-4 text-muted-foreground"
+                onClick={() => {
+                  setEditingListView(activeListView);
+                  setIsListViewPanelOpen(true);
+                }}
+              >
+                <Pencil className="mr-2 h-4 w-4" /> Edit List
+              </Button>
+            </ControlTooltip>
           )}
           {!loading && (
             <>
@@ -745,6 +776,8 @@ export function LeadsPage() {
                   variant={isSearchExpanded || searchTerm ? "ghost" : "outline"}
                   size="icon"
                   className="absolute left-0 z-10 h-10 w-10 rounded-full"
+                  aria-label="Search leads"
+                  tooltip="Search leads"
                   onClick={() => {
                     if (!isSearchExpanded && !searchTerm) {
                       setIsSearchExpanded(true);
@@ -860,15 +893,17 @@ export function LeadsPage() {
             </>
           )}
 
-          <ControlTooltip label="Add lead">
-            <Button
-              size="icon"
-              className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
-              onClick={() => setIsCreateOpen(true)}
-            >
-              <Plus className="h-5 w-5" />
-            </Button>
-          </ControlTooltip>
+          {canCreateLeads && (
+            <ControlTooltip label="Add lead">
+              <Button
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+                onClick={() => setIsCreateOpen(true)}
+              >
+                <Plus className="h-5 w-5" />
+              </Button>
+            </ControlTooltip>
+          )}
         </div>
       </div>
 
@@ -886,9 +921,13 @@ export function LeadsPage() {
           <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">
             Create a lead to sync it to a pipeline opportunity.
           </p>
-          <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
-            <Plus className="h-6 w-6" />
-          </Button>
+          {canCreateLeads && (
+            <ControlTooltip label="Add lead">
+              <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
+                <Plus className="h-6 w-6" />
+              </Button>
+            </ControlTooltip>
+          )}
         </div>
       ) : (
         <>
@@ -899,6 +938,9 @@ export function LeadsPage() {
                   key={lead.id}
                   lead={lead}
                   onEdit={() => setLeadToEdit(lead)}
+                  canEdit={canEditLeads}
+                  canConvert={canConvertLeads}
+                  canDelete={canDeleteLeads}
                   onDelete={() => setLeadToDelete(lead)}
                   onConvert={() => setLeadToConvert(lead)}
                 />
@@ -913,6 +955,9 @@ export function LeadsPage() {
               onDragOverStage={setDragOverStageId}
               onStageChange={handleStageChange}
               onEdit={setLeadToEdit}
+              canEdit={canEditLeads}
+              canConvert={canConvertLeads}
+              canDelete={canDeleteLeads}
               onDelete={setLeadToDelete}
               onConvert={setLeadToConvert}
             />
@@ -922,6 +967,9 @@ export function LeadsPage() {
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
               onEdit={setLeadToEdit}
+              canEdit={canEditLeads}
+              canConvert={canConvertLeads}
+              canDelete={canDeleteLeads}
               onDelete={setLeadToDelete}
               onConvert={setLeadToConvert}
             />
@@ -1024,6 +1072,9 @@ function LeadTable({
   handleSort,
   renderSortIcon,
   onEdit,
+  canEdit,
+  canConvert,
+  canDelete,
   onDelete,
   onConvert,
 }: {
@@ -1031,6 +1082,9 @@ function LeadTable({
   handleSort: (column: LeadSortColumn) => void;
   renderSortIcon: (column: LeadSortColumn) => ReactNode;
   onEdit: (lead: LeadRecord) => void;
+  canEdit: boolean;
+  canConvert: boolean;
+  canDelete: boolean;
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
 }) {
@@ -1096,7 +1150,7 @@ function LeadTable({
                   </div>
                 </td>
                 <td className="px-4 py-2 text-right">
-                  <LeadActions lead={lead} onEdit={onEdit} onDelete={onDelete} onConvert={onConvert} />
+                  <LeadActions lead={lead} onEdit={onEdit} canEdit={canEdit} canConvert={canConvert} canDelete={canDelete} onDelete={onDelete} onConvert={onConvert} />
                 </td>
               </tr>
             ))}
@@ -1222,6 +1276,8 @@ function LeadListViewSheet({
               variant="ghost"
               size="icon"
               className="text-destructive hover:bg-destructive/10 hover:text-destructive/90"
+              aria-label="Delete list view"
+              tooltip="Delete list view"
               onClick={() => {
                 onDelete(editingListView.id);
                 onOpenChange(false);
@@ -1249,11 +1305,17 @@ function LeadListViewSheet({
 function LeadCard({
   lead,
   onEdit,
+  canEdit,
+  canConvert,
+  canDelete,
   onDelete,
   onConvert,
 }: {
   lead: LeadRecord;
   onEdit: () => void;
+  canEdit: boolean;
+  canConvert: boolean;
+  canDelete: boolean;
   onDelete: () => void;
   onConvert: () => void;
 }) {
@@ -1276,7 +1338,7 @@ function LeadCard({
             </div>
           </div>
         </div>
-        <LeadActions lead={lead} onEdit={() => onEdit()} onDelete={() => onDelete()} onConvert={() => onConvert()} />
+        <LeadActions lead={lead} onEdit={() => onEdit()} canEdit={canEdit} canConvert={canConvert} canDelete={canDelete} onDelete={() => onDelete()} onConvert={() => onConvert()} />
       </CardHeader>
       <CardContent className="p-3 pt-3">
         <div className="space-y-1.5">
@@ -1301,12 +1363,18 @@ function LeadMeta({ label, value }: { label: string; value: string }) {
 function LeadActions({
   lead,
   onEdit,
+  canEdit,
+  canConvert,
+  canDelete,
   onDelete,
   onConvert,
   triggerClassName,
 }: {
   lead: LeadRecord;
   onEdit: (lead: LeadRecord) => void;
+  canEdit: boolean;
+  canConvert: boolean;
+  canDelete: boolean;
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
   triggerClassName?: string;
@@ -1327,28 +1395,34 @@ function LeadActions({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="text-xs">
-        <DropdownMenuItem className="py-1.5 text-xs" onClick={() => onEdit(lead)}>
-          <Pencil className="mr-2 h-3.5 w-3.5" />
-          Edit
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          className={cn("py-1.5 text-xs", isConverted && "pointer-events-none opacity-50")}
-          onClick={() => {
-            if (!isConverted) onConvert(lead);
-          }}
-        >
-          <ArrowRight className="mr-2 h-3.5 w-3.5" />
-          Convert to Matter
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          className={cn("py-1.5 text-xs", isContactOnlyLead && "pointer-events-none opacity-50")}
-          onClick={() => {
-            if (!isContactOnlyLead) onDelete(lead);
-          }}
-        >
-          <Trash2 className="mr-2 h-3.5 w-3.5" />
-          Delete
-        </DropdownMenuItem>
+        {canEdit && (
+          <DropdownMenuItem className="py-1.5 text-xs" onClick={() => onEdit(lead)}>
+            <Pencil className="mr-2 h-3.5 w-3.5" />
+            Edit
+          </DropdownMenuItem>
+        )}
+        {canConvert && (
+          <DropdownMenuItem
+            className={cn("py-1.5 text-xs", isConverted && "pointer-events-none opacity-50")}
+            onClick={() => {
+              if (!isConverted) onConvert(lead);
+            }}
+          >
+            <ArrowRight className="mr-2 h-3.5 w-3.5" />
+            Convert to Matter
+          </DropdownMenuItem>
+        )}
+        {canDelete && (
+          <DropdownMenuItem
+            className={cn("py-1.5 text-xs", isContactOnlyLead && "pointer-events-none opacity-50")}
+            onClick={() => {
+              if (!isContactOnlyLead) onDelete(lead);
+            }}
+          >
+            <Trash2 className="mr-2 h-3.5 w-3.5" />
+            Delete
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1362,6 +1436,9 @@ function LeadKanbanBoard({
   onDragOverStage,
   onStageChange,
   onEdit,
+  canEdit,
+  canConvert,
+  canDelete,
   onDelete,
   onConvert,
 }: {
@@ -1372,6 +1449,9 @@ function LeadKanbanBoard({
   onDragOverStage: (stageId: string) => void;
   onStageChange: (lead: LeadRecord, pipeline: GhlPipeline, stageId: string) => void;
   onEdit: (lead: LeadRecord) => void;
+  canEdit: boolean;
+  canConvert: boolean;
+  canDelete: boolean;
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
 }) {
@@ -1427,8 +1507,8 @@ function LeadKanbanBoard({
                       )}
                       onDragOver={(event) => {
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        onDragOverStage(stageKey);
+                        event.dataTransfer.dropEffect = canEdit ? "move" : "none";
+                        if (canEdit) onDragOverStage(stageKey);
                       }}
                       onDragLeave={() => {
                         if (dragOverStageId === stageKey) onDragOverStage("");
@@ -1439,7 +1519,7 @@ function LeadKanbanBoard({
                         const leadId = event.dataTransfer.getData("text/plain");
                         const lead = leads.find((item) => item.id === leadId);
                         onDragOverStage("");
-                        if (lead) onStageChange(lead, pipeline, stage.id);
+                        if (lead && canEdit) onStageChange(lead, pipeline, stage.id);
                       }}
                     >
                       <div
@@ -1467,6 +1547,9 @@ function LeadKanbanBoard({
                             lead={lead}
                             isUpdating={updatingLeadStageId === lead.id}
                             onEdit={onEdit}
+                            canEdit={canEdit}
+                            canConvert={canConvert}
+                            canDelete={canDelete}
                             onDelete={onDelete}
                             onConvert={onConvert}
                           />
@@ -1488,12 +1571,18 @@ function LeadKanbanCard({
   lead,
   isUpdating,
   onEdit,
+  canEdit,
+  canConvert,
+  canDelete,
   onDelete,
   onConvert,
 }: {
   lead: LeadRecord;
   isUpdating: boolean;
   onEdit: (lead: LeadRecord) => void;
+  canEdit: boolean;
+  canConvert: boolean;
+  canDelete: boolean;
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
 }) {
@@ -1504,7 +1593,7 @@ function LeadKanbanCard({
 
   return (
     <Card
-      draggable={!isUpdating}
+      draggable={!isUpdating && canEdit}
       onDragStart={handleDragStart}
       className={cn(
         "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
@@ -1520,6 +1609,9 @@ function LeadKanbanCard({
           <LeadActions
             lead={lead}
             onEdit={onEdit}
+            canEdit={canEdit}
+            canConvert={canConvert}
+            canDelete={canDelete}
             onDelete={onDelete}
             onConvert={onConvert}
             triggerClassName="h-6 w-6 shrink-0"

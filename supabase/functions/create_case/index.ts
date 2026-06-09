@@ -6,6 +6,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  requireContextPermission,
   syncCaseReference,
 } from "../_shared/case-utils.ts";
 
@@ -16,6 +17,7 @@ serve(async (req) => {
   try {
     const body = await readJsonBody(req);
     const context = await getRequestContext(req, body.locationId);
+    await requireContextPermission(context, "matters.create", "You do not have permission to create matters.");
 
     if (!body.caseName?.trim()) return jsonResponse({ error: "Case name is required" }, 400);
     if (!body.contactId?.trim()) return jsonResponse({ error: "GHL contact is required" }, 400);
@@ -33,6 +35,10 @@ serve(async (req) => {
 
       if (contactAssignmentError) throw new Error(contactAssignmentError.message);
       assignedUserId = contactAssignment?.assigned_user_id || null;
+    }
+
+    if (assignedUserId || body.sourceAttorneyUserId || body.assignedGhlUserId) {
+      await requireContextPermission(context, "matters.assign", "You do not have permission to assign matters.");
     }
 
     const { data: insertedCaseRow, error } = await context.supabase

@@ -69,6 +69,7 @@ import {
   getContacts,
   getCustomFields,
   getLocationTags,
+  hasPermission,
   type GhlBusiness,
   type GhlCustomField,
   type GhlTag,
@@ -159,7 +160,7 @@ function ControlTooltip({ label, children }: { label: string; children: ReactNod
   return (
     <Tooltip>
       <TooltipTrigger>{children}</TooltipTrigger>
-      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white shadow-md">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -434,8 +435,18 @@ export function ContactDirectory() {
   const [activeListViewId, setActiveListViewId] = useState("all");
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
   const [editingListView, setEditingListView] = useState<ListView | null>(null);
+  const [canDeleteContacts, setCanDeleteContacts] = useState(false);
   const hasLoadedCompaniesRef = useRef(false);
   const isLoadingCompaniesRef = useRef(false);
+
+  useEffect(() => {
+    hasPermission("contacts.delete")
+      .then(setCanDeleteContacts)
+      .catch((error) => {
+        console.error("Failed to load contact delete permission", error);
+        setCanDeleteContacts(false);
+      });
+  }, []);
 
   useEffect(() => {
     const loadContactPreferences = async () => {
@@ -1162,13 +1173,11 @@ export function ContactDirectory() {
   };
 
   const activeListView = listViews.find((listView) => listView.id === activeListViewId) || listViews[0];
-  const companyRecordsRequested = typeFilter === "Company" || activeListView?.filters.type === "Company";
-
   useEffect(() => {
-    if (companyRecordsRequested) {
+    if (locationId && systemUsers.length > 0) {
       void loadCompanyRecords();
     }
-  }, [companyRecordsRequested, loadCompanyRecords]);
+  }, [loadCompanyRecords, locationId, systemUsers.length]);
 
   const contactTypeOptions = useMemo(
     () => [...new Set([...accountTypeOptions, "Company", ...contacts.map((contact) => contact.type).filter(Boolean)])],
@@ -1669,6 +1678,7 @@ export function ContactDirectory() {
                   contact={contact}
                   onNavigate={() => handleViewRecord(contact)}
                   onEdit={() => handleEditRecord(contact)}
+                  canDelete={canDeleteContacts}
                   onDelete={() => {
                     setContactToDelete(contact);
                   }}
@@ -1683,6 +1693,7 @@ export function ContactDirectory() {
               onView={handleViewRecord}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
+              canDelete={canDeleteContacts}
               onEdit={handleEditRecord}
               onDelete={(contact) => {
                 setContactToDelete(contact);
@@ -1692,7 +1703,7 @@ export function ContactDirectory() {
 
           {filteredContacts.length === 0 && (
             <div className="rounded-lg border-2 border-dashed border-muted-foreground/40 bg-card py-12 text-center">
-              {isLoadingCompanies && companyRecordsRequested ? (
+              {isLoadingCompanies ? (
                 <>
                   <Loader2 className="mx-auto mb-4 h-12 w-12 animate-spin text-primary" />
                   <h3 className="text-lg font-medium text-foreground">Loading companies...</h3>
@@ -1907,11 +1918,13 @@ function ContactCard({
   contact,
   onNavigate,
   onEdit,
+  canDelete,
   onDelete,
 }: {
   contact: Contact;
   onNavigate: () => void;
   onEdit: () => void;
+  canDelete: boolean;
   onDelete: () => void;
 }) {
   const isCompany = contact.recordKind === "company";
@@ -1952,7 +1965,7 @@ function ContactCard({
             <div className="mt-1 truncate text-xs text-muted-foreground">{contact.type}</div>
           </div>
         </div>
-        <ContactActions onView={onNavigate} onEdit={onEdit} onDelete={onDelete} />
+        <ContactActions onView={onNavigate} onEdit={onEdit} canDelete={canDelete} onDelete={onDelete} />
       </CardHeader>
       <CardContent className="p-3 pt-3">
         <div className="space-y-2.5">
@@ -1989,10 +2002,12 @@ function ContactMeta({ label, value }: { label: string; value: string }) {
 function ContactActions({
   onView,
   onEdit,
+  canDelete,
   onDelete,
 }: {
   onView: () => void;
   onEdit: () => void;
+  canDelete: boolean;
   onDelete: () => void;
 }) {
   return (
@@ -2027,15 +2042,17 @@ function ContactActions({
           <Pencil className="mr-2 h-4 w-4" />
           Edit
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete
-        </DropdownMenuItem>
+        {canDelete && (
+          <DropdownMenuItem
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -2048,6 +2065,7 @@ function ContactTable({
   onView,
   handleSort,
   renderSortIcon,
+  canDelete,
   onEdit,
   onDelete,
 }: {
@@ -2057,6 +2075,7 @@ function ContactTable({
   onView: (contact: Contact) => void;
   handleSort: (column: keyof Contact) => void;
   renderSortIcon: (column: keyof Contact) => ReactNode;
+  canDelete: boolean;
   onEdit: (contact: Contact) => void;
   onDelete: (contact: Contact) => void;
 }) {
@@ -2169,6 +2188,7 @@ function ContactTable({
                 <ContactActions
                   onView={() => onView(contact)}
                   onEdit={() => onEdit(contact)}
+                  canDelete={canDelete}
                   onDelete={() => onDelete(contact)}
                 />
               </td>

@@ -26,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { UserLink } from "@/components/UserLink";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
@@ -55,6 +56,7 @@ import {
   getCachedContactsIfAvailable,
   getContacts,
   getPipelines,
+  hasPermission,
   type GhlPipeline,
   type GhlPipelineStage,
 } from "@/lib/api";
@@ -211,7 +213,7 @@ function ControlTooltip({ label, children }: { label: string; children: ReactNod
   return (
     <Tooltip>
       <TooltipTrigger>{children}</TooltipTrigger>
-      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border bg-popover px-2 py-1 text-xs text-popover-foreground shadow-md">
+      <TooltipContent className="left-1/2 -translate-x-1/2 whitespace-nowrap border-slate-900 bg-slate-900 px-2 py-1 text-xs text-white shadow-md">
         {label}
       </TooltipContent>
     </Tooltip>
@@ -235,14 +237,27 @@ function getAssignedUserFilterLabel(value: string, users: AssignableUser[], allL
 }
 
 function getCaseSourceAttorneyName(caseRecord: CaseRecord, users: AssignableUser[]) {
-  const sourceAttorneyUserId = caseRecord.source_attorney_user_id || "";
-  const sourceAttorney = sourceAttorneyUserId
-    ? users.find((candidate) => getUserId(candidate) === sourceAttorneyUserId)
-    : null;
-  const metadataName =
-    typeof caseRecord.metadata?.source_attorney_name === "string" ? caseRecord.metadata.source_attorney_name.trim() : "";
+  const sourceAttorney = getCaseSourceAttorney(caseRecord, users);
+  const metadataName = getCaseSourceAttorneyMetadataName(caseRecord);
 
   return sourceAttorney ? getUserName(sourceAttorney) : metadataName || "Unassigned";
+}
+
+function getCaseSourceAttorney(caseRecord: CaseRecord, users: AssignableUser[]) {
+  const sourceAttorneyUserId = caseRecord.source_attorney_user_id || "";
+  const sourceAttorney = sourceAttorneyUserId ? users.find((candidate) => getUserId(candidate) === sourceAttorneyUserId) : undefined;
+  if (sourceAttorney) return sourceAttorney;
+
+  const metadataName = getCaseSourceAttorneyMetadataName(caseRecord).toLowerCase();
+  return metadataName ? users.find((candidate) => getUserName(candidate).toLowerCase() === metadataName) : undefined;
+}
+
+function getCaseSourceAttorneyId(caseRecord: CaseRecord, users: AssignableUser[]) {
+  return caseRecord.source_attorney_user_id || getUserId(getCaseSourceAttorney(caseRecord, users));
+}
+
+function getCaseSourceAttorneyMetadataName(caseRecord: CaseRecord) {
+  return typeof caseRecord.metadata?.source_attorney_name === "string" ? caseRecord.metadata.source_attorney_name.trim() : "";
 }
 
 function createAssociatedCaseContactDraft(): AssociatedCaseContactDraft {
@@ -386,8 +401,34 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
   const [isDeletingCase, setIsDeletingCase] = useState(false);
   const [dragOverPipelineStageId, setDragOverPipelineStageId] = useState("");
   const [updatingCaseStageId, setUpdatingCaseStageId] = useState<string | null>(null);
+  const [canDeleteMatters, setCanDeleteMatters] = useState(false);
+  const [canCreateMatters, setCanCreateMatters] = useState(false);
+  const [canEditMatters, setCanEditMatters] = useState(false);
+  const [canAssignMatters, setCanAssignMatters] = useState(false);
   const updatingCaseStageRef = useRef<string | null>(null);
   const loadingContactsRef = useRef(false);
+
+  useEffect(() => {
+    Promise.all([
+      hasPermission("matters.delete"),
+      hasPermission("matters.create"),
+      hasPermission("matters.edit"),
+      hasPermission("matters.assign"),
+    ])
+      .then(([canDelete, canCreate, canEdit, canAssign]) => {
+        setCanDeleteMatters(canDelete);
+        setCanCreateMatters(canCreate);
+        setCanEditMatters(canEdit);
+        setCanAssignMatters(canAssign);
+      })
+      .catch((error) => {
+        console.error("Failed to load matter permissions", error);
+        setCanDeleteMatters(false);
+        setCanCreateMatters(false);
+        setCanEditMatters(false);
+        setCanAssignMatters(false);
+      });
+  }, []);
 
   useEffect(() => {
     const loadCasePreferences = async () => {
@@ -827,6 +868,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
     pipeline: GhlPipeline,
     stage: GhlPipelineStage,
   ) => {
+    if (!canEditMatters) return;
     if (updatingCaseStageRef.current) return;
     if (caseRecord.ghl_pipeline_id === pipeline.id && caseRecord.ghl_pipeline_stage_id === stage.id) return;
 
@@ -890,6 +932,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
         pipelines={sectionPipelines}
         locationId={locationId}
         defaultPipelineId={activePipeline?.id || ""}
+        canAssign={canAssignMatters}
         recordLabel={isLeadsSection ? "Lead" : "Matter"}
         onCreated={handleCaseCreated}
       />
@@ -899,6 +942,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
         caseRecord={caseToEdit}
         users={users}
         pipelines={sectionPipelines}
+        canAssign={canAssignMatters}
         recordLabel={isLeadsSection ? "Lead" : "Matter"}
         onSaved={handleCaseSaved}
       />
@@ -1216,15 +1260,17 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
             </>
           )}
 
-          <ControlTooltip label={sectionCopy.addTooltip}>
-            <Button
-              size="icon"
-              className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
-              onClick={() => setIsCreateOpen(true)}
-            >
-              <Plus className="h-5 w-5" />
-            </Button>
-          </ControlTooltip>
+          {canCreateMatters && (
+            <ControlTooltip label={sectionCopy.addTooltip}>
+              <Button
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+                onClick={() => setIsCreateOpen(true)}
+              >
+                <Plus className="h-5 w-5" />
+              </Button>
+            </ControlTooltip>
+          )}
         </div>
       </div>
 
@@ -1240,9 +1286,11 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
           </div>
           <h3 className="mb-1 text-lg font-medium text-muted-foreground">{sectionCopy.emptyTitle}</h3>
           <p className="mb-6 max-w-sm text-sm text-muted-foreground/70">{sectionCopy.emptyDescription}</p>
-          <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
-            <Plus className="h-6 w-6" />
-          </Button>
+          {canCreateMatters && (
+            <Button onClick={() => setIsCreateOpen(true)} size="icon" className="h-12 w-12 rounded-full shadow-sm hover:bg-[#0484C8]">
+              <Plus className="h-6 w-6" />
+            </Button>
+          )}
         </div>
       ) : (
         <>
@@ -1255,6 +1303,8 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
                 users={users}
                 onNavigate={() => navigate(`/case/${caseRecord.id}`)}
                 onEdit={() => setCaseToEdit(caseRecord)}
+                canEdit={canEditMatters}
+                canDelete={canDeleteMatters}
                 onDelete={() => setCaseToDelete(caseRecord)}
               />
               ))}
@@ -1272,6 +1322,8 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
               onDragOverPipelineStage={setDragOverPipelineStageId}
               onStageChange={handleCasePipelineStageChange}
               onEdit={setCaseToEdit}
+              canEdit={canEditMatters}
+              canDelete={canDeleteMatters}
               onDelete={setCaseToDelete}
             />
           ) : (
@@ -1282,6 +1334,8 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
               navigate={navigate}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
+              canEdit={canEditMatters}
+              canDelete={canDeleteMatters}
               onEdit={setCaseToEdit}
               onDelete={setCaseToDelete}
             />
@@ -1412,6 +1466,8 @@ function CasePipelineKanbanBoard({
   onDragOverPipelineStage,
   onStageChange,
   onEdit,
+  canEdit,
+  canDelete,
   onDelete,
 }: {
   cases: CaseRecord[];
@@ -1425,6 +1481,8 @@ function CasePipelineKanbanBoard({
   onDragOverPipelineStage: (stageKey: string) => void;
   onStageChange: (caseRecord: CaseRecord, pipeline: GhlPipeline, stage: GhlPipelineStage) => void;
   onEdit: (caseRecord: CaseRecord) => void;
+  canEdit: boolean;
+  canDelete: boolean;
   onDelete: (caseRecord: CaseRecord) => void;
 }) {
   if (pipelines.length === 0) {
@@ -1442,7 +1500,7 @@ function CasePipelineKanbanBoard({
   const handleDrop = (event: DragEvent<HTMLDivElement>, pipeline: GhlPipeline, stage: GhlPipelineStage) => {
     event.preventDefault();
     event.stopPropagation();
-    if (updatingCaseStageId) return;
+    if (updatingCaseStageId || !canEdit) return;
     const caseId = event.dataTransfer.getData("text/plain");
     const caseRecord = cases.find((item) => item.id === caseId);
     onDragOverPipelineStage("");
@@ -1488,8 +1546,8 @@ function CasePipelineKanbanBoard({
                       )}
                       onDragOver={(event) => {
                         event.preventDefault();
-                        event.dataTransfer.dropEffect = "move";
-                        onDragOverPipelineStage(stageKey);
+                        event.dataTransfer.dropEffect = canEdit ? "move" : "none";
+                        if (canEdit) onDragOverPipelineStage(stageKey);
                       }}
                       onDragLeave={() => {
                         if (dragOverPipelineStageId === stageKey) onDragOverPipelineStage("");
@@ -1525,6 +1583,8 @@ function CasePipelineKanbanBoard({
                             users={users}
                             updating={updatingCaseStageId === caseRecord.id}
                             onEdit={() => onEdit(caseRecord)}
+                            canEdit={canEdit}
+                            canDelete={canDelete}
                             onDelete={() => onDelete(caseRecord)}
                           />
                         ))}
@@ -1547,6 +1607,8 @@ function KanbanCaseCard({
   users,
   updating,
   onEdit,
+  canEdit,
+  canDelete,
   onDelete,
 }: {
   caseRecord: CaseRecord;
@@ -1554,10 +1616,13 @@ function KanbanCaseCard({
   users: AssignableUser[];
   updating: boolean;
   onEdit: () => void;
+  canEdit: boolean;
+  canDelete: boolean;
   onDelete: () => void;
 }) {
   const clientName = formatContactDisplayName(caseRecord.primary_contact_name) || caseRecord.ghl_contact_id || "No client";
   const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
+  const sourceAttorney = getCaseSourceAttorney(caseRecord, users);
 
   const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData("text/plain", caseRecord.id);
@@ -1566,7 +1631,7 @@ function KanbanCaseCard({
 
   return (
     <Card
-      draggable={!updating}
+      draggable={!updating && canEdit}
       className={cn(
         "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
         updating && "cursor-wait opacity-60",
@@ -1583,6 +1648,8 @@ function KanbanCaseCard({
             <CaseActions
               onView={() => navigate(`/case/${caseRecord.id}`)}
               onEdit={onEdit}
+              canEdit={canEdit}
+              canDelete={canDelete}
               onDelete={onDelete}
               triggerClassName="h-6 w-6 shrink-0"
               iconClassName="h-3.5 w-3.5"
@@ -1593,7 +1660,13 @@ function KanbanCaseCard({
           {clientName}
         </div>
         <div className="truncate text-xs text-muted-foreground">
-          Source Attorney: {sourceAttorneyName}
+          Source Attorney:{" "}
+          <UserLink
+            userId={getCaseSourceAttorneyId(caseRecord, users)}
+            user={sourceAttorney}
+            name={sourceAttorneyName}
+            stopPropagation
+          />
         </div>
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-xs text-muted-foreground">{caseRecord.case_number}</span>
@@ -1611,15 +1684,20 @@ function CaseCard({
   users,
   onNavigate,
   onEdit,
+  canEdit,
+  canDelete,
   onDelete,
 }: {
   caseRecord: CaseRecord;
   users: AssignableUser[];
   onNavigate: () => void;
   onEdit: () => void;
+  canEdit: boolean;
+  canDelete: boolean;
   onDelete: () => void;
 }) {
   const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
+  const sourceAttorney = getCaseSourceAttorney(caseRecord, users);
 
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
@@ -1642,14 +1720,24 @@ function CaseCard({
             <div className="mt-1 truncate text-xs text-muted-foreground">{caseRecord.case_number}</div>
           </div>
         </div>
-        <CaseActions onView={onNavigate} onEdit={onEdit} onDelete={onDelete} />
+        <CaseActions onView={onNavigate} onEdit={onEdit} canEdit={canEdit} canDelete={canDelete} onDelete={onDelete} />
       </CardHeader>
       <CardContent className="p-3 pt-3">
         <div className="space-y-1.5">
           <CaseMeta label="Practice Area" value={caseRecord.case_type} />
           <CaseMeta label="Stage" value={caseRecord.stage.replace(/_/g, " ")} />
           <CaseMeta label="Client" value={caseRecord.primary_contact_name || caseRecord.ghl_contact_id} />
-          <CaseMeta label="Source Attorney" value={sourceAttorneyName} />
+          <CaseMeta
+            label="Source Attorney"
+            value={
+              <UserLink
+                userId={getCaseSourceAttorneyId(caseRecord, users)}
+                user={sourceAttorney}
+                name={sourceAttorneyName}
+                stopPropagation
+              />
+            }
+          />
           <CaseMeta label="Last Updated" value={formatDate(caseRecord.updated_at)} />
         </div>
       </CardContent>
@@ -1657,7 +1745,7 @@ function CaseCard({
   );
 }
 
-function CaseMeta({ label, value }: { label: string; value: string }) {
+function CaseMeta({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex justify-between gap-3 text-xs">
       <span className="text-muted-foreground">{label}:</span>
@@ -1669,12 +1757,16 @@ function CaseMeta({ label, value }: { label: string; value: string }) {
 function CaseActions({
   onView,
   onEdit,
+  canEdit,
+  canDelete,
   onDelete,
   triggerClassName,
   iconClassName,
 }: {
   onView: () => void;
   onEdit: () => void;
+  canEdit: boolean;
+  canDelete: boolean;
   onDelete: () => void;
   triggerClassName?: string;
   iconClassName?: string;
@@ -1702,24 +1794,28 @@ function CaseActions({
           <Eye className="mr-2 h-4 w-4" />
           View
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={(event) => {
-            event.stopPropagation();
-            onEdit();
-          }}
-        >
-          <Pencil className="mr-2 h-4 w-4" />
-          Edit
-        </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={(event) => {
-            event.stopPropagation();
-            onDelete();
-          }}
-        >
-          <Trash2 className="mr-2 h-4 w-4" />
-          Delete
-        </DropdownMenuItem>
+        {canEdit && (
+          <DropdownMenuItem
+            onClick={(event) => {
+              event.stopPropagation();
+              onEdit();
+            }}
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit
+          </DropdownMenuItem>
+        )}
+        {canDelete && (
+          <DropdownMenuItem
+            onClick={(event) => {
+              event.stopPropagation();
+              onDelete();
+            }}
+          >
+            <Trash2 className="mr-2 h-4 w-4" />
+            Delete
+          </DropdownMenuItem>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -1732,6 +1828,8 @@ function CaseTable({
   navigate,
   handleSort,
   renderSortIcon,
+  canEdit,
+  canDelete,
   onEdit,
   onDelete,
 }: {
@@ -1741,6 +1839,8 @@ function CaseTable({
   navigate: (path: string) => void;
   handleSort: (column: keyof CaseRecord) => void;
   renderSortIcon: (column: keyof CaseRecord) => ReactNode;
+  canEdit: boolean;
+  canDelete: boolean;
   onEdit: (caseRecord: CaseRecord) => void;
   onDelete: (caseRecord: CaseRecord) => void;
 }) {
@@ -1790,6 +1890,7 @@ function CaseTable({
               "C",
             );
             const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
+            const sourceAttorney = getCaseSourceAttorney(caseRecord, users);
 
             return (
             <tr
@@ -1807,7 +1908,15 @@ function CaseTable({
                       {caseRecord.case_name}
                     </Link>
                     <div className="text-xs text-muted-foreground">{caseRecord.case_number}</div>
-                    <div className="text-xs text-muted-foreground">Source Attorney: {sourceAttorneyName}</div>
+                    <div className="text-xs text-muted-foreground">
+                      Source Attorney:{" "}
+                      <UserLink
+                        userId={getCaseSourceAttorneyId(caseRecord, users)}
+                        user={sourceAttorney}
+                        name={sourceAttorneyName}
+                        stopPropagation
+                      />
+                    </div>
                   </div>
                 </div>
               </td>
@@ -1841,6 +1950,8 @@ function CaseTable({
                 <CaseActions
                   onView={() => navigate(`/case/${caseRecord.id}`)}
                   onEdit={() => onEdit(caseRecord)}
+                  canEdit={canEdit}
+                  canDelete={canDelete}
                   onDelete={() => onDelete(caseRecord)}
                 />
               </td>
@@ -2044,6 +2155,7 @@ function CreateCaseSheet({
   pipelines,
   locationId,
   defaultPipelineId,
+  canAssign,
   recordLabel = "Matter",
   onCreated,
 }: {
@@ -2056,6 +2168,7 @@ function CreateCaseSheet({
   pipelines: GhlPipeline[];
   locationId: string;
   defaultPipelineId?: string;
+  canAssign: boolean;
   recordLabel?: string;
   onCreated: (caseRecord: CaseRecord) => void;
 }) {
@@ -2217,8 +2330,8 @@ function CreateCaseSheet({
         contactName: selectedContact ? formatContactName(selectedContact) : "",
         contactEmail: selectedContact?.email || "",
         contactPhone: formatPhoneNumber(selectedContact?.phone, ""),
-        assignedUserId: form.assignedUserId || null,
-        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
+        ...(canAssign ? { assignedUserId: form.assignedUserId || null } : {}),
+        ...(canAssign ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
@@ -2504,46 +2617,50 @@ function CreateCaseSheet({
             </Select>
           </div>
 
-          <div className="space-y-2">
-            <Label>Lead Attorney</Label>
-            <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
-              <SelectTrigger>
-                <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
-                  {selectedUser ? getUserName(selectedUser) : "Unassigned"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
-                {users.map((user) => (
-                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
-                    {getUserName(user)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {canAssign && (
+            <>
+              <div className="space-y-2">
+                <Label>Lead Attorney</Label>
+                <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
+                  <SelectTrigger>
+                    <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
+                      {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-          <div className="space-y-2">
-            <Label>Source Attorney</Label>
-            <Select
-              value={form.sourceAttorneyUserId}
-              onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
-            >
-              <SelectTrigger>
-                <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
-                  {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
-                {users.map((user) => (
-                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
-                    {getUserName(user)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+              <div className="space-y-2">
+                <Label>Source Attorney</Label>
+                <Select
+                  value={form.sourceAttorneyUserId}
+                  onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+                >
+                  <SelectTrigger>
+                    <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
+                      {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <Label>Internal Notes</Label>
@@ -2576,6 +2693,7 @@ function EditCaseSheet({
   caseRecord,
   users,
   pipelines,
+  canAssign,
   recordLabel = "Matter",
   onSaved,
 }: {
@@ -2584,6 +2702,7 @@ function EditCaseSheet({
   caseRecord: CaseRecord | null;
   users: AssignableUser[];
   pipelines: GhlPipeline[];
+  canAssign: boolean;
   recordLabel?: string;
   onSaved: (caseRecord: CaseRecord) => void;
 }) {
@@ -2666,8 +2785,8 @@ function EditCaseSheet({
         stage: form.stage,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
-        assignedUserId: form.assignedUserId || null,
-        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
+        ...(canAssign ? { assignedUserId: form.assignedUserId || null } : {}),
+        ...(canAssign ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         metadata: {
           source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
@@ -2725,46 +2844,50 @@ function EditCaseSheet({
             />
           </div>
 
-          <div className="space-y-2">
-            <Label>Lead Attorney</Label>
-            <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
-              <SelectTrigger>
-                <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
-                  {selectedUser ? getUserName(selectedUser) : "Unassigned"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
-                {users.map((user) => (
-                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
-                    {getUserName(user)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {canAssign && (
+            <>
+              <div className="space-y-2">
+                <Label>Lead Attorney</Label>
+                <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
+                  <SelectTrigger>
+                    <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
+                      {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
 
-          <div className="space-y-2">
-            <Label>Source Attorney</Label>
-            <Select
-              value={form.sourceAttorneyUserId}
-              onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
-            >
-              <SelectTrigger>
-                <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
-                  {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
-                {users.map((user) => (
-                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
-                    {getUserName(user)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+              <div className="space-y-2">
+                <Label>Source Attorney</Label>
+                <Select
+                  value={form.sourceAttorneyUserId}
+                  onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+                >
+                  <SelectTrigger>
+                    <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
+                      {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </>
+          )}
 
           <div className="space-y-2">
             <Label>Pipeline</Label>

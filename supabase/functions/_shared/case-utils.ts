@@ -209,6 +209,79 @@ export async function handleError(error: unknown) {
   return jsonResponse({ error: error instanceof Error ? error.message : "Unexpected server error" }, 500);
 }
 
+export async function userHasPermission(context: RequestContext, permissionKey: string) {
+  const { data: profile, error: profileError } = await context.supabase
+    .from("profiles")
+    .select("role, is_active")
+    .eq("id", context.user.id)
+    .maybeSingle();
+
+  if (profileError || !profile?.is_active) return false;
+  if (profile.role === "admin") return true;
+
+  const { data: overrideRows, error: overrideError } = await context.supabase
+    .from("user_permissions")
+    .select("effect, permissions!inner(key)")
+    .eq("user_id", context.user.id)
+    .eq("permissions.key", permissionKey);
+
+  if (overrideError) return false;
+
+  const overrides = overrideRows ?? [];
+  if (overrides.some((row: any) => row.effect === "deny")) return false;
+  if (overrides.some((row: any) => row.effect === "grant")) return true;
+
+  const { data: roleRows, error: roleError } = await context.supabase
+    .from("user_roles")
+    .select("role_id")
+    .eq("user_id", context.user.id);
+
+  if (roleError || !roleRows?.length) return false;
+
+  const roleIds = roleRows.map((row: any) => row.role_id).filter(Boolean);
+  if (roleIds.length === 0) return false;
+
+  const { data: rolePermissionRows, error: rolePermissionError } = await context.supabase
+    .from("role_permissions")
+    .select("role_id, permissions!inner(key)")
+    .in("role_id", roleIds)
+    .eq("permissions.key", permissionKey);
+
+  if (rolePermissionError) return false;
+  return Boolean(rolePermissionRows?.length);
+}
+
+export async function requireContextPermission(context: RequestContext, permissionKey: string, message: string) {
+  if (!await userHasPermission(context, permissionKey)) {
+    throw new Response(JSON.stringify({ error: message }), { status: 403 });
+  }
+}
+
+export async function canViewMatter(context: RequestContext, caseRow: any) {
+  if (!caseRow) return false;
+  if (!caseRow.location_id || caseRow.location_id !== context.location.id) return false;
+
+  if (await userHasPermission(context, "matters.view_all")) return true;
+  if (caseRow.created_by === context.user.id && await userHasPermission(context, "matters.view_own")) return true;
+  if (!await userHasPermission(context, "matters.view_assigned")) return false;
+
+  if (caseRow.assigned_user_id === context.user.id || caseRow.source_attorney_user_id === context.user.id) {
+    return true;
+  }
+
+  const { data, error } = await context.supabase
+    .from("case_assignments")
+    .select("id")
+    .eq("location_id", context.location.id)
+    .eq("case_id", caseRow.id)
+    .eq("assigned_user_id", context.user.id)
+    .is("ended_at", null)
+    .limit(1);
+
+  if (error) return false;
+  return Boolean(data?.length);
+}
+
 export async function getCaseOrThrow(context: RequestContext, caseId: string) {
   const { data: caseRow, error } = await context.supabase
     .from("cases")
@@ -219,6 +292,9 @@ export async function getCaseOrThrow(context: RequestContext, caseId: string) {
 
   if (error) throw new Error("Could not load case");
   if (!caseRow) throw new Response(JSON.stringify({ error: "Case not found" }), { status: 404 });
+  if (!await canViewMatter(context, caseRow)) {
+    throw new Response(JSON.stringify({ error: "You do not have permission to view this matter." }), { status: 403 });
+  }
 
   return caseRow;
 }

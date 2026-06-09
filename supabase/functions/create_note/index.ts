@@ -6,6 +6,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  requireContextPermission,
 } from "../_shared/case-utils.ts";
 
 serve(async (req) => {
@@ -15,6 +16,8 @@ serve(async (req) => {
   try {
     const body = await readJsonBody(req);
     const context = await getRequestContext(req, body.locationId);
+    await requireContextPermission(context, "matters.edit", "You do not have permission to add matter notes.");
+
     if (!body.caseId) return jsonResponse({ error: "Case ID is required" }, 400);
     if (!body.body?.trim()) return jsonResponse({ error: "Note is required" }, 400);
 

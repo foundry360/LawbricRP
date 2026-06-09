@@ -6,6 +6,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  requireContextPermission,
   syncCaseReference,
   syncCaseStageToGhl,
 } from "../_shared/case-utils.ts";
@@ -18,6 +19,10 @@ serve(async (req) => {
     const body = await readJsonBody(req);
     const context = await getRequestContext(req, body.locationId);
     if (!body.caseId) return jsonResponse({ error: "Case ID is required" }, 400);
+    await requireContextPermission(context, "matters.edit", "You do not have permission to edit matters.");
+    if (body.assignedUserId !== undefined || body.sourceAttorneyUserId !== undefined || body.assignedGhlUserId !== undefined) {
+      await requireContextPermission(context, "matters.assign", "You do not have permission to assign matters.");
+    }
 
     const existing = await getCaseOrThrow(context, body.caseId);
     const updates: Record<string, unknown> = {
