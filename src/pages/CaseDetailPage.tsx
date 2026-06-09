@@ -1660,7 +1660,7 @@ function MatterNoteList({
               <NotebookPen className="h-4 w-4" />
             </div>
             <div className="min-w-0 flex-1">
-              <NoteRichTextBody value={note.body || "Untitled note"} className="line-clamp-3 text-sm font-medium text-foreground" />
+              <NoteRichTextBody value={note.body || "Untitled note"} className="line-clamp-3 text-sm text-foreground" />
               <div className="mt-1 text-xs text-muted-foreground">
                 Created by {getNoteAuthorName(note, users)} · {formatDateTime(note.created_at)}
               </div>
