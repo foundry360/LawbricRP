@@ -45,9 +45,6 @@ verify_enabled = true
 enroll_enabled = false
 verify_enabled = false
 
-[functions.ghl-webhook-events]
-verify_jwt = false
-
 [functions.admin-users]
 verify_jwt = true
 

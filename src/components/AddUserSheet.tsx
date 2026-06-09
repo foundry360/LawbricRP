@@ -153,8 +153,9 @@ export function AddUserSheet({ locationId, onSuccess, children }: AddUserSheetPr
         {children || (
           <Button
             size="icon"
-            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
             aria-label="Add user"
+            tooltip="Add user"
             title="Add user"
           >
             <Plus className="h-5 w-5" />

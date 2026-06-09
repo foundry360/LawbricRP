@@ -1,7 +1,7 @@
 import { type CSSProperties, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams } from "react-router-dom";
-import { ArrowLeft, Briefcase, CheckSquare, Clock, IdCard, Loader2, Mail, MoreVertical, Pencil, Phone, Plus, Trash2, UserX, X } from "lucide-react";
+import { ArrowLeft, Briefcase, CheckSquare, Clock, IdCard, Loader2, Mail, MoreVertical, NotebookPen, Pencil, Phone, Plus, Trash2, UserX, X } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -43,7 +43,7 @@ import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
 import { getTagPastelStyle } from "@/lib/tag-colors";
 import { createTagMetadata, loadTagsWithMetadata } from "@/lib/tag-metadata";
-import { createTask, listTasks, type TaskRecord, updateTask } from "@/lib/tasks";
+import { createTask, formatTaskStatusLabel, listTasks, type TaskRecord, updateTask } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -80,6 +80,14 @@ type MatterActionState = {
   mode: "view" | "edit" | "delete";
   matter: CaseRecord;
 } | null;
+
+type ContactNote = {
+  id: string;
+  body: string;
+  created_at: string;
+  updated_at?: string | null;
+  created_by?: string | null;
+};
 
 type RelatedContactDisplay = {
   id: string;
@@ -585,7 +593,14 @@ function ContactMatterList({
               </Badge>
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                    aria-label="Matter actions"
+                    tooltip="Matter actions"
+                  >
                     <MoreVertical className="h-4 w-4" />
                   </Button>
                 </DropdownMenuTrigger>
@@ -600,6 +615,30 @@ function ContactMatterList({
                   </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ContactNoteList({ notes }: { notes: ContactNote[] }) {
+  if (notes.length === 0) {
+    return <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>;
+  }
+
+  return (
+    <div className="divide-y pt-3">
+      {notes.map((note) => (
+        <div key={note.id} className="block w-full py-3 text-left first:pt-0 last:pb-0">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <NotebookPen className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="line-clamp-3 whitespace-pre-line text-sm text-foreground">{note.body || "Untitled note"}</p>
+              <div className="mt-1 text-xs text-muted-foreground">{formatRecordDate(note.created_at)}</div>
             </div>
           </div>
         </div>
@@ -763,12 +802,12 @@ function ContactTaskEditSheet({
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
                 <SelectTrigger>
-                  <span className="capitalize">{form.status.replace(/_/g, " ")}</span>
+                  <span>{formatTaskStatusLabel(form.status)}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {TASK_STATUSES.map((status) => (
                     <SelectItem key={status} value={status}>
-                      <span className="capitalize">{status.replace(/_/g, " ")}</span>
+                      <span>{formatTaskStatusLabel(status)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -981,12 +1020,12 @@ function ContactTaskCreateSheet({
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
                 <SelectTrigger>
-                  <span className="capitalize">{form.status.replace(/_/g, " ")}</span>
+                  <span>{formatTaskStatusLabel(form.status)}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {TASK_STATUSES.map((status) => (
                     <SelectItem key={status} value={status}>
-                      <span className="capitalize">{status.replace(/_/g, " ")}</span>
+                      <span>{formatTaskStatusLabel(status)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1027,11 +1066,102 @@ function ContactTaskCreateSheet({
   );
 }
 
+function ContactNoteSheet({
+  open,
+  onOpenChange,
+  locationId,
+  contactId,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  locationId: string;
+  contactId: string;
+  onCreated: (note: ContactNote) => void;
+}) {
+  const { toast } = useToast();
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) setNote("");
+  }, [open]);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!note.trim()) {
+      toast({ title: "Note Required", description: "Please enter a note.", variant: "destructive" });
+      return;
+    }
+    if (!locationId || !contactId) {
+      toast({ title: "Note Not Added", description: "Contact context is missing.", variant: "destructive" });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const { data, error } = await supabase
+        .from("contact_notes")
+        .insert({
+          location_id: locationId,
+          ghl_contact_id: contactId,
+          body: note.trim(),
+          created_by: user?.id || null,
+        })
+        .select("*")
+        .single();
+
+      if (error) throw new Error(error.message);
+      onCreated(data as ContactNote);
+      onOpenChange(false);
+      toast({ title: "Note Created", description: "The contact note has been saved." });
+    } catch (error) {
+      toast({
+        title: "Note Not Added",
+        description: getUserFriendlyErrorMessage(error, "Could not add this contact note. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Add Note</SheetTitle>
+        </SheetHeader>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label>Note</Label>
+            <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={8} placeholder="Add a contact note" />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save Note
+            </Button>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 export function ContactDetailPage() {
   const { contactId } = useParams();
   const { toast } = useToast();
   const [contact, setContact] = useState<any>(null);
   const [contactTasks, setContactTasks] = useState<TaskRecord[]>([]);
+  const [contactNotes, setContactNotes] = useState<ContactNote[]>([]);
   const [contactMatters, setContactMatters] = useState<CaseRecord[]>([]);
   const [relatedMatters, setRelatedMatters] = useState<CaseRecord[]>([]);
   const [allContactOptions, setAllContactOptions] = useState<RelatedContactDisplay[]>([]);
@@ -1043,6 +1173,8 @@ export function ContactDetailPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [isCreateMatterOpen, setIsCreateMatterOpen] = useState(false);
+  const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
+  const [activeContactTab, setActiveContactTab] = useState("tasks");
   const [accountTypeOptions, setAccountTypeOptions] = useState<string[]>([]);
   const [practiceAreaOptions, setPracticeAreaOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
@@ -1457,6 +1589,7 @@ export function ContactDetailPage() {
         }
         const customFieldsMap = buildCustomFieldsMap(contactCustomFields);
         setContactTasks([]);
+        setContactNotes([]);
         setContactMatters([]);
         setRelatedMatters([]);
         setRelatedContacts([]);
@@ -1540,6 +1673,27 @@ export function ContactDetailPage() {
               });
             })
             .finally(() => setTasksLoading(false));
+
+          void (async () => {
+            try {
+              const { data: notes, error } = await supabase
+                .from("contact_notes")
+                .select("*")
+                .eq("location_id", locRecordId)
+                .eq("ghl_contact_id", rawContact.id)
+                .order("created_at", { ascending: false });
+
+              if (error) throw new Error(error.message);
+              setContactNotes((notes || []) as ContactNote[]);
+            } catch (error) {
+              console.error("Failed to fetch contact notes", error);
+              toast({
+                variant: "destructive",
+                title: "Notes Not Loaded",
+                description: getUserFriendlyErrorMessage(error, "Could not load notes for this contact. Please try again."),
+              });
+            }
+          })();
         }
         let rawAssignedAttorneyId = "";
         if (locRecordId) {
@@ -1683,6 +1837,7 @@ export function ContactDetailPage() {
         mode={matterAction?.mode || null}
         matter={matterAction?.matter || null}
         locationId={locationRecordId}
+        users={systemUsers}
         onSaved={(updatedMatter) => {
           setContactMatters((current) =>
             current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
@@ -1707,6 +1862,7 @@ export function ContactDetailPage() {
           phone: contact.phone,
           assignedUserId: contact.assignedAttorneyId,
         }}
+        users={systemUsers}
         onCreated={(matter) => {
           setContactMatters((current) => [matter, ...current]);
         }}
@@ -1729,6 +1885,16 @@ export function ContactDetailPage() {
         contactName={contact.name}
         initialAssignedUserId={contact.assignedAttorneyId}
         onSaved={handleTaskCreated}
+      />
+      <ContactNoteSheet
+        open={isNoteSheetOpen}
+        onOpenChange={setIsNoteSheetOpen}
+        locationId={locationRecordId}
+        contactId={contact.id}
+        onCreated={(note) => {
+          setContactNotes((current) => [note, ...current.filter((currentNote) => currentNote.id !== note.id)]);
+          setActiveContactTab("notes");
+        }}
       />
       <div className="shrink-0 border-b border-border pb-4">
         <div className="flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
@@ -1801,6 +1967,16 @@ export function ContactDetailPage() {
                 onClick={() => setIsCreateTaskOpen(true)}
               >
                 <CheckSquare className="h-4 w-4" />
+              </Button>
+            </HeaderIconTooltip>
+            <HeaderIconTooltip label="Add Note">
+              <Button
+                size="icon"
+                className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+                aria-label="Add Note"
+                onClick={() => setIsNoteSheetOpen(true)}
+              >
+                <NotebookPen className="h-4 w-4" />
               </Button>
             </HeaderIconTooltip>
             <HeaderIconTooltip label="Add Matter">
@@ -1976,7 +2152,7 @@ export function ContactDetailPage() {
         </div>
 
         <div className="h-full overflow-y-auto py-6 lg:px-6">
-          <Tabs defaultValue="tasks" className="w-full">
+          <Tabs value={activeContactTab} onValueChange={setActiveContactTab} className="w-full">
             <div className="mb-4">
               <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0">
                 <TabsTrigger
@@ -2037,9 +2213,9 @@ export function ContactDetailPage() {
             <TabsContent value="notes" className="m-0">
               <Accordion type="single" collapsible className="w-full">
                 <AccordionItem value="recent-notes">
-                  <AccordionTrigger>Recent Notes</AccordionTrigger>
+                  <AccordionTrigger>Recent Notes ({contactNotes.length})</AccordionTrigger>
                   <AccordionContent>
-                    <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>
+                    <ContactNoteList notes={contactNotes} />
                   </AccordionContent>
                 </AccordionItem>
               </Accordion>

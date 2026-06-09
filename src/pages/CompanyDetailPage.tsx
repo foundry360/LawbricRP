@@ -52,7 +52,7 @@ import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { supabase } from "@/lib/supabase";
 import { getTagPastelStyle } from "@/lib/tag-colors";
-import { createTask, listTasks, type TaskRecord } from "@/lib/tasks";
+import { createTask, formatTaskStatusLabel, listTasks, type TaskRecord } from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -434,7 +434,7 @@ function CompanyTagAddButton({
       <button
         ref={buttonRef}
         type="button"
-        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground transition-colors hover:bg-muted/80 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground transition-colors hover:bg-[#0484C8] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         title="Add tag"
         onClick={() => {
           updateMenuPosition();
@@ -614,12 +614,12 @@ function CompanyTaskCreateSheet({
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
                 <SelectTrigger>
-                  <span className="capitalize">{form.status.replace(/_/g, " ")}</span>
+                  <span>{formatTaskStatusLabel(form.status)}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {TASK_STATUSES.map((status) => (
                     <SelectItem key={status} value={status}>
-                      <span className="capitalize">{status.replace(/_/g, " ")}</span>
+                      <span>{formatTaskStatusLabel(status)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -713,8 +713,10 @@ function CompanyContactActions({
           type="button"
           variant="ghost"
           size="icon"
-          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
           disabled={disabled}
+          aria-label="Contact actions"
+          tooltip="Contact actions"
         >
           <MoreVertical className="h-4 w-4" />
         </Button>
@@ -1434,6 +1436,7 @@ export function CompanyDetailPage() {
         mode={matterAction?.mode || null}
         matter={matterAction?.matter || null}
         locationId={appLocationId}
+        users={systemUsers}
         onSaved={(updatedMatter) => {
           setCompanyMatters((current) =>
             current.map((matter) => (matter.id === updatedMatter.id ? { ...matter, ...updatedMatter } : matter)),
@@ -1457,6 +1460,7 @@ export function CompanyDetailPage() {
               }
             : null
         }
+        users={systemUsers}
         relatedCompany={{
           id: companyId || company.id,
           name: company.name || "Company",
@@ -1944,7 +1948,14 @@ export function CompanyDetailPage() {
                               </Badge>
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
-                                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                                    aria-label="Matter actions"
+                                    tooltip="Matter actions"
+                                  >
                                     <MoreVertical className="h-4 w-4" />
                                   </Button>
                                 </DropdownMenuTrigger>

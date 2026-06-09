@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useState } from "react";
+import { ReactNode, useEffect, useRef, useState } from "react";
 import {
   Sidebar,
   SidebarContent,
@@ -58,6 +58,7 @@ import { getAvatarInitials } from "@/lib/avatar";
 import { formatDistanceToNow } from "date-fns";
 import { GlobalSearch } from "@/components/GlobalSearch";
 import { clearCachedAssignableUsers } from "@/lib/users";
+import { generateTaskDueNotifications } from "@/lib/tasks";
 
 type NotificationRow = {
   id: string;
@@ -65,7 +66,11 @@ type NotificationRow = {
   message: string;
   is_read: boolean;
   created_at?: string;
-  location_id?: string;
+  read_at?: string | null;
+  location_id: string;
+  recipient_user_id: string;
+  action_url?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -73,17 +78,23 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [userAvatar, setUserAvatar] = useState("");
   const [userEmail, setUserEmail] = useState("");
+  const [userId, setUserId] = useState("");
   const [userFirstName, setUserFirstName] = useState("");
   const [userLastName, setUserLastName] = useState("");
   const [notifications, setNotifications] = useState<NotificationRow[]>([]);
   const [appContext, setAppContext] = useState<AppLocationContext | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const userIdRef = useRef("");
 
   useEffect(() => {
-    const setUserProfile = (user?: { email?: string; user_metadata?: Record<string, unknown> } | null) => {
+    const setUserProfile = (user?: { id?: string; email?: string; user_metadata?: Record<string, unknown> } | null) => {
       const metadata = user?.user_metadata ?? {};
+      const nextUserId = user?.id || "";
+      userIdRef.current = nextUserId;
+      setUserId(nextUserId);
       setUserAvatar(typeof metadata.avatar_url === "string" ? metadata.avatar_url.trim() : "");
       setUserEmail(user?.email || "");
       setUserFirstName(typeof metadata.first_name === "string" ? metadata.first_name : "");
@@ -113,6 +124,9 @@ export function Layout({ children }: { children: ReactNode }) {
 
     const initializeApp = async () => {
       try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
         const context = await getAppLocationContext();
         setAppContext(context);
 
@@ -121,7 +135,13 @@ export function Layout({ children }: { children: ReactNode }) {
           localStorage.setItem("locationId", context.location.ghlLocationId);
         }
 
-        const locationId = context.location?.ghlLocationId;
+        const locationId = context.location?.id;
+        if (locationId) {
+          await generateTaskDueNotifications(locationId).catch((error) => {
+            console.error("Failed to generate task due notifications", error);
+          });
+        }
+
         let query = supabase
           .from("notifications")
           .select("*")
@@ -129,6 +149,9 @@ export function Layout({ children }: { children: ReactNode }) {
           .limit(50);
         if (locationId) {
           query = query.eq("location_id", locationId);
+        }
+        if (user?.id) {
+          query = query.eq("recipient_user_id", user.id);
         }
         const { data } = await query;
         if (data) setNotifications(data as NotificationRow[]);
@@ -146,9 +169,12 @@ export function Layout({ children }: { children: ReactNode }) {
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "notifications" },
         (payload) => {
-          const locationId = localStorage.getItem("locationId");
+          const locationId = localStorage.getItem("supabaseLocationId");
           const notification = payload.new as NotificationRow;
-          if (!locationId || notification.location_id === locationId) {
+          if (
+            (!locationId || notification.location_id === locationId)
+            && notification.recipient_user_id === userIdRef.current
+          ) {
             setNotifications((prev) => [notification, ...prev]);
           }
         },
@@ -170,23 +196,56 @@ export function Layout({ children }: { children: ReactNode }) {
   });
 
   const markAllAsRead = async () => {
-    const locationId = localStorage.getItem("locationId");
-    if (!locationId) return;
+    const locationId = appContext?.location?.id || localStorage.getItem("supabaseLocationId");
+    if (!locationId || !userId) return;
+    const readAt = new Date().toISOString();
     await supabase
       .from("notifications")
-      .update({ is_read: true })
+      .update({ is_read: true, read_at: readAt })
       .eq("location_id", locationId)
+      .eq("recipient_user_id", userId)
       .eq("is_read", false);
-    setNotifications(notifications.map((notification) => ({ ...notification, is_read: true })));
+    setNotifications(notifications.map((notification) => ({ ...notification, is_read: true, read_at: readAt })));
   };
 
   const markAsRead = async (id: string) => {
-    await supabase.from("notifications").update({ is_read: true }).eq("id", id);
+    const readAt = new Date().toISOString();
+    await supabase.from("notifications").update({ is_read: true, read_at: readAt }).eq("id", id);
     setNotifications(
       notifications.map((notification) =>
-        notification.id === id ? { ...notification, is_read: true } : notification,
+        notification.id === id ? { ...notification, is_read: true, read_at: readAt } : notification,
       ),
     );
+  };
+
+  const markAsUnread = async (id: string) => {
+    await supabase.from("notifications").update({ is_read: false, read_at: null }).eq("id", id);
+    setNotifications(
+      notifications.map((notification) =>
+        notification.id === id ? { ...notification, is_read: false, read_at: null } : notification,
+      ),
+    );
+  };
+
+  const deleteNotification = async (id: string) => {
+    await supabase.from("notifications").delete().eq("id", id);
+    setNotifications(notifications.filter((notification) => notification.id !== id));
+  };
+
+  const getNotificationActionUrl = (notification: NotificationRow) => {
+    const taskId = typeof notification.metadata?.task_id === "string" ? notification.metadata.task_id : "";
+    if (taskId) return `/tasks?taskId=${encodeURIComponent(taskId)}`;
+    return notification.action_url || "";
+  };
+
+  const handleNotificationClick = async (notification: NotificationRow) => {
+    if (!notification.is_read) await markAsRead(notification.id);
+
+    const actionUrl = getNotificationActionUrl(notification);
+    if (actionUrl) {
+      setIsNotificationsOpen(false);
+      navigate(actionUrl);
+    }
   };
 
   const toggleFullscreen = async () => {
@@ -244,7 +303,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 )}
               </Button>
 
-              <Sheet>
+              <Sheet open={isNotificationsOpen} onOpenChange={setIsNotificationsOpen}>
                 <SheetTrigger asChild>
                   <Button
                     variant="ghost"
@@ -254,12 +313,14 @@ export function Layout({ children }: { children: ReactNode }) {
                   >
                     <Bell size={20} strokeWidth={1.5} />
                     {unreadCount > 0 && (
-                      <span className="absolute right-[10px] top-[10px] h-2 w-2 rounded-full border border-header-background bg-red-500" />
+                      <span className="absolute -right-1 top-1 flex h-5 min-w-5 items-center justify-center rounded-full border border-header-background bg-red-500 px-1 text-[10px] font-semibold leading-none text-white">
+                        {unreadCount > 99 ? "99+" : unreadCount}
+                      </span>
                     )}
                   </Button>
                 </SheetTrigger>
                 <SheetContent side="right" className="z-[100] flex w-full flex-col p-0 sm:w-[400px]">
-                  <SheetHeader className="mt-4 border-b px-4 py-3 text-left">
+                  <SheetHeader className="border-b px-4 pb-3 pt-10 text-left">
                     <div className="flex items-center justify-between">
                       <SheetTitle className="text-sm font-semibold">
                         Notifications {unreadCount > 0 && `(${unreadCount})`}
@@ -267,7 +328,7 @@ export function Layout({ children }: { children: ReactNode }) {
                       {unreadCount > 0 && (
                         <button
                           onClick={markAllAsRead}
-                          className="text-xs text-muted-foreground hover:text-foreground"
+                          className="ml-auto text-right text-xs text-muted-foreground hover:text-foreground"
                         >
                           Mark all as read
                         </button>
@@ -282,34 +343,71 @@ export function Layout({ children }: { children: ReactNode }) {
                       </div>
                     ) : (
                       notifications.map((notification) => (
-                        <button
+                        <div
                           key={notification.id}
-                          onClick={() => !notification.is_read && markAsRead(notification.id)}
-                          className={`border-b px-4 py-3 text-left transition-colors hover:bg-muted/50 ${
+                          className={`flex border-b transition-colors hover:bg-muted/50 ${
                             notification.is_read ? "opacity-60" : ""
                           }`}
                         >
-                          <div className="flex items-start gap-3">
-                            <div
-                              className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
-                                notification.is_read ? "bg-transparent" : "bg-red-500"
-                              }`}
-                            />
-                            <div>
-                              <p className="mb-1 text-sm font-medium leading-none">{notification.title}</p>
-                              <p className="line-clamp-2 text-xs text-muted-foreground">
-                                {notification.message}
-                              </p>
-                              <p className="mt-1 text-[10px] text-muted-foreground">
-                                {notification.created_at
-                                  ? formatDistanceToNow(new Date(notification.created_at), {
-                                      addSuffix: true,
-                                    })
-                                  : "Just now"}
-                              </p>
+                          <button
+                            type="button"
+                            onClick={() => void handleNotificationClick(notification)}
+                            className="min-w-0 flex-1 px-4 py-3 text-left"
+                          >
+                            <div className="flex items-start gap-3">
+                              <div
+                                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${
+                                  notification.is_read ? "bg-transparent" : "bg-red-500"
+                                }`}
+                              />
+                              <div className="min-w-0">
+                                <p className="mb-1 text-sm font-medium leading-none">{notification.title}</p>
+                                <p className="line-clamp-2 text-xs text-muted-foreground">
+                                  {notification.message}
+                                </p>
+                                <p className="mt-1 text-[10px] text-muted-foreground">
+                                  {notification.created_at
+                                    ? formatDistanceToNow(new Date(notification.created_at), {
+                                        addSuffix: true,
+                                      })
+                                    : "Just now"}
+                                </p>
+                              </div>
                             </div>
+                          </button>
+                          <div className="px-2 py-2">
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="icon"
+                                  className="h-8 w-8 rounded-full text-muted-foreground hover:text-foreground"
+                                  aria-label="Notification actions"
+                                >
+                                  <span className="text-lg leading-none">...</span>
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="z-[150]">
+                                <DropdownMenuItem
+                                  onClick={() =>
+                                    notification.is_read
+                                      ? void markAsUnread(notification.id)
+                                      : void markAsRead(notification.id)
+                                  }
+                                >
+                                  {notification.is_read ? "Mark unread" : "Mark read"}
+                                </DropdownMenuItem>
+                                <DropdownMenuItem
+                                  className="text-destructive focus:text-destructive"
+                                  onClick={() => void deleteNotification(notification.id)}
+                                >
+                                  Delete
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
                           </div>
-                        </button>
+                        </div>
                       ))
                     )}
                   </div>

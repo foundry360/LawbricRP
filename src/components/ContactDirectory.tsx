@@ -275,6 +275,13 @@ function getArrayFromResponse(response: any, key: string) {
   return [];
 }
 
+function getAttorneyFilterLabel(value: string, users: any[]) {
+  if (value === "All") return "Any Attorney";
+  if (value === "Unassigned") return "Unassigned";
+  const user = users.find((candidate) => getUserId(candidate) === value);
+  return user ? getUserName(user) : "Unknown User";
+}
+
 function getDescriptionValue(description: unknown, label: string) {
   const normalizedLabel = label.trim().toLowerCase();
   return String(description || "")
@@ -1386,8 +1393,14 @@ export function ContactDirectory() {
               {listViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
-                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                      aria-label="List actions"
+                      tooltip="List actions"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
@@ -1566,7 +1579,9 @@ export function ContactDirectory() {
                         setCurrentPage(1);
                       }}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Any attorney" />
+                          <span className={cn(attorneyFilter === "All" && "text-muted-foreground")}>
+                            {getAttorneyFilterLabel(attorneyFilter, systemUsers)}
+                          </span>
                         </SelectTrigger>
                         <SelectContent className="z-[150] max-h-72 overflow-y-auto">
                           <SelectItem value="All">Any Attorney</SelectItem>
@@ -1603,8 +1618,8 @@ export function ContactDirectory() {
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
-                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white sm:inline-flex",
+                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-[#0484C8] hover:text-white",
                   )}
                   disabled={isSavingPinnedView}
                   onClick={handleTogglePinnedView}
@@ -1983,7 +1998,13 @@ function ContactActions({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+          aria-label="Contact actions"
+          tooltip="Contact actions"
+        >
           <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>

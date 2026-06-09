@@ -94,6 +94,25 @@ type CaseListView = {
 
 type CaseViewMode = "grid" | "list" | "kanban";
 type CasesPageSection = "matters" | "leads";
+type AssociatedCaseContactMode = "existing" | "new";
+type AssociatedCaseContactDraft = {
+  id: string;
+  mode: AssociatedCaseContactMode;
+  contactId: string;
+  name: string;
+  email: string;
+  phone: string;
+  role: string;
+  partyType: string;
+};
+type AssociatedCaseContactPayload = {
+  partyType: string;
+  role: string;
+  contactId?: string;
+  name: string;
+  email: string;
+  phone: string;
+};
 
 const SECTION_COPY: Record<
   CasesPageSection,
@@ -206,6 +225,37 @@ const defaultCaseListViews: CaseListView[] = [
 function formatContactName(contact: any) {
   const name = `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || "";
   return formatPersonName(name) || contact?.email || "Unnamed contact";
+}
+
+function getAssignedUserFilterLabel(value: string, users: AssignableUser[], allLabel = "All Users") {
+  if (value === "All") return allLabel;
+  if (value === "unassigned") return "Unassigned";
+  const user = users.find((candidate) => getUserId(candidate) === value);
+  return user ? getUserName(user) : "Unknown User";
+}
+
+function getCaseSourceAttorneyName(caseRecord: CaseRecord, users: AssignableUser[]) {
+  const sourceAttorneyUserId = caseRecord.source_attorney_user_id || "";
+  const sourceAttorney = sourceAttorneyUserId
+    ? users.find((candidate) => getUserId(candidate) === sourceAttorneyUserId)
+    : null;
+  const metadataName =
+    typeof caseRecord.metadata?.source_attorney_name === "string" ? caseRecord.metadata.source_attorney_name.trim() : "";
+
+  return sourceAttorney ? getUserName(sourceAttorney) : metadataName || "Unassigned";
+}
+
+function createAssociatedCaseContactDraft(): AssociatedCaseContactDraft {
+  return {
+    id: `associated-contact-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    mode: "existing",
+    contactId: "",
+    name: "",
+    email: "",
+    phone: "",
+    role: "Associated Contact",
+    partyType: "associated",
+  };
 }
 
 function getArrayFromResponse(response: any, key: string) {
@@ -907,8 +957,14 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
               {displayListViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
-                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                      aria-label="List actions"
+                      tooltip="List actions"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
@@ -1090,13 +1146,15 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
                     </div>
 
                     <div className="space-y-2">
-                      <Label>Primary Attorney</Label>
+                      <Label>Lead Attorney</Label>
                       <Select value={assignedUserFilter} onValueChange={(value) => {
                         setAssignedUserFilter(value);
                         setCurrentPage(1);
                       }}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Any attorney" />
+                          <span className={cn(assignedUserFilter === "All" && "text-muted-foreground")}>
+                            {getAssignedUserFilterLabel(assignedUserFilter, users, "Any Attorney")}
+                          </span>
                         </SelectTrigger>
                         <SelectContent className="z-[150] max-h-72 overflow-y-auto">
                           <SelectItem value="All">Any Attorney</SelectItem>
@@ -1145,8 +1203,8 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
-                    isCurrentPinnedView && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white sm:inline-flex",
+                    isCurrentPinnedView && "bg-primary/10 text-primary hover:bg-[#0484C8] hover:text-white",
                   )}
                   disabled={isSavingPinnedView}
                   onClick={handleTogglePinnedView}
@@ -1194,6 +1252,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
               <CaseCard
                 key={caseRecord.id}
                 caseRecord={caseRecord}
+                users={users}
                 onNavigate={() => navigate(`/case/${caseRecord.id}`)}
                 onEdit={() => setCaseToEdit(caseRecord)}
                 onDelete={() => setCaseToDelete(caseRecord)}
@@ -1207,6 +1266,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
               countLabel={sectionCopy.countLabel}
               sectionTitle={sectionCopy.title}
               navigate={navigate}
+              users={users}
               dragOverPipelineStageId={dragOverPipelineStageId}
               updatingCaseStageId={updatingCaseStageId}
               onDragOverPipelineStage={setDragOverPipelineStageId}
@@ -1218,11 +1278,12 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
             <CaseTable
               cases={paginatedCases}
               contacts={contacts}
+              users={users}
               navigate={navigate}
               handleSort={handleSort}
               renderSortIcon={renderSortIcon}
-            onEdit={setCaseToEdit}
-            onDelete={setCaseToDelete}
+              onEdit={setCaseToEdit}
+              onDelete={setCaseToDelete}
             />
           )}
 
@@ -1345,6 +1406,7 @@ function CasePipelineKanbanBoard({
   countLabel,
   sectionTitle,
   navigate,
+  users,
   dragOverPipelineStageId,
   updatingCaseStageId,
   onDragOverPipelineStage,
@@ -1357,6 +1419,7 @@ function CasePipelineKanbanBoard({
   countLabel: string;
   sectionTitle: string;
   navigate: (path: string) => void;
+  users: AssignableUser[];
   dragOverPipelineStageId: string;
   updatingCaseStageId: string | null;
   onDragOverPipelineStage: (stageKey: string) => void;
@@ -1418,7 +1481,7 @@ function CasePipelineKanbanBoard({
                     <div
                       key={stageKey}
                       className={cn(
-                        "flex min-w-[18rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
+                        "flex min-w-[22rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
                         index === 0 && "overflow-hidden rounded-tl-md",
                         index === stages.length - 1 && "overflow-hidden rounded-tr-md",
                         isDragOver && "border-[#0484C8] bg-[#F0F6FF]",
@@ -1459,6 +1522,7 @@ function CasePipelineKanbanBoard({
                             key={caseRecord.id}
                             caseRecord={caseRecord}
                             navigate={navigate}
+                            users={users}
                             updating={updatingCaseStageId === caseRecord.id}
                             onEdit={() => onEdit(caseRecord)}
                             onDelete={() => onDelete(caseRecord)}
@@ -1480,17 +1544,20 @@ function CasePipelineKanbanBoard({
 function KanbanCaseCard({
   caseRecord,
   navigate,
+  users,
   updating,
   onEdit,
   onDelete,
 }: {
   caseRecord: CaseRecord;
   navigate: (path: string) => void;
+  users: AssignableUser[];
   updating: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const clientName = formatContactDisplayName(caseRecord.primary_contact_name) || caseRecord.ghl_contact_id || "No client";
+  const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
 
   const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData("text/plain", caseRecord.id);
@@ -1525,6 +1592,9 @@ function KanbanCaseCard({
         <div className="truncate text-xs text-muted-foreground">
           {clientName}
         </div>
+        <div className="truncate text-xs text-muted-foreground">
+          Source Attorney: {sourceAttorneyName}
+        </div>
         <div className="flex items-center justify-between gap-2">
           <span className="truncate text-xs text-muted-foreground">{caseRecord.case_number}</span>
           <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getCaseStatusClass(caseRecord.status))}>
@@ -1538,15 +1608,19 @@ function KanbanCaseCard({
 
 function CaseCard({
   caseRecord,
+  users,
   onNavigate,
   onEdit,
   onDelete,
 }: {
   caseRecord: CaseRecord;
+  users: AssignableUser[];
   onNavigate: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
+
   return (
     <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onNavigate}>
       <CardHeader className="flex flex-row items-start justify-between gap-3 bg-muted/30 p-3">
@@ -1575,6 +1649,7 @@ function CaseCard({
           <CaseMeta label="Practice Area" value={caseRecord.case_type} />
           <CaseMeta label="Stage" value={caseRecord.stage.replace(/_/g, " ")} />
           <CaseMeta label="Client" value={caseRecord.primary_contact_name || caseRecord.ghl_contact_id} />
+          <CaseMeta label="Source Attorney" value={sourceAttorneyName} />
           <CaseMeta label="Last Updated" value={formatDate(caseRecord.updated_at)} />
         </div>
       </CardContent>
@@ -1610,7 +1685,9 @@ function CaseActions({
         <Button
           variant="ghost"
           size="icon"
-          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground", triggerClassName)}
+          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white", triggerClassName)}
+          aria-label="Matter actions"
+          tooltip="Matter actions"
         >
           <MoreVertical className={cn("h-4 w-4", iconClassName)} />
         </Button>
@@ -1651,6 +1728,7 @@ function CaseActions({
 function CaseTable({
   cases,
   contacts,
+  users,
   navigate,
   handleSort,
   renderSortIcon,
@@ -1659,6 +1737,7 @@ function CaseTable({
 }: {
   cases: CaseRecord[];
   contacts: any[];
+  users: AssignableUser[];
   navigate: (path: string) => void;
   handleSort: (column: keyof CaseRecord) => void;
   renderSortIcon: (column: keyof CaseRecord) => ReactNode;
@@ -1710,6 +1789,7 @@ function CaseTable({
               { fullName: clientName, email: caseRecord.primary_contact_email || matchedContact?.email },
               "C",
             );
+            const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
 
             return (
             <tr
@@ -1727,6 +1807,7 @@ function CaseTable({
                       {caseRecord.case_name}
                     </Link>
                     <div className="text-xs text-muted-foreground">{caseRecord.case_number}</div>
+                    <div className="text-xs text-muted-foreground">Source Attorney: {sourceAttorneyName}</div>
                   </div>
                 </div>
               </td>
@@ -1905,13 +1986,15 @@ function CaseListViewSheet({
             </div>
 
             <div className="space-y-2">
-              <Label>Assigned User</Label>
+              <Label>Lead Attorney</Label>
               <Select value={assignedUserId} onValueChange={setAssignedUserId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Any User" />
+                  <span className={cn(assignedUserId === "All" && "text-muted-foreground")}>
+                    {getAssignedUserFilterLabel(assignedUserId, users)}
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="All">Any User</SelectItem>
+                  <SelectItem value="All">All Users</SelectItem>
                   {users.map((user) => (
                     <SelectItem key={getUserId(user)} value={getUserId(user)}>
                       {getUserName(user)}
@@ -1979,6 +2062,7 @@ function CreateCaseSheet({
   const { toast } = useToast();
   const defaultPipelineSelection = getPipelineSelection(pipelines, defaultPipelineId);
   const [submitting, setSubmitting] = useState(false);
+  const [associatedContacts, setAssociatedContacts] = useState<AssociatedCaseContactDraft[]>([]);
   const [form, setForm] = useState({
     caseNumber: "",
     caseName: "",
@@ -1989,11 +2073,13 @@ function CreateCaseSheet({
     pipelineStageId: defaultPipelineSelection.pipelineStageId,
     contactId: "",
     assignedUserId: "",
+    sourceAttorneyUserId: "",
     notes: "",
   });
 
   const selectedContact = contacts.find((contact) => contact.id === form.contactId);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedSourceAttorney = users.find((user) => getUserId(user) === form.sourceAttorneyUserId);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
 
   useEffect(() => {
@@ -2025,8 +2111,10 @@ function CreateCaseSheet({
       pipelineStageId: selection.pipelineStageId,
       contactId: "",
       assignedUserId: "",
+      sourceAttorneyUserId: "",
       notes: "",
     });
+    setAssociatedContacts([]);
   };
 
   const handlePipelineChange = (pipelineId: string) => {
@@ -2058,6 +2146,57 @@ function CreateCaseSheet({
     });
   };
 
+  const updateAssociatedContact = (id: string, changes: Partial<AssociatedCaseContactDraft>) => {
+    setAssociatedContacts((current) =>
+      current.map((contact) => (contact.id === id ? { ...contact, ...changes } : contact)),
+    );
+  };
+
+  const removeAssociatedContact = (id: string) => {
+    setAssociatedContacts((current) => current.filter((contact) => contact.id !== id));
+  };
+
+  const associatedContactsPayload = useMemo<AssociatedCaseContactPayload[]>(
+    () =>
+      associatedContacts.flatMap((associatedContact): AssociatedCaseContactPayload[] => {
+        const role = associatedContact.role.trim() || "Associated Contact";
+        const partyType = associatedContact.partyType.trim() || "associated";
+
+        if (associatedContact.mode === "existing") {
+          if (!associatedContact.contactId || associatedContact.contactId === form.contactId) return [];
+          const contact = contacts.find((candidate) => candidate.id === associatedContact.contactId);
+          if (!contact) return [];
+
+          return [
+            {
+              partyType,
+              role,
+              contactId: associatedContact.contactId,
+              name: formatContactName(contact),
+              email: contact.email || "",
+              phone: formatPhoneNumber(contact.phone, ""),
+            },
+          ];
+        }
+
+        const name = associatedContact.name.trim();
+        const email = associatedContact.email.trim();
+        const phone = associatedContact.phone.trim();
+        if (!name && !email && !phone) return [];
+
+        return [
+          {
+            partyType,
+            role,
+            name: name || email || phone,
+            email,
+            phone,
+          },
+        ];
+      }),
+    [associatedContacts, contacts, form.contactId],
+  );
+
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (!form.contactId) {
@@ -2079,11 +2218,14 @@ function CreateCaseSheet({
         contactEmail: selectedContact?.email || "",
         contactPhone: formatPhoneNumber(selectedContact?.phone, ""),
         assignedUserId: form.assignedUserId || null,
+        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
+        associatedContacts: associatedContactsPayload,
         metadata: {
           assigned_user_name: selectedUser ? getUserName(selectedUser) : "",
+          source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
           ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
           clientType: "contact",
@@ -2161,6 +2303,148 @@ function CreateCaseSheet({
             </Select>
           </div>
 
+          <div className="space-y-3 rounded-lg border border-border p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <Label>Associated Contacts</Label>
+                <p className="text-xs text-muted-foreground">Add other contacts tied to this {recordLabel.toLowerCase()}.</p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAssociatedContacts((current) => [...current, createAssociatedCaseContactDraft()])}
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Add
+              </Button>
+            </div>
+
+            {associatedContacts.map((associatedContact) => {
+              const selectedAssociatedContact = contacts.find((contact) => contact.id === associatedContact.contactId);
+              return (
+                <div key={associatedContact.id} className="space-y-3 rounded-md border border-border bg-muted/20 p-3">
+                  <div className="flex items-start gap-2">
+                    <div className="grid min-w-0 flex-1 gap-3 sm:grid-cols-[120px_1fr]">
+                      <div className="space-y-2">
+                        <Label>Type</Label>
+                        <Select
+                          value={associatedContact.mode}
+                          onValueChange={(mode) =>
+                            updateAssociatedContact(associatedContact.id, {
+                              mode: mode as AssociatedCaseContactMode,
+                              contactId: "",
+                              name: "",
+                              email: "",
+                              phone: "",
+                            })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="existing">Existing</SelectItem>
+                            <SelectItem value="new">New</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label>{associatedContact.mode === "existing" ? "Contact" : "Name"}</Label>
+                        {associatedContact.mode === "existing" ? (
+                          <SearchableSelect
+                            value={associatedContact.contactId}
+                            onValueChange={(contactId) => updateAssociatedContact(associatedContact.id, { contactId })}
+                            options={contacts
+                              .map((contact) => contact.id)
+                              .filter((contactId) => contactId && contactId !== form.contactId)}
+                            placeholder={isLoadingContacts ? "Loading contacts..." : "Select contact"}
+                            searchPlaceholder="Search contacts..."
+                            emptyMessage={isLoadingContacts ? "Loading contacts..." : "No contacts found."}
+                            getOptionLabel={(contactId) => {
+                              const contact = contacts.find((candidate) => candidate.id === contactId);
+                              return contact ? formatContactName(contact) : contactId;
+                            }}
+                          />
+                        ) : (
+                          <Input
+                            value={associatedContact.name}
+                            onChange={(event) =>
+                              updateAssociatedContact(associatedContact.id, { name: event.target.value })
+                            }
+                            placeholder="Full name"
+                          />
+                        )}
+                        {associatedContact.mode === "existing" && selectedAssociatedContact?.email ? (
+                          <p className="truncate text-xs text-muted-foreground">{selectedAssociatedContact.email}</p>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="mt-7 h-9 w-9 text-muted-foreground hover:text-destructive"
+                      onClick={() => removeAssociatedContact(associatedContact.id)}
+                      aria-label="Remove associated contact"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Role</Label>
+                      <Input
+                        value={associatedContact.role}
+                        onChange={(event) => updateAssociatedContact(associatedContact.id, { role: event.target.value })}
+                        placeholder="Associated Contact"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Party Type</Label>
+                      <Input
+                        value={associatedContact.partyType}
+                        onChange={(event) =>
+                          updateAssociatedContact(associatedContact.id, { partyType: event.target.value })
+                        }
+                        placeholder="associated"
+                      />
+                    </div>
+                  </div>
+
+                  {associatedContact.mode === "new" ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label>Email</Label>
+                        <Input
+                          type="email"
+                          value={associatedContact.email}
+                          onChange={(event) =>
+                            updateAssociatedContact(associatedContact.id, { email: event.target.value })
+                          }
+                          placeholder="name@example.com"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label>Phone</Label>
+                        <Input
+                          value={associatedContact.phone}
+                          onChange={(event) =>
+                            updateAssociatedContact(associatedContact.id, { phone: event.target.value })
+                          }
+                          placeholder="(555) 555-5555"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
               <Label>Practice Area</Label>
@@ -2221,11 +2505,33 @@ function CreateCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Primary Attorney</Label>
+            <Label>Lead Attorney</Label>
             <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
               <SelectTrigger>
                 <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
                   {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Unassigned</SelectItem>
+                {users.map((user) => (
+                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                    {getUserName(user)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Source Attorney</Label>
+            <Select
+              value={form.sourceAttorneyUserId}
+              onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+            >
+              <SelectTrigger>
+                <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
+                  {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
                 </span>
               </SelectTrigger>
               <SelectContent>
@@ -2292,6 +2598,7 @@ function EditCaseSheet({
     pipelineId: "",
     pipelineStageId: "",
     assignedUserId: "",
+    sourceAttorneyUserId: "",
   });
 
   useEffect(() => {
@@ -2306,11 +2613,13 @@ function EditCaseSheet({
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
       assignedUserId: caseRecord.assigned_user_id || "",
+      sourceAttorneyUserId: caseRecord.source_attorney_user_id || "",
     });
   }, [caseRecord, open, pipelines]);
 
   const caseTypeOptions = CASE_TYPES.includes(form.caseType) ? CASE_TYPES : [form.caseType, ...CASE_TYPES];
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedSourceAttorney = users.find((user) => getUserId(user) === form.sourceAttorneyUserId);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
 
   const handlePipelineChange = (pipelineId: string) => {
@@ -2358,7 +2667,9 @@ function EditCaseSheet({
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         assignedUserId: form.assignedUserId || null,
+        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
         metadata: {
+          source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
           ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
         },
@@ -2415,11 +2726,33 @@ function EditCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Primary Attorney</Label>
+            <Label>Lead Attorney</Label>
             <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
               <SelectTrigger>
                 <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
                   {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Unassigned</SelectItem>
+                {users.map((user) => (
+                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                    {getUserName(user)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Source Attorney</Label>
+            <Select
+              value={form.sourceAttorneyUserId}
+              onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+            >
+              <SelectTrigger>
+                <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
+                  {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
                 </span>
               </SelectTrigger>
               <SelectContent>

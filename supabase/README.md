@@ -6,16 +6,15 @@ This Supabase project is configured for a multi-tenant SaaS running inside GHL A
 
 - `config.toml` enables local Supabase Auth with email/password and email OTP magic-link support.
 - `migrations/20260529004900_initial_multi_tenant_ghl.sql` creates the schema, helper functions, RLS policies, grants, and the `user_accessible_locations` view.
-- `migrations/20260529191000_add_ghl_notification_events.sql` creates the tenant-scoped event table used for live GHL notifications.
 - `migrations/20260601013000_add_user_deactivation.sql` adds profile deactivation state and tightens tenant access for inactive users.
 - `migrations/20260601132500_add_ghl_staff_user_accounts.sql` maps Supabase users to their provisioned GHL staff/user accounts.
 - `migrations/20260601140500_add_agency_ghl_company_id.sql` stores the GHL company/agency ID needed for staff/user creation.
 - `migrations/20260601142500_restrict_profile_roles_to_admin_user.sql` normalizes app roles to `admin` and `user`.
 - `migrations/20260601143500_add_profile_phone.sql` adds phone storage to `profiles` and auth profile creation.
 - `migrations/20260601165500_add_business_profiles.sql` adds business profile settings for each GHL location.
+- `migrations/20260608202000_add_native_notifications.sql` creates the Lawbric-native notification table, Realtime publication, and assignment notification triggers.
 - `seed.sql` adds one sample agency and two sample locations. Set `sample_user_id` to an existing `auth.users.id` to create a sample mapping.
 - `functions/ghl-backend-handoff/index.ts` is an optional Edge Function placeholder that validates a user's Supabase JWT and location access before forwarding non-secret context to a trusted backend service.
-- `functions/ghl-webhook-events/index.ts` receives GHL webhook events, resolves the GHL location, and inserts live notification rows for Supabase Realtime.
 - `functions/admin-users/index.ts` lets an active admin create, deactivate, or reactivate users without exposing the service role key.
 - `functions/admin-settings/index.ts` lets an active admin save business profile settings and GHL location IDs.
 
@@ -25,7 +24,7 @@ This Supabase project is configured for a multi-tenant SaaS running inside GHL A
 - `encrypted_api_key` is only granted to `service_role`; never ship the service role key to GHL AI Studio or a frontend.
 - Tenant isolation is enforced through `user_locations`; users only see agencies and locations reachable through their own mappings.
 - Profile `role` values are not user-editable from the client. Role assignment should be done from trusted backend tooling with the service role key.
-- `ghl_notification_events` is append-only from the frontend. Authenticated users can only read events for locations they are assigned to.
+- Notifications are recipient-scoped rows in `notifications`. Authenticated users can only read and mark their own notification rows for locations they can access.
 - User creation/deactivation must go through `admin-users`. The frontend should never call Supabase Auth Admin APIs directly or receive the service role key.
 
 ## Edge Function Environment
@@ -39,70 +38,47 @@ supabase secrets set \
   ALLOWED_ORIGIN="https://your-ghl-app-origin.example"
 ```
 
-`ghl-webhook-events` supports either `GHL_WEBHOOK_SHARED_SECRET` or `GHL_WEBHOOK_SHARED_SECRET_SHA256`. The current deployed fallback validates the generated secret by SHA-256 hash, so `supabase secrets set` is optional for this function while local CLI secret writes are unavailable.
-
-```sh
-supabase secrets set \
-  GHL_WEBHOOK_SHARED_SECRET_SHA256="replace-with-sha256-of-secret"
-```
-
-Deploy the webhook function without Supabase JWT verification. GHL will not send a Supabase user token; the function validates the shared webhook secret instead.
-
-```sh
-supabase functions deploy ghl-webhook-events --no-verify-jwt
-```
-
-Use this URL in GHL workflow custom webhooks or app webhook settings:
-
-```text
-https://<project-ref>.functions.supabase.co/ghl-webhook-events
-```
-
-For workflow custom webhooks, send a `POST` JSON payload and include either of these using the raw shared secret:
-
-- Header: `x-lawbric-webhook-secret: <raw-webhook-secret>`
-- Query string: `?secret=<raw-webhook-secret>`
-
-The JSON payload must include a known GHL location ID using one of these fields:
-
-```json
-{
-  "locationId": "sample-ghl-location-001",
-  "event": "contact.created",
-  "title": "New contact",
-  "message": "A new contact was created"
-}
-```
-
 ## Live Notification Feed
 
-The AI Studio frontend should:
+The frontend should:
 
 1. Sign in with Supabase Auth.
 2. Load assigned locations from `user_accessible_locations`.
-3. Read recent events from `ghl_notification_events`.
-4. Subscribe to inserts on `ghl_notification_events` with Supabase Realtime.
+3. Read recent rows from `notifications`.
+4. Subscribe to inserts on `notifications` with Supabase Realtime.
+5. Mark notification rows as read with direct Supabase updates.
+
+Notifications originate inside Lawbric. The native migration adds database triggers for matter and task assignments, and the `create_notification` RPC can be used by app code for future Lawbric events without adding Edge Functions.
+
+Current notification types:
+
+- `task.assigned`: a task is assigned to a user.
+- `task.due_soon`: an assigned task is due within the next 24 hours.
+- `task.overdue`: an assigned task is past due and not done/cancelled.
+- `task.completed`: a task is marked done.
+- `matter.assigned`: a matter is assigned to a user.
+- `matter.stage_changed`: a matter stage or GHL pipeline stage changes.
 
 Example client subscription:
 
 ```ts
 const channel = supabase
-  .channel("ghl-notifications")
+  .channel("lawbric-notifications")
   .on(
     "postgres_changes",
     {
       event: "INSERT",
       schema: "public",
-      table: "ghl_notification_events",
+      table: "notifications",
     },
     (payload) => {
-      console.log("New GHL notification:", payload.new);
+      console.log("New notification:", payload.new);
     },
   )
   .subscribe();
 ```
 
-RLS still controls which rows an authenticated user can read. For production, configure official GHL webhook signature verification when using Marketplace/App webhooks; the shared-secret header is intended for GHL workflow custom webhooks.
+RLS still controls which rows an authenticated user can read and update.
 
 ## User Management
 

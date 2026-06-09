@@ -443,10 +443,11 @@ export function PipelinesPage() {
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 rounded-r-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                            className="h-7 w-7 rounded-r-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                             onClick={() => handleMovePipeline(pipeline.id, "up")}
                             disabled={!canMoveUp}
                             aria-label={`Move ${pipeline.name} up`}
+                            tooltip={`Move ${pipeline.name} up`}
                           >
                             <ArrowUp className="h-3.5 w-3.5" />
                           </Button>
@@ -454,10 +455,11 @@ export function PipelinesPage() {
                             type="button"
                             variant="ghost"
                             size="icon"
-                            className="h-7 w-7 rounded-l-none text-muted-foreground hover:bg-muted hover:text-foreground"
+                            className="h-7 w-7 rounded-l-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                             onClick={() => handleMovePipeline(pipeline.id, "down")}
                             disabled={!canMoveDown}
                             aria-label={`Move ${pipeline.name} down`}
+                            tooltip={`Move ${pipeline.name} down`}
                           >
                             {isSavingOrder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowDown className="h-3.5 w-3.5" />}
                           </Button>
@@ -504,8 +506,10 @@ export function PipelinesPage() {
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                        className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                         onClick={() => setEditingPipeline(pipeline)}
+                        aria-label={`Edit ${pipeline.name}`}
+                        tooltip={`Edit ${pipeline.name}`}
                       >
                         <Pencil className="h-4 w-4" />
                       </Button>

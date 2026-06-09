@@ -32,6 +32,7 @@ serve(async (req) => {
 
     if (body.assignedUserId !== undefined) updates.assigned_user_id = body.assignedUserId || null;
     if (body.assignedUserId !== undefined) updates.assigned_ghl_user_id = null;
+    if (body.sourceAttorneyUserId !== undefined) updates.source_attorney_user_id = body.sourceAttorneyUserId || null;
     if (body.assignedGhlUserId !== undefined) updates.assigned_ghl_user_id = body.assignedGhlUserId || null;
     if (body.ghlPipelineId !== undefined) updates.ghl_pipeline_id = body.ghlPipelineId || null;
     if (body.ghlPipelineStageId !== undefined) updates.ghl_pipeline_stage_id = body.ghlPipelineStageId || null;

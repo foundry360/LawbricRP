@@ -14,6 +14,7 @@ import {
   MoreHorizontal,
   MoreVertical,
   Pencil,
+  Pin,
   Plus,
   Search,
   SquareKanban,
@@ -57,6 +58,11 @@ import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from 
 import { cn } from "@/lib/utils";
 
 const LEAD_STATUSES = ["open", "converted", "lost"];
+const LEAD_VIEW_MODE_STORAGE_KEY = "lawbric.leads.viewMode";
+const LEAD_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.leads.pinnedViewMode";
+const LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY = "lawbric.leads.pinnedListViewId";
+const LEAD_PINNED_VIEW_MODE_METADATA_KEY = "leadPinnedViewMode";
+const LEAD_PINNED_LIST_VIEW_ID_METADATA_KEY = "leadPinnedListViewId";
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
 type LeadViewMode = "list" | "grid" | "kanban";
@@ -126,6 +132,34 @@ function getContactRecordKind(contact: any) {
 function pipelineConfigMatchesLeadAccountType(config?: PipelineConfig | null) {
   const accountTypeRule = String(config?.account_type_rule || "").trim().toLowerCase();
   return accountTypeRule === LEAD_ACCOUNT_TYPE.toLowerCase();
+}
+
+function isLeadViewMode(value: unknown): value is LeadViewMode {
+  return value === "list" || value === "grid" || value === "kanban";
+}
+
+function getInitialLeadViewMode(): LeadViewMode {
+  if (typeof window === "undefined") return "list";
+  const pinnedViewMode = window.localStorage.getItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY);
+  if (isLeadViewMode(pinnedViewMode)) return pinnedViewMode;
+  const savedViewMode = window.localStorage.getItem(LEAD_VIEW_MODE_STORAGE_KEY);
+  return isLeadViewMode(savedViewMode) ? savedViewMode : "list";
+}
+
+function getInitialPinnedLeadViewMode(): LeadViewMode | null {
+  if (typeof window === "undefined") return null;
+  const pinnedViewMode = window.localStorage.getItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY);
+  return isLeadViewMode(pinnedViewMode) ? pinnedViewMode : null;
+}
+
+function getInitialLeadListViewId() {
+  if (typeof window === "undefined") return "all";
+  return window.localStorage.getItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY) || "all";
+}
+
+function getInitialPinnedLeadListViewId() {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY);
 }
 
 function isSyntheticLead(lead: LeadRecord) {
@@ -203,17 +237,17 @@ export function LeadsPage() {
   const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
   const [pipelineConfigs, setPipelineConfigs] = useState<PipelineConfig[]>([]);
   const [loading, setLoading] = useState(true);
-  const [viewMode, setViewMode] = useState<LeadViewMode>(() => {
-    const saved = typeof window === "undefined" ? null : window.localStorage.getItem("lawbric.leads.viewMode");
-    return saved === "grid" || saved === "kanban" || saved === "list" ? saved : "list";
-  });
+  const [viewMode, setViewMode] = useState<LeadViewMode>(getInitialLeadViewMode);
+  const [pinnedViewMode, setPinnedViewMode] = useState<LeadViewMode | null>(getInitialPinnedLeadViewMode);
+  const [pinnedListViewId, setPinnedListViewId] = useState<string | null>(getInitialPinnedLeadListViewId);
+  const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
   const [listViews, setListViews] = useState<LeadListView[]>([]);
   const [isListViewPanelOpen, setIsListViewPanelOpen] = useState(false);
   const [editingListView, setEditingListView] = useState<LeadListView | null>(null);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState("All");
-  const [activeListViewId, setActiveListViewId] = useState("all");
+  const [activeListViewId, setActiveListViewId] = useState(getInitialLeadListViewId);
   const [sortColumn, setSortColumn] = useState<LeadSortColumn>("lead_name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -228,7 +262,7 @@ export function LeadsPage() {
   const loadingContactsRef = useRef(false);
 
   useEffect(() => {
-    window.localStorage.setItem("lawbric.leads.viewMode", viewMode);
+    window.localStorage.setItem(LEAD_VIEW_MODE_STORAGE_KEY, viewMode);
   }, [viewMode]);
 
   useEffect(() => {
@@ -236,12 +270,88 @@ export function LeadsPage() {
       const {
         data: { session },
       } = await supabase.auth.getSession();
-      const saved = session?.user?.user_metadata?.leadListViews;
+      const userMetadata = session?.user?.user_metadata || {};
+      const saved = userMetadata.leadListViews;
       if (Array.isArray(saved)) setListViews(saved.filter((view: LeadListView) => !view.system));
+
+      const savedPinnedViewMode = userMetadata[LEAD_PINNED_VIEW_MODE_METADATA_KEY];
+      if (isLeadViewMode(savedPinnedViewMode)) {
+        setPinnedViewMode(savedPinnedViewMode);
+        setViewMode(savedPinnedViewMode);
+        window.localStorage.setItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY, savedPinnedViewMode);
+      } else {
+        setPinnedViewMode(null);
+        window.localStorage.removeItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
+
+      const savedPinnedListViewId = userMetadata[LEAD_PINNED_LIST_VIEW_ID_METADATA_KEY];
+      if (typeof savedPinnedListViewId === "string" && savedPinnedListViewId) {
+        setPinnedListViewId(savedPinnedListViewId);
+        setActiveListViewId(savedPinnedListViewId);
+        window.localStorage.setItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY, savedPinnedListViewId);
+      } else {
+        setPinnedListViewId(null);
+        window.localStorage.removeItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+      }
     };
 
     loadLeadPreferences().catch((error) => console.error("Failed to load lead preferences from Supabase", error));
   }, []);
+
+  const handleTogglePinnedView = async () => {
+    const nextPinnedViewMode = isCurrentPinnedView ? null : viewMode;
+    const nextPinnedListViewId = isCurrentPinnedView ? null : activeListViewId;
+    setPinnedViewMode(nextPinnedViewMode);
+    setPinnedListViewId(nextPinnedListViewId);
+
+    if (nextPinnedViewMode) {
+      window.localStorage.setItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY, nextPinnedViewMode);
+    } else {
+      window.localStorage.removeItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY);
+    }
+
+    if (nextPinnedListViewId) {
+      window.localStorage.setItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY, nextPinnedListViewId);
+    } else {
+      window.localStorage.removeItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+    }
+
+    setIsSavingPinnedView(true);
+    try {
+      await supabase.auth.updateUser({
+        data: {
+          [LEAD_PINNED_VIEW_MODE_METADATA_KEY]: nextPinnedViewMode,
+          [LEAD_PINNED_LIST_VIEW_ID_METADATA_KEY]: nextPinnedListViewId,
+        },
+      });
+      toast({
+        title: nextPinnedViewMode ? "Leads View Pinned" : "Leads View Unpinned",
+        description: nextPinnedViewMode
+          ? `Leads will open in ${activeListView.name} ${nextPinnedViewMode} view.`
+          : "Leads will open in the last view used on this device.",
+      });
+    } catch (error) {
+      setPinnedViewMode(pinnedViewMode);
+      setPinnedListViewId(pinnedListViewId);
+      if (pinnedViewMode) {
+        window.localStorage.setItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY, pinnedViewMode);
+      } else {
+        window.localStorage.removeItem(LEAD_PINNED_VIEW_MODE_STORAGE_KEY);
+      }
+      if (pinnedListViewId) {
+        window.localStorage.setItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY, pinnedListViewId);
+      } else {
+        window.localStorage.removeItem(LEAD_PINNED_LIST_VIEW_ID_STORAGE_KEY);
+      }
+      toast({
+        title: "Pinned View Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Could not save your pinned Leads view."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsSavingPinnedView(false);
+    }
+  };
 
   const saveListViewsToSupabase = async (newListViews: LeadListView[]) => {
     setListViews(newListViews);
@@ -366,6 +476,7 @@ export function LeadsPage() {
   const activePipeline = activeListView.filters.pipelineId
     ? leadPipelines.find((pipeline) => pipeline.id === activeListView.filters.pipelineId)
     : null;
+  const isCurrentPinnedView = pinnedViewMode === viewMode && pinnedListViewId === activeListViewId;
 
   useEffect(() => {
     if (viewMode === "kanban") {
@@ -575,8 +686,14 @@ export function LeadsPage() {
               {displayListViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
-                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                      aria-label="List actions"
+                      tooltip="List actions"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
@@ -724,6 +841,22 @@ export function LeadsPage() {
                   </ControlTooltip>
                 </TabsList>
               </Tabs>
+              <ControlTooltip label={isCurrentPinnedView ? "Unpin this Leads view" : "Pin this Leads view"}>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className={cn(
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white sm:inline-flex",
+                    isCurrentPinnedView && "bg-primary/10 text-primary hover:bg-[#0484C8] hover:text-white",
+                  )}
+                  disabled={isSavingPinnedView}
+                  onClick={handleTogglePinnedView}
+                  aria-label={isCurrentPinnedView ? "Unpin this Leads view" : "Pin this Leads view"}
+                >
+                  <Pin className={cn("h-4 w-4", isCurrentPinnedView && "fill-current")} />
+                </Button>
+              </ControlTooltip>
             </>
           )}
 
@@ -1186,7 +1319,9 @@ function LeadActions({
         <Button
           variant="ghost"
           size="icon"
-          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground", triggerClassName)}
+          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white", triggerClassName)}
+          aria-label="Lead actions"
+          tooltip="Lead actions"
         >
           <MoreVertical className="h-4 w-4" />
         </Button>
@@ -1285,7 +1420,7 @@ function LeadKanbanBoard({
                     <div
                       key={stageKey}
                       className={cn(
-                        "flex min-w-[18rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
+                        "flex min-w-[22rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
                         isFirstStage && "overflow-hidden rounded-tl-md",
                         isLastStage && "overflow-hidden rounded-tr-md",
                         isDragOver && "border-[#0484C8] bg-[#F0F6FF]",

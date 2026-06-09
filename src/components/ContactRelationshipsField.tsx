@@ -94,9 +94,10 @@ export function ContactRelationshipsField({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                   onClick={() => removeRelationship(index)}
                   aria-label="Remove related contact"
+                  tooltip="Remove related contact"
                 >
                   <Trash2 className="h-4 w-4" />
                 </Button>

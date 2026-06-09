@@ -49,6 +49,7 @@ serve(async (req) => {
         primary_contact_email: body.contactEmail || null,
         primary_contact_phone: body.contactPhone || null,
         assigned_user_id: assignedUserId,
+        source_attorney_user_id: body.sourceAttorneyUserId || null,
         assigned_ghl_user_id: body.assignedGhlUserId || null,
         ghl_pipeline_id: body.ghlPipelineId || null,
         ghl_pipeline_stage_id: body.ghlPipelineStageId || null,
@@ -74,6 +75,46 @@ serve(async (req) => {
       is_primary: true,
       created_by: context.user.id,
     });
+
+    const associatedParties = Array.isArray(body.associatedContacts)
+      ? body.associatedContacts.flatMap((party) => {
+          if (!party || typeof party !== "object") return [];
+
+          const associatedContactId = typeof party.contactId === "string" ? party.contactId.trim() : "";
+          if (associatedContactId && associatedContactId === contactId) return [];
+
+          const name = typeof party.name === "string" ? party.name.trim() : "";
+          const email = typeof party.email === "string" ? party.email.trim() : "";
+          const phone = typeof party.phone === "string" ? party.phone.trim() : "";
+          if (!associatedContactId && !name && !email && !phone) return [];
+
+          return [
+            {
+              location_id: context.location.id,
+              case_id: caseRow.id,
+              party_type:
+                typeof party.partyType === "string" && party.partyType.trim()
+                  ? party.partyType.trim()
+                  : "associated",
+              role:
+                typeof party.role === "string" && party.role.trim()
+                  ? party.role.trim()
+                  : "Associated Contact",
+              name: name || email || phone || "Associated Contact",
+              email: email || null,
+              phone: phone || null,
+              ghl_contact_id: associatedContactId || null,
+              is_primary: false,
+              created_by: context.user.id,
+            },
+          ];
+        })
+      : [];
+
+    if (associatedParties.length > 0) {
+      const { error: associatedPartiesError } = await context.supabase.from("case_parties").insert(associatedParties);
+      if (associatedPartiesError) throw new Error(associatedPartiesError.message);
+    }
 
     if (assignedUserId) {
       await context.supabase.from("case_assignments").insert({

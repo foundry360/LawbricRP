@@ -1,5 +1,5 @@
 import { type DragEvent, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowUpDown,
   Calendar,
@@ -28,6 +28,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { DateTimePicker } from "@/components/DatePicker";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
+import { SearchableSelect } from "@/components/SearchableSelect";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,13 +57,22 @@ import { type CaseRecord, listCases } from "@/lib/cases";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { supabase } from "@/lib/supabase";
-import { type TaskRecord, createTask, deleteTask, listTasks, updateTask } from "@/lib/tasks";
+import {
+  type TaskRecord,
+  createTask,
+  deleteTask,
+  formatTaskStatusLabel,
+  generateTaskDueNotifications,
+  listTasks,
+  updateTask,
+} from "@/lib/tasks";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
 const TASK_STATUSES = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITIES = ["low", "normal", "high", "urgent"];
 const RELATED_TYPES = ["general", "case", "contact", "opportunity"];
+const UNASSIGNED_USER_VALUE = "__unassigned__";
 const TASK_VIEW_MODE_STORAGE_KEY = "lawbric.tasks.viewMode";
 const TASK_PINNED_VIEW_MODE_STORAGE_KEY = "lawbric.tasks.pinnedViewMode";
 const TASK_PINNED_VIEW_MODE_METADATA_KEY = "taskPinnedViewMode";
@@ -85,7 +95,7 @@ type TaskListView = {
   filters: {
     status?: string;
     priority?: string;
-    relatedType?: string;
+    relatedCaseId?: string;
     assignedUserId?: string;
   };
 };
@@ -215,6 +225,12 @@ function getRelatedLabel(task: TaskRecord) {
   return "General";
 }
 
+function getMatterFilterLabel(value: string, cases: CaseRecord[]) {
+  if (value === "All") return "All Matters";
+  const caseRecord = cases.find((candidate) => candidate.id === value);
+  return caseRecord?.case_name || "Unknown Matter";
+}
+
 function getRelatedPath(task: TaskRecord) {
   if (task.related_type === "case" && task.case_id) return `/case/${task.case_id}`;
   if ((task.related_type === "case" || task.related_type === "contact") && task.ghl_contact_id) {
@@ -233,8 +249,16 @@ function getAssignedName(task: TaskRecord, users: AssignableUser[] = []) {
     : task.assigned_user?.email || (matchedUser ? getUserName(matchedUser) : "Unassigned");
 }
 
+function getAssignedFilterLabel(value: string, users: AssignableUser[]) {
+  if (value === "All") return "All Users";
+  if (value === "unassigned") return "Unassigned";
+  const user = users.find((candidate) => getUserId(candidate) === value);
+  return user ? getUserName(user) : "Unknown User";
+}
+
 export function TasksPage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { toast } = useToast();
   const [tasks, setTasks] = useState<TaskRecord[]>([]);
   const [cases, setCases] = useState<CaseRecord[]>([]);
@@ -269,6 +293,7 @@ export function TasksPage() {
   const [sortColumn, setSortColumn] = useState<keyof TaskRecord>("due_at");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const loadingContactsRef = useRef(false);
+  const routeTaskId = searchParams.get("taskId") || "";
 
   const loadData = async () => {
     setLoading(true);
@@ -278,6 +303,11 @@ export function TasksPage() {
       const nextGhlLocationId = context.location?.ghlLocationId || "";
       setLocationId(appLocationId);
       setGhlLocationId(nextGhlLocationId);
+      if (appLocationId) {
+        await generateTaskDueNotifications(appLocationId).catch((error) => {
+          console.error("Failed to generate task due notifications", error);
+        });
+      }
 
       const [{ data: authData }, taskRows, caseRows, assignableUsers] = await Promise.all([
         import("@/lib/supabase").then(({ supabase }) => supabase.auth.getUser()),
@@ -329,6 +359,60 @@ export function TasksPage() {
   useEffect(() => {
     loadData();
   }, []);
+
+  useEffect(() => {
+    if (!routeTaskId || loading || !locationId) return;
+
+    let cancelled = false;
+
+    const openTaskFromRoute = async () => {
+      const existingTask = tasks.find((task) => task.id === routeTaskId);
+      if (existingTask) {
+        setEditingTask(existingTask);
+        setIsTaskSheetOpen(true);
+      } else {
+        const { data, error } = await supabase
+          .from("tasks")
+          .select(`
+            *,
+            case:cases(id, case_number, case_name, primary_contact_name),
+            assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
+          `)
+          .eq("location_id", locationId)
+          .eq("id", routeTaskId)
+          .maybeSingle();
+
+        if (cancelled) return;
+        if (error) throw new Error(error.message);
+        if (data) {
+          const routedTask = data as TaskRecord;
+          setTasks((current) => (current.some((task) => task.id === routedTask.id) ? current : [routedTask, ...current]));
+          setEditingTask(routedTask);
+          setIsTaskSheetOpen(true);
+        }
+      }
+
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("taskId");
+      setSearchParams(nextParams, { replace: true });
+    };
+
+    openTaskFromRoute().catch((error) => {
+      if (cancelled) return;
+      toast({
+        title: "Task Not Opened",
+        description: getUserFriendlyErrorMessage(error, "Could not open this task from the notification."),
+        variant: "destructive",
+      });
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.delete("taskId");
+      setSearchParams(nextParams, { replace: true });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, locationId, routeTaskId, searchParams, setSearchParams, tasks, toast]);
 
   const loadTaskContacts = useCallback(async () => {
     if (!ghlLocationId || contacts.length > 0 || loadingContactsRef.current) return;
@@ -407,17 +491,7 @@ export function TasksPage() {
   };
 
   const activeListView = listViews.find((view) => view.id === activeListViewId) || listViews[0];
-  const relatedTypeOptions = useMemo(
-    () => [
-      ...new Set([
-        ...RELATED_TYPES,
-        ...tasks
-          .map((task) => task.related_type)
-          .filter((relatedType): relatedType is string => Boolean(relatedType)),
-      ]),
-    ],
-    [tasks],
-  );
+  const matterFilterOptions = useMemo(() => ["All", ...cases.map((caseRecord) => caseRecord.id)], [cases]);
   const activeFilterCount = [
     relatedFilter,
     statusFilter,
@@ -439,7 +513,8 @@ export function TasksPage() {
         (task.description || "").toLowerCase().includes(search) ||
         getRelatedLabel(task).toLowerCase().includes(search) ||
         getAssignedName(task, users).toLowerCase().includes(search);
-      const matchesRelated = relatedFilter === "All" || task.related_type === relatedFilter;
+      const matchesRelated =
+        relatedFilter === "All" || (task.related_type === "case" && task.case_id === relatedFilter);
       const matchesStatus = statusFilter === "All" || task.status === statusFilter;
       const matchesPriority = priorityFilter === "All" || task.priority === priorityFilter;
       const matchesAssigned =
@@ -458,7 +533,9 @@ export function TasksPage() {
       }
       if (activeListView.filters.status && task.status !== activeListView.filters.status) matchesView = false;
       if (activeListView.filters.priority && task.priority !== activeListView.filters.priority) matchesView = false;
-      if (activeListView.filters.relatedType && task.related_type !== activeListView.filters.relatedType) matchesView = false;
+      if (activeListView.filters.relatedCaseId) {
+        matchesView = task.related_type === "case" && task.case_id === activeListView.filters.relatedCaseId;
+      }
       if (activeListView.filters.assignedUserId) {
         matchesView = activeListView.filters.assignedUserId === "unassigned"
           ? !task.assigned_user_id
@@ -541,7 +618,7 @@ export function TasksPage() {
     try {
       const savedTask = await updateTask({ locationId, taskId: task.id, status });
       setTasks((current) => current.map((item) => (item.id === savedTask.id ? savedTask : item)));
-      toast({ title: "Task Updated", description: `${savedTask.title} moved to ${status.replace(/_/g, " ")}.` });
+      toast({ title: "Task Updated", description: `${savedTask.title} moved to ${formatTaskStatusLabel(status)}.` });
     } catch (error) {
       setTasks(previousTasks);
       toast({
@@ -604,7 +681,7 @@ export function TasksPage() {
         onOpenChange={setIsListViewPanelOpen}
         editingListView={editingListView}
         users={users}
-        relatedTypes={relatedTypeOptions}
+        cases={cases}
         onSave={(newListView) => {
           const updatedViews = editingListView
             ? listViews.map((view) => (view.id === newListView.id ? newListView : view))
@@ -644,8 +721,14 @@ export function TasksPage() {
               {listViews.length > 6 && (
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full hover:bg-muted hover:text-foreground">
-                      <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                      aria-label="List actions"
+                      tooltip="List actions"
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
                     </Button>
                   </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="w-48">
@@ -782,7 +865,7 @@ export function TasksPage() {
                           <SelectItem value="All">Any Status</SelectItem>
                           {TASK_STATUSES.map((status) => (
                             <SelectItem key={status} value={status}>
-                              <span className="capitalize">{status.replace(/_/g, " ")}</span>
+                              <span>{formatTaskStatusLabel(status)}</span>
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -811,22 +894,19 @@ export function TasksPage() {
 
                     <div className="space-y-2">
                       <Label>Related To</Label>
-                      <Select value={relatedFilter} onValueChange={(value) => {
-                        setRelatedFilter(value);
-                        setCurrentPage(1);
-                      }}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Any related type" />
-                        </SelectTrigger>
-                        <SelectContent className="z-[150]">
-                          <SelectItem value="All">Any Related Type</SelectItem>
-                          {relatedTypeOptions.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              <span className="capitalize">{type}</span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <SearchableSelect
+                        value={relatedFilter}
+                        onValueChange={(value) => {
+                          setRelatedFilter(value);
+                          setCurrentPage(1);
+                        }}
+                        options={matterFilterOptions}
+                        placeholder="All Matters"
+                        searchPlaceholder="Search matters..."
+                        emptyMessage="No matters found."
+                        getOptionLabel={(value) => getMatterFilterLabel(value, cases)}
+                        contentClassName="z-[150]"
+                      />
                     </div>
 
                     <div className="space-y-2">
@@ -836,10 +916,12 @@ export function TasksPage() {
                         setCurrentPage(1);
                       }}>
                         <SelectTrigger>
-                          <SelectValue placeholder="Any user" />
+                          <span className={cn(assignedUserFilter === "All" && "text-muted-foreground")}>
+                            {getAssignedFilterLabel(assignedUserFilter, users)}
+                          </span>
                         </SelectTrigger>
                         <SelectContent className="z-[150] max-h-72 overflow-y-auto">
-                          <SelectItem value="All">Any User</SelectItem>
+                          <SelectItem value="All">All Users</SelectItem>
                           <SelectItem value="unassigned">Unassigned</SelectItem>
                           {users.map((user) => (
                             <SelectItem key={getUserId(user)} value={getUserId(user)}>
@@ -885,8 +967,8 @@ export function TasksPage() {
                   variant="ghost"
                   size="icon"
                   className={cn(
-                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground sm:inline-flex",
-                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-primary/15 hover:text-primary",
+                    "hidden h-10 w-10 shrink-0 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white sm:inline-flex",
+                    pinnedViewMode === viewMode && "bg-primary/10 text-primary hover:bg-[#0484C8] hover:text-white",
                   )}
                   disabled={isSavingPinnedView}
                   onClick={handleTogglePinnedView}
@@ -942,15 +1024,13 @@ export function TasksPage() {
                     setEditingTask(task);
                     setIsTaskSheetOpen(true);
                   }}
-              onDelete={() => setTaskToDelete(task)}
-                  navigate={navigate}
+                  onDelete={() => setTaskToDelete(task)}
                 />
               ))}
             </div>
           ) : viewMode === "kanban" ? (
             <TaskKanbanBoard
               tasks={sortedTasks}
-              navigate={navigate}
               dragOverStatus={dragOverStatus}
               updatingTaskStatusId={updatingTaskStatusId}
               onDragOverStatus={setDragOverStatus}
@@ -1085,17 +1165,14 @@ function TaskCard({
   users,
   onEdit,
   onDelete,
-  navigate,
 }: {
   task: TaskRecord;
   users: AssignableUser[];
   onEdit: () => void;
   onDelete: () => void;
-  navigate: (path: string) => void;
 }) {
-  const relatedPath = getRelatedPath(task);
   return (
-    <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={() => relatedPath && navigate(relatedPath)}>
+    <Card className="cursor-pointer overflow-hidden transition-all hover:border-primary/50 hover:shadow-md" onClick={onEdit}>
       <CardHeader className="flex flex-row items-start justify-between gap-3 bg-muted/30 p-3">
         <div className="flex min-w-0 items-start gap-3">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
@@ -1105,13 +1182,13 @@ function TaskCard({
             <div className="flex min-w-0 items-center gap-2">
               <h3 className="min-w-0 truncate text-sm font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
               <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getTaskStatusClass(task.status))}>
-                {task.status.replace(/_/g, " ")}
+                {formatTaskStatusLabel(task.status)}
               </Badge>
             </div>
             <div className="mt-1 truncate text-xs capitalize text-muted-foreground">{(task.related_type || "general").replace(/_/g, " ")}</div>
           </div>
         </div>
-        <TaskActions onView={() => (relatedPath ? navigate(relatedPath) : onEdit())} onEdit={onEdit} onDelete={onDelete} />
+        <TaskActions onView={onEdit} onEdit={onEdit} onDelete={onDelete} />
       </CardHeader>
       <CardContent className="space-y-1.5 p-3 pt-3">
         <TaskMeta label="Priority" value={task.priority} />
@@ -1129,7 +1206,6 @@ function TaskCard({
 
 function TaskKanbanBoard({
   tasks,
-  navigate,
   dragOverStatus,
   updatingTaskStatusId,
   onDragOverStatus,
@@ -1138,7 +1214,6 @@ function TaskKanbanBoard({
   onDelete,
 }: {
   tasks: TaskRecord[];
-  navigate: (path: string) => void;
   dragOverStatus: string;
   updatingTaskStatusId: string | null;
   onDragOverStatus: (status: string) => void;
@@ -1168,7 +1243,7 @@ function TaskKanbanBoard({
           <div
             key={status}
             className={cn(
-              "flex min-w-[16rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
+              "flex min-w-[22rem] flex-1 flex-col border-y border-r bg-muted/20 transition-colors first:border-l",
               index === 0 && "overflow-hidden rounded-tl-md",
               index === statuses.length - 1 && "overflow-hidden rounded-tr-md",
               isDragOver && "border-[#0484C8] bg-[#F0F6FF]",
@@ -1192,7 +1267,7 @@ function TaskKanbanBoard({
             >
               <div className="flex items-center gap-2">
                 <div className="text-xs font-semibold uppercase tracking-wide text-white">
-                  {status.replace(/_/g, " ")}
+                  {formatTaskStatusLabel(status)}
                 </div>
                 <Badge variant="outline" className="border-transparent bg-white/20 text-xs text-white">
                   {columnTasks.length}
@@ -1208,7 +1283,6 @@ function TaskKanbanBoard({
                 <KanbanTaskCard
                   key={task.id}
                   task={task}
-                  navigate={navigate}
                   updating={updatingTaskStatusId === task.id}
                   onEdit={() => onEdit(task)}
                   onDelete={() => onDelete(task)}
@@ -1224,19 +1298,15 @@ function TaskKanbanBoard({
 
 function KanbanTaskCard({
   task,
-  navigate,
   updating,
   onEdit,
   onDelete,
 }: {
   task: TaskRecord;
-  navigate: (path: string) => void;
   updating: boolean;
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  const relatedPath = getRelatedPath(task);
-
   const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData("text/plain", task.id);
     event.dataTransfer.effectAllowed = "move";
@@ -1249,14 +1319,14 @@ function KanbanTaskCard({
         "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
         updating && "cursor-wait opacity-60",
       )}
-      onClick={() => relatedPath && navigate(relatedPath)}
+      onClick={onEdit}
       onDragStart={handleDragStart}
     >
       <CardHeader className="space-y-1.5 bg-muted/30 p-2.5">
         <div className="flex items-center justify-between gap-3">
           <h3 className="min-w-0 truncate text-xs font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
           <TaskActions
-            onView={() => (relatedPath ? navigate(relatedPath) : onEdit())}
+            onView={onEdit}
             onEdit={onEdit}
             onDelete={onDelete}
             triggerClassName="h-6 w-6 shrink-0"
@@ -1303,7 +1373,9 @@ function TaskActions({
         <Button
           variant="ghost"
           size="icon"
-          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground", triggerClassName)}
+          className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white", triggerClassName)}
+          aria-label="Task actions"
+          tooltip="Task actions"
         >
           <MoreVertical className={cn("h-4 w-4", iconClassName)} />
         </Button>
@@ -1393,7 +1465,7 @@ function TaskTable({
               <tr
                 key={task.id}
                 className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
-                onClick={() => relatedPath && navigate(relatedPath)}
+                onClick={() => onEdit(task)}
               >
                 <td className="px-4 py-2">
                   <div className="flex items-center space-x-3">
@@ -1428,7 +1500,7 @@ function TaskTable({
                 </td>
                 <td className="px-4 py-2">
                   <Badge variant="outline" className={cn("border-transparent capitalize", getTaskStatusClass(task.status))}>
-                    {task.status.replace(/_/g, " ")}
+                    {formatTaskStatusLabel(task.status)}
                   </Badge>
                 </td>
                 <td className="px-4 py-2 text-foreground/70">
@@ -1439,7 +1511,7 @@ function TaskTable({
                 </td>
                 <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                   <TaskActions
-                    onView={() => (relatedPath ? navigate(relatedPath) : onEdit(task))}
+                    onView={() => onEdit(task)}
                     onEdit={() => onEdit(task)}
                     onDelete={() => onDelete(task)}
                   />
@@ -1458,7 +1530,7 @@ function TaskListViewSheet({
   onOpenChange,
   editingListView,
   users,
-  relatedTypes,
+  cases,
   onSave,
   onDelete,
 }: {
@@ -1466,7 +1538,7 @@ function TaskListViewSheet({
   onOpenChange: (open: boolean) => void;
   editingListView: TaskListView | null;
   users: AssignableUser[];
-  relatedTypes: string[];
+  cases: CaseRecord[];
   onSave: (listView: TaskListView) => void;
   onDelete: (id: string) => void;
 }) {
@@ -1474,8 +1546,9 @@ function TaskListViewSheet({
   const [name, setName] = useState("");
   const [status, setStatus] = useState("All");
   const [priority, setPriority] = useState("All");
-  const [relatedType, setRelatedType] = useState("All");
+  const [relatedCaseId, setRelatedCaseId] = useState("All");
   const [assignedUserId, setAssignedUserId] = useState("All");
+  const matterFilterOptions = useMemo(() => ["All", ...cases.map((caseRecord) => caseRecord.id)], [cases]);
 
   useEffect(() => {
     if (!open) return;
@@ -1483,7 +1556,7 @@ function TaskListViewSheet({
     setName(editingListView?.name || "");
     setStatus(editingListView?.filters.status || "All");
     setPriority(editingListView?.filters.priority || "All");
-    setRelatedType(editingListView?.filters.relatedType || "All");
+    setRelatedCaseId(editingListView?.filters.relatedCaseId || "All");
     setAssignedUserId(editingListView?.filters.assignedUserId || "All");
   }, [editingListView, open]);
 
@@ -1503,7 +1576,7 @@ function TaskListViewSheet({
       filters: {
         ...(status !== "All" && { status }),
         ...(priority !== "All" && { priority }),
-        ...(relatedType !== "All" && { relatedType }),
+        ...(relatedCaseId !== "All" && { relatedCaseId }),
         ...(assignedUserId !== "All" && { assignedUserId }),
       },
     });
@@ -1546,7 +1619,7 @@ function TaskListViewSheet({
                   <SelectItem value="All">Any Status</SelectItem>
                   {TASK_STATUSES.map((taskStatus) => (
                     <SelectItem key={taskStatus} value={taskStatus}>
-                      <span className="capitalize">{taskStatus.replace(/_/g, " ")}</span>
+                      <span>{formatTaskStatusLabel(taskStatus)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1572,29 +1645,27 @@ function TaskListViewSheet({
 
             <div className="space-y-2">
               <Label>Related To</Label>
-              <Select value={relatedType} onValueChange={setRelatedType}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Any Related Type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">Any Related Type</SelectItem>
-                  {relatedTypes.map((type) => (
-                    <SelectItem key={type} value={type}>
-                      <span className="capitalize">{type}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <SearchableSelect
+                value={relatedCaseId}
+                onValueChange={setRelatedCaseId}
+                options={matterFilterOptions}
+                placeholder="All Matters"
+                searchPlaceholder="Search matters..."
+                emptyMessage="No matters found."
+                getOptionLabel={(value) => getMatterFilterLabel(value, cases)}
+              />
             </div>
 
             <div className="space-y-2">
               <Label>Assigned To</Label>
               <Select value={assignedUserId} onValueChange={setAssignedUserId}>
                 <SelectTrigger>
-                  <SelectValue placeholder="Any User" />
+                  <span className={cn(assignedUserId === "All" && "text-muted-foreground")}>
+                    {getAssignedFilterLabel(assignedUserId, users)}
+                  </span>
                 </SelectTrigger>
                 <SelectContent className="max-h-72 overflow-y-auto">
-                  <SelectItem value="All">Any User</SelectItem>
+                  <SelectItem value="All">All Users</SelectItem>
                   <SelectItem value="unassigned">Unassigned</SelectItem>
                   {users.map((user) => (
                     <SelectItem key={getUserId(user)} value={getUserId(user)}>
@@ -1693,6 +1764,10 @@ function TaskSheet({
   const selectedCase = cases.find((caseRecord) => caseRecord.id === form.caseId);
   const selectedContact = contacts.find((contact) => contact.id === form.contactId);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const userSelectOptions = useMemo(
+    () => [UNASSIGNED_USER_VALUE, ...users.map((user) => getUserId(user)).filter(Boolean)],
+    [users],
+  );
 
   useEffect(() => {
     if (open && form.relatedType === "contact" && contacts.length === 0) {
@@ -1764,7 +1839,7 @@ function TaskSheet({
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent className="overflow-y-auto p-6 sm:max-w-lg">
         <SheetHeader>
-          <SheetTitle>{task ? "Edit Task" : "Create Task"}</SheetTitle>
+          <SheetTitle>{task ? "View Task" : "Create Task"}</SheetTitle>
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
@@ -1784,21 +1859,25 @@ function TaskSheet({
 
           <div className="space-y-2">
             <Label>Assign To</Label>
-            <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
-              <SelectTrigger>
-                <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
-                  {selectedUser ? getUserName(selectedUser) : "Unassigned"}
-                </span>
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="">Unassigned</SelectItem>
-                {users.map((user) => (
-                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
-                    {getUserName(user)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchableSelect
+              value={form.assignedUserId || UNASSIGNED_USER_VALUE}
+              onValueChange={(assignedUserId) =>
+                setForm({
+                  ...form,
+                  assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
+                })
+              }
+              options={userSelectOptions}
+              placeholder="Search and select user"
+              searchPlaceholder="Search users..."
+              emptyMessage="No users found."
+              getOptionLabel={(userId) => {
+                if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
+                const user = users.find((candidate) => getUserId(candidate) === userId);
+                return user ? getUserName(user) : userId;
+              }}
+              className={cn(!selectedUser && "text-muted-foreground")}
+            />
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
@@ -1918,12 +1997,12 @@ function TaskSheet({
               <Label>Status</Label>
               <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
                 <SelectTrigger>
-                  <span className="capitalize">{form.status.replace(/_/g, " ")}</span>
+                  <span>{formatTaskStatusLabel(form.status)}</span>
                 </SelectTrigger>
                 <SelectContent>
                   {TASK_STATUSES.map((status) => (
                     <SelectItem key={status} value={status}>
-                      <span className="capitalize">{status.replace(/_/g, " ")}</span>
+                      <span>{formatTaskStatusLabel(status)}</span>
                     </SelectItem>
                   ))}
                 </SelectContent>

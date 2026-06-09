@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useState } from "react";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   CheckSquare,
+  Clock,
   DollarSign,
   FileText,
   Loader2,
@@ -16,9 +17,11 @@ import {
   Phone,
   Plus,
   Upload,
+  UserRound,
   Users,
 } from "lucide-react";
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/ui/accordion";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/DatePicker";
@@ -42,6 +45,8 @@ import {
   updateCase,
   uploadCaseDocument,
 } from "@/lib/cases";
+import { formatTaskStatusLabel, updateTask } from "@/lib/tasks";
+import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
@@ -54,6 +59,9 @@ const CASE_TYPE_OPTIONS = PRACTICE_AREAS;
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
+const UNASSIGNED_USER_VALUE = "__unassigned__";
+const TASK_STATUS_OPTIONS = ["todo", "in_progress", "blocked", "done", "cancelled"];
+const TASK_PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"];
 
 function getPipelineSelection(
   pipelines: GhlPipeline[],
@@ -92,6 +100,37 @@ function formatDateTime(value?: string | null) {
   }).format(new Date(value));
 }
 
+function formatDateTimeInput(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offset = date.getTimezoneOffset();
+  const localDate = new Date(date.getTime() - offset * 60_000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function formatTaskDate(value?: string | null) {
+  if (!value) return "No due date";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "No due date";
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dueDate = new Date(date);
+  dueDate.setHours(0, 0, 0, 0);
+
+  const dayDifference = Math.round((dueDate.getTime() - today.getTime()) / 86_400_000);
+  if (dayDifference === 0) return "Today";
+  if (dayDifference === 1) return "Tomorrow";
+  if (dayDifference === -1) return "Yesterday";
+  if (dayDifference > 1) return `In ${dayDifference} days`;
+  return `${Math.abs(dayDifference)} days ago`;
+}
+
+function isCompletedTask(task: any) {
+  return ["done", "completed"].includes(String(task.status || "").toLowerCase());
+}
+
 function getStatusClass(status: string) {
   switch (status) {
     case "open":
@@ -126,14 +165,25 @@ function formatContactAddress(rawContact: any) {
     .join("\n") || "Not set";
 }
 
+function normalizeMatterContactMatch(value?: string | null) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getMatterPartyDisplayName(party: any) {
+  return formatPersonName(party?.name || "") || party?.email || party?.phone || "Unnamed contact";
+}
+
 export function CaseDetailPage() {
   const { caseId } = useParams();
   const { toast } = useToast();
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
-  const [savingOverview, setSavingOverview] = useState(false);
   const [isEditOpen, setIsEditOpen] = useState(false);
+  const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
+  const [selectedTask, setSelectedTask] = useState<any | null>(null);
+  const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
   const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
+  const [activeDetailTab, setActiveDetailTab] = useState("tasks");
   const [contactAddress, setContactAddress] = useState("Not set");
   const [users, setUsers] = useState<AssignableUser[]>([]);
 
@@ -174,25 +224,6 @@ export function CaseDetailPage() {
       .then(setUsers)
       .catch((error) => console.error("Failed to load assignable users", error));
   }, []);
-
-  const handleOverviewSave = async (updates: Record<string, unknown>) => {
-    if (!detail) return;
-    setSavingOverview(true);
-    try {
-      const caseRecord = await updateCase({ caseId: detail.case.id, ...updates });
-      setDetail({ ...detail, case: caseRecord });
-      toast({ title: "Matter Updated", description: "Matter details have been saved." });
-      await loadCase();
-    } catch (error) {
-      toast({
-        title: "Matter Not Updated",
-        description: getUserFriendlyErrorMessage(error, "Could not update this matter. Please try again."),
-        variant: "destructive",
-      });
-    } finally {
-      setSavingOverview(false);
-    }
-  };
 
   if (loading) {
     return (
@@ -235,6 +266,11 @@ export function CaseDetailPage() {
     detail.case.assigned_user_id ||
     detail.contactAssignment?.assigned_user_id ||
     "";
+  const sourceAttorneyUserId = detail.case.source_attorney_user_id || "";
+  const sourceAttorneyUser = users.find((user) => getUserId(user) === sourceAttorneyUserId);
+  const sourceAttorneyMetadataName =
+    typeof detail.case.metadata?.source_attorney_name === "string" ? detail.case.metadata.source_attorney_name.trim() : "";
+  const sourceAttorneyName = sourceAttorneyUser ? getUserName(sourceAttorneyUser) : sourceAttorneyMetadataName || "Unassigned";
   const contactEmail = detail.case.primary_contact_email || "";
   const contactPhone = detail.case.primary_contact_phone || "";
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
@@ -249,6 +285,27 @@ export function CaseDetailPage() {
         assignedUserId={assignedUserId}
         onSaved={(caseRecord) => {
           setDetail({ ...detail, case: caseRecord });
+          loadCase();
+        }}
+      />
+      <CreateMatterTaskSheet
+        open={isCreateTaskOpen}
+        onOpenChange={(open) => {
+          setIsCreateTaskOpen(open);
+          if (!open) setSelectedTask(null);
+        }}
+        task={selectedTask}
+        detail={detail}
+        users={users}
+        defaultAssignedUserId={assignedUserId}
+        onCreated={loadCase}
+      />
+      <MatterNoteSheet
+        open={isNoteSheetOpen}
+        onOpenChange={setIsNoteSheetOpen}
+        detail={detail}
+        onCreated={() => {
+          setActiveDetailTab("timeline");
           loadCase();
         }}
       />
@@ -288,7 +345,7 @@ export function CaseDetailPage() {
             </Button>
             <Button
               size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
               disabled={!contactPhone}
               title="Call"
               aria-label="Call"
@@ -300,12 +357,33 @@ export function CaseDetailPage() {
             </Button>
             <Button
               size="icon"
-              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-primary/90"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
               title="Edit"
               aria-label="Edit"
               onClick={() => setIsEditOpen(true)}
             >
               <Pencil className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+              title="Add Task"
+              aria-label="Add Task"
+              onClick={() => {
+                setSelectedTask(null);
+                setIsCreateTaskOpen(true);
+              }}
+            >
+              <CheckSquare className="h-4 w-4" />
+            </Button>
+            <Button
+              size="icon"
+              className="h-10 w-10 rounded-full border-0 bg-primary p-0 text-white hover:bg-[#0484C8]"
+              title="Add Note"
+              aria-label="Add Note"
+              onClick={() => setIsNoteSheetOpen(true)}
+            >
+              <NotebookPen className="h-4 w-4" />
             </Button>
           </div>
         </div>
@@ -333,7 +411,8 @@ export function CaseDetailPage() {
                 <div className="space-y-3 pt-2">
                   <DetailRow label="Matter Number" value={detail.case.case_number} />
                   <DetailRow label="Practice Area" value={detail.case.case_type} />
-                  <DetailRow label="Primary Attorney" value={assignedUserName} />
+                  <DetailRow label="Lead Attorney" value={assignedUserName} />
+                  <DetailRow label="Source Attorney" value={sourceAttorneyName} />
                   <DetailRow label="Status" value={detail.case.status} className="capitalize" />
                   <DetailRow label="Stage" value={detail.case.stage.replace(/_/g, " ")} className="capitalize" />
                   <DetailRow label="Opened" value={formatDateTime(detail.case.created_at)} />
@@ -362,7 +441,7 @@ export function CaseDetailPage() {
               <AccordionTrigger>System Information</AccordionTrigger>
               <AccordionContent>
                 <div className="space-y-3 pt-2">
-                  <DetailRow label="Assigned User" value={assignedUserName} />
+                  <DetailRow label="Lead Attorney" value={assignedUserName} />
                   <DetailRow label="Updated" value={formatDateTime(detail.case.updated_at)} />
                 </div>
               </AccordionContent>
@@ -371,7 +450,7 @@ export function CaseDetailPage() {
         </div>
 
         <div className="h-full overflow-hidden lg:px-6">
-          <Tabs defaultValue="tasks" className="flex h-full min-h-0 w-full flex-col">
+          <Tabs value={activeDetailTab} onValueChange={setActiveDetailTab} className="flex h-full min-h-0 w-full flex-col">
             <div className="shrink-0 bg-background pb-4 pt-6">
               <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0 xl:grid-cols-6">
                 <TabsTrigger value="tasks" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Tasks</TabsTrigger>
@@ -385,7 +464,14 @@ export function CaseDetailPage() {
 
             <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
               <TabsContent value="tasks" className="m-0">
-                <TasksTab detail={detail} onChanged={loadCase} />
+                <TasksTab
+                  detail={detail}
+                  users={users}
+                  onTaskClick={(task) => {
+                    setSelectedTask(task);
+                    setIsCreateTaskOpen(true);
+                  }}
+                />
               </TabsContent>
               <TabsContent value="timeline" className="m-0">
                 <TimelineTab detail={detail} onChanged={loadCase} />
@@ -410,8 +496,7 @@ export function CaseDetailPage() {
           <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pl-6">
             <OverviewTab
               detail={detail}
-              saving={savingOverview}
-              onSave={handleOverviewSave}
+              onViewAllDocuments={() => setActiveDetailTab("documents")}
               onToggleCollapse={() => setIsOverviewCollapsed(true)}
             />
           </div>
@@ -462,6 +547,7 @@ function EditCaseSheet({
     pipelineId: detail.case.ghl_pipeline_id || "",
     pipelineStageId: detail.case.ghl_pipeline_stage_id || "",
     assignedUserId,
+    sourceAttorneyUserId: detail.case.source_attorney_user_id || "",
   });
 
   useEffect(() => {
@@ -476,6 +562,7 @@ function EditCaseSheet({
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
       assignedUserId,
+      sourceAttorneyUserId: detail.case.source_attorney_user_id || "",
     });
   }, [
     assignedUserId,
@@ -484,6 +571,7 @@ function EditCaseSheet({
     detail.case.case_type,
     detail.case.ghl_pipeline_id,
     detail.case.ghl_pipeline_stage_id,
+    detail.case.source_attorney_user_id,
     detail.case.stage,
     detail.case.status,
     open,
@@ -523,6 +611,12 @@ function EditCaseSheet({
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         assignedUserId: form.assignedUserId || null,
+        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
+        metadata: {
+          source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
+          ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
+          ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
+        },
       });
       onSaved(caseRecord);
       onOpenChange(false);
@@ -540,6 +634,7 @@ function EditCaseSheet({
 
   const caseTypeOptions = CASE_TYPE_OPTIONS.includes(form.caseType) ? CASE_TYPE_OPTIONS : [form.caseType, ...CASE_TYPE_OPTIONS];
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedSourceAttorney = users.find((user) => getUserId(user) === form.sourceAttorneyUserId);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
 
   const handlePipelineChange = (pipelineId: string) => {
@@ -610,11 +705,33 @@ function EditCaseSheet({
           </div>
 
           <div className="space-y-2">
-            <Label>Primary Attorney</Label>
+            <Label>Lead Attorney</Label>
             <Select value={form.assignedUserId} onValueChange={(nextAssignedUserId) => setForm({ ...form, assignedUserId: nextAssignedUserId })}>
               <SelectTrigger>
                 <span className={cn(!form.assignedUserId && "text-muted-foreground")}>
                   {selectedUser ? getUserName(selectedUser) : "Unassigned"}
+                </span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Unassigned</SelectItem>
+                {users.map((user) => (
+                  <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                    {getUserName(user)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Source Attorney</Label>
+            <Select
+              value={form.sourceAttorneyUserId}
+              onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+            >
+              <SelectTrigger>
+                <span className={cn(!form.sourceAttorneyUserId && "text-muted-foreground")}>
+                  {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
                 </span>
               </SelectTrigger>
               <SelectContent>
@@ -707,30 +824,321 @@ function EditCaseSheet({
   );
 }
 
+function CreateMatterTaskSheet({
+  open,
+  onOpenChange,
+  task,
+  detail,
+  users,
+  defaultAssignedUserId,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  task: any | null;
+  detail: CaseDetail;
+  users: AssignableUser[];
+  defaultAssignedUserId: string;
+  onCreated: () => void;
+}) {
+  const { toast } = useToast();
+  const [form, setForm] = useState({
+    title: "",
+    dueAt: "",
+    reminderAt: "",
+    status: "todo",
+    priority: "normal",
+    assignedUserId: defaultAssignedUserId || "",
+    description: "",
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
+  const userSelectOptions = useMemo(
+    () => [UNASSIGNED_USER_VALUE, ...users.map((user) => getUserId(user)).filter(Boolean)],
+    [users],
+  );
+
+  useEffect(() => {
+    if (!open) return;
+
+    setForm({
+      title: task?.title || "",
+      dueAt: formatDateTimeInput(task?.due_at),
+      reminderAt: formatDateTimeInput(task?.reminder_at),
+      status: task?.status || "todo",
+      priority: task?.priority || "normal",
+      assignedUserId: task?.assigned_user_id || defaultAssignedUserId || "",
+      description: task?.description || "",
+    });
+  }, [defaultAssignedUserId, open, task]);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!form.title.trim()) {
+      toast({ title: "Task Title Required", description: "Please enter a task title.", variant: "destructive" });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      if (task) {
+        await updateTask({
+          taskId: task.id,
+          caseId: detail.case.id,
+          title: form.title,
+          dueAt: form.dueAt ? new Date(form.dueAt).toISOString() : null,
+          reminderAt: form.reminderAt ? new Date(form.reminderAt).toISOString() : null,
+          status: form.status,
+          priority: form.priority,
+          assignedUserId: form.assignedUserId || null,
+          description: form.description,
+          relatedType: "case",
+        });
+      } else {
+        await createCaseTask({
+          caseId: detail.case.id,
+          title: form.title,
+          dueAt: form.dueAt ? new Date(form.dueAt).toISOString() : null,
+          reminderAt: form.reminderAt ? new Date(form.reminderAt).toISOString() : null,
+          status: form.status,
+          priority: form.priority,
+          assignedUserId: form.assignedUserId || null,
+          description: form.description,
+        });
+      }
+      onCreated();
+      onOpenChange(false);
+      toast({
+        title: task ? "Task Updated" : "Task Created",
+        description: task ? `${form.title} has been saved.` : `${form.title} has been added to this matter.`,
+      });
+    } catch (error) {
+      toast({
+        title: task ? "Task Not Updated" : "Task Not Created",
+        description: getUserFriendlyErrorMessage(error, `Could not ${task ? "update" : "create"} this task. Please try again.`),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>{task ? "View Task" : "Create Task"}</SheetTitle>
+        </SheetHeader>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label>Task Title</Label>
+            <Input
+              value={form.title}
+              onChange={(event) => setForm({ ...form, title: event.target.value })}
+              required
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Assign To</Label>
+            <SearchableSelect
+              value={form.assignedUserId || UNASSIGNED_USER_VALUE}
+              onValueChange={(assignedUserId) =>
+                setForm({
+                  ...form,
+                  assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
+                })
+              }
+              options={userSelectOptions}
+              placeholder="Search and select user"
+              searchPlaceholder="Search users..."
+              emptyMessage="No users found."
+              getOptionLabel={(userId) => {
+                if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
+                const user = users.find((candidate) => getUserId(candidate) === userId);
+                return user ? getUserName(user) : userId;
+              }}
+              className={cn(!selectedUser && "text-muted-foreground")}
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Status</Label>
+            <Select value={form.status} onValueChange={(status) => setForm({ ...form, status })}>
+              <SelectTrigger>
+                <span>{formatTaskStatusLabel(form.status)}</span>
+              </SelectTrigger>
+              <SelectContent>
+                {TASK_STATUS_OPTIONS.map((status) => (
+                  <SelectItem key={status} value={status}>
+                    <span>{formatTaskStatusLabel(status)}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Due Date</Label>
+              <DateTimePicker
+                value={form.dueAt}
+                onValueChange={(dueAt) => setForm({ ...form, dueAt })}
+                placeholder="Select due date"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Reminder</Label>
+              <DateTimePicker
+                value={form.reminderAt}
+                onValueChange={(reminderAt) => setForm({ ...form, reminderAt })}
+                placeholder="Select reminder"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Priority</Label>
+            <Select value={form.priority} onValueChange={(priority) => setForm({ ...form, priority })}>
+              <SelectTrigger>
+                <span className="capitalize">{form.priority}</span>
+              </SelectTrigger>
+              <SelectContent>
+                {TASK_PRIORITY_OPTIONS.map((priority) => (
+                  <SelectItem key={priority} value={priority}>
+                    <span className="capitalize">{priority}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Description</Label>
+            <Textarea
+              value={form.description}
+              onChange={(event) => setForm({ ...form, description: event.target.value })}
+              placeholder="Description"
+            />
+          </div>
+
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !form.title.trim()}>
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              {task ? "Save Task" : "Create Task"}
+            </Button>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function MatterNoteSheet({
+  open,
+  onOpenChange,
+  detail,
+  onCreated,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  detail: CaseDetail;
+  onCreated: () => void;
+}) {
+  const { toast } = useToast();
+  const [note, setNote] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open) setNote("");
+  }, [open]);
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!note.trim()) {
+      toast({ title: "Note Required", description: "Please enter a note.", variant: "destructive" });
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await createCaseNote({ caseId: detail.case.id, body: note });
+      onCreated();
+      onOpenChange(false);
+      toast({ title: "Note Created", description: "The matter note has been saved." });
+    } catch (error) {
+      toast({
+        title: "Note Not Added",
+        description: getUserFriendlyErrorMessage(error, "Could not add this matter note. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 sm:max-w-md">
+        <SheetHeader>
+          <SheetTitle>Add Note</SheetTitle>
+        </SheetHeader>
+
+        <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label>Note</Label>
+            <Textarea
+              value={note}
+              onChange={(event) => setNote(event.target.value)}
+              rows={8}
+              placeholder="Add a matter note"
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <Button type="button" variant="outline" className="flex-1" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button type="submit" className="flex-1 hover:bg-[#0484C8]" disabled={submitting || !note.trim()}>
+              {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+              Save Note
+            </Button>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function OverviewTab({
   detail,
-  saving,
-  onSave,
+  onViewAllDocuments,
   onToggleCollapse,
 }: {
   detail: CaseDetail;
-  saving: boolean;
-  onSave: (updates: Record<string, unknown>) => void;
+  onViewAllDocuments: () => void;
   onToggleCollapse: () => void;
 }) {
-  const [stage, setStage] = useState(detail.case.stage);
-  const [status, setStatus] = useState(detail.case.status);
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
-
-  useEffect(() => {
-    setStage(detail.case.stage);
-    setStatus(detail.case.status);
-  }, [detail.case.stage, detail.case.status]);
+  const recentDocuments = detail.documents.slice(0, 5);
+  const recentNotes = detail.notes.slice(0, 5);
+  const primaryContactMatchValues = new Set(
+    [detail.case.ghl_contact_id, detail.case.primary_contact_email, detail.case.primary_contact_name]
+      .map((value) => normalizeMatterContactMatch(value))
+      .filter(Boolean),
+  );
+  const associatedContacts = detail.parties.filter((party) => {
+    const values = [party.ghl_contact_id, party.email, party.name].map((value) => normalizeMatterContactMatch(value));
+    return !values.some((value) => value && primaryContactMatchValues.has(value));
+  });
 
   return (
     <>
-      <div className="mb-4 flex items-center justify-between">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Matter Overview</h3>
+      <div className="mb-4 flex items-center justify-between border-b border-border pb-3">
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Additional Information</h3>
         <Button
           type="button"
           variant="ghost"
@@ -743,46 +1151,103 @@ function OverviewTab({
         </Button>
       </div>
       <div className="space-y-4">
-        <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-          <div className="mb-1 text-xs uppercase text-muted-foreground">Practice Area</div>
-          <div className="text-sm font-semibold">{detail.case.case_type}</div>
-        </div>
-        <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-          <div className="mb-1 text-xs uppercase text-muted-foreground">Primary Contact</div>
-          <div className="text-sm font-semibold">{clientName}</div>
-        </div>
-        <div className="rounded-lg border border-primary/10 bg-primary/5 p-4">
-          <div className="mb-1 text-xs uppercase text-muted-foreground">Last Updated</div>
-          <div className="text-sm font-semibold">{formatDateTime(detail.case.updated_at)}</div>
-        </div>
-        <div className="rounded-lg border border-border bg-card p-4">
-          <h4 className="mb-4 text-sm font-semibold">Stage & Status</h4>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>Status</Label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
-                  <span className="capitalize">{status}</span>
-                </SelectTrigger>
-                <SelectContent>
-                  {["open", "pending", "closed", "archived"].map((item) => (
-                    <SelectItem key={item} value={item}>
-                      <span className="capitalize">{item}</span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <Label>Stage</Label>
-              <Input value={stage} onChange={(event) => setStage(event.target.value)} />
-            </div>
-            <Button className="w-full" disabled={saving} onClick={() => onSave({ status, stage })}>
-              {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-              Save Stage
-            </Button>
-          </div>
-        </div>
+        <Accordion type="multiple" defaultValue={["contacts"]} className="w-full">
+          <AccordionItem value="contacts">
+            <AccordionTrigger>Contacts</AccordionTrigger>
+            <AccordionContent>
+              <div className="divide-y divide-border pt-2">
+                <div className="py-3 first:pt-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
+                        <UserRound className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0 space-y-0.5">
+                        {detail.case.ghl_contact_id ? (
+                          <Link
+                            to={`/contact/${detail.case.ghl_contact_id}`}
+                            className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                          >
+                            {clientName}
+                          </Link>
+                        ) : (
+                          <div className="truncate text-sm font-semibold">{clientName}</div>
+                        )}
+                        <div className="truncate text-xs text-muted-foreground">Primary Contact</div>
+                        {detail.case.primary_contact_email ? (
+                          <div className="truncate text-xs text-[#2384CA]">{detail.case.primary_contact_email}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <Badge variant="outline" className="shrink-0 border-primary/20 bg-primary/5 text-xs font-medium text-primary">
+                      Primary
+                    </Badge>
+                  </div>
+                </div>
+
+                {associatedContacts.map((party) => {
+                  const name = getMatterPartyDisplayName(party);
+                  const contactId = String(party.ghl_contact_id || "");
+                  return (
+                    <div key={party.id || `${name}-${party.email || party.phone || party.role}`} className="py-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
+                            {getAvatarInitials({ fullName: name, email: party.email }, "C")}
+                          </div>
+                          <div className="min-w-0 space-y-0.5">
+                            {contactId ? (
+                              <Link
+                                to={`/contact/${contactId}`}
+                                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                              >
+                                {name}
+                              </Link>
+                            ) : (
+                              <div className="truncate text-sm font-semibold text-foreground">{name}</div>
+                            )}
+                            <div className="truncate text-xs text-muted-foreground">
+                              {[party.party_type, party.role].filter(Boolean).join(" - ") || "Associated Contact"}
+                            </div>
+                            {party.email || party.phone ? (
+                              <div className="truncate text-xs text-[#2384CA]">{party.email || party.phone}</div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+
+              </div>
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem value="documents">
+            <AccordionTrigger
+              action={
+                <button
+                  type="button"
+                  className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]"
+                  onClick={onViewAllDocuments}
+                >
+                  View all documents
+                </button>
+              }
+            >
+              Recent Documents ({recentDocuments.length})
+            </AccordionTrigger>
+            <AccordionContent>
+              <MatterDocumentList documents={recentDocuments} />
+            </AccordionContent>
+          </AccordionItem>
+          <AccordionItem value="notes">
+            <AccordionTrigger>Notes ({recentNotes.length})</AccordionTrigger>
+            <AccordionContent>
+              <MatterNoteList notes={recentNotes} />
+            </AccordionContent>
+          </AccordionItem>
+        </Accordion>
+
       </div>
     </>
   );
@@ -819,7 +1284,7 @@ function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
         <CardContent className="space-y-3">
           <Textarea value={note} onChange={(event) => setNote(event.target.value)} rows={5} placeholder="Add a matter note" />
           <Button className="w-full" disabled={submitting || !note.trim()} onClick={handleAddNote}>
-            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
             Add Note
           </Button>
         </CardContent>
@@ -886,48 +1351,185 @@ function PartiesTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () =
   );
 }
 
-function TasksTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void }) {
-  const { toast } = useToast();
-  const [form, setForm] = useState({ title: "", dueAt: "", priority: "normal", description: "" });
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async () => {
-    if (!form.title.trim()) return;
-    setSubmitting(true);
-    try {
-      await createCaseTask({ caseId: detail.case.id, ...form, dueAt: form.dueAt ? new Date(form.dueAt).toISOString() : null });
-      setForm({ title: "", dueAt: "", priority: "normal", description: "" });
-      onChanged();
-    } catch (error) {
-      toast({ title: "Task Not Created", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
-    } finally {
-      setSubmitting(false);
-    }
-  };
+function TasksTab({
+  detail,
+  users,
+  onTaskClick,
+}: {
+  detail: CaseDetail;
+  users: AssignableUser[];
+  onTaskClick: (task: any) => void;
+}) {
+  const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
+  const completedTasks = detail.tasks.filter(isCompletedTask);
 
   return (
-    <TwoColumnTab title="Create Task" icon={CheckSquare} action={<Button disabled={submitting || !form.title.trim()} onClick={submit}>{submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}Create Task</Button>}>
-      <div className="space-y-3">
-        <Input placeholder="Task title" value={form.title} onChange={(event) => setForm({ ...form, title: event.target.value })} />
-        <div className="grid gap-3 sm:grid-cols-2">
-          <DateTimePicker
-            value={form.dueAt}
-            onValueChange={(dueAt) => setForm({ ...form, dueAt })}
-            placeholder="Select due date"
-          />
-          <Select value={form.priority} onValueChange={(priority) => setForm({ ...form, priority })}>
-            <SelectTrigger><span className="capitalize">{form.priority}</span></SelectTrigger>
-            <SelectContent>
-              {["low", "normal", "high", "urgent"].map((priority) => <SelectItem key={priority} value={priority}>{priority}</SelectItem>)}
-            </SelectContent>
-          </Select>
+    <div className="space-y-4">
+      <Accordion type="multiple" defaultValue={["active-tasks", "completed-tasks"]} className="w-full">
+        <AccordionItem value="active-tasks">
+          <AccordionTrigger>Active Tasks ({activeTasks.length})</AccordionTrigger>
+          <AccordionContent>
+            <MatterTaskList tasks={activeTasks} users={users} onTaskClick={onTaskClick} />
+          </AccordionContent>
+        </AccordionItem>
+        <AccordionItem value="completed-tasks">
+          <AccordionTrigger>Completed Tasks ({completedTasks.length})</AccordionTrigger>
+          <AccordionContent>
+            <MatterTaskList tasks={completedTasks} users={users} onTaskClick={onTaskClick} />
+          </AccordionContent>
+        </AccordionItem>
+      </Accordion>
+    </div>
+  );
+}
+
+function MatterTaskList({
+  tasks,
+  users,
+  onTaskClick,
+}: {
+  tasks: any[];
+  users: AssignableUser[];
+  onTaskClick: (task: any) => void;
+}) {
+  if (tasks.length === 0) {
+    return <div className="py-4 text-center text-sm text-muted-foreground">No tasks found.</div>;
+  }
+
+  return (
+    <div className="divide-y pt-3">
+      {tasks.map((task) => {
+        const assignedUserId = task.assigned_user?.id || task.assigned_user_id || "";
+        const matchedUser = users.find((user) => getUserId(user) === assignedUserId);
+        const assignedUserName =
+          (task.assigned_user?.full_name ? formatPersonName(task.assigned_user.full_name) : "") ||
+          task.assigned_user?.email ||
+          (matchedUser ? getUserName(matchedUser) : "");
+        const assignedUserEmail = task.assigned_user?.email || matchedUser?.email;
+        const assignedUserAvatar =
+          task.assigned_user?.avatar_url ||
+          task.assigned_user?.profilePhoto ||
+          matchedUser?.avatar_url ||
+          matchedUser?.profilePhoto ||
+          "";
+        const completed = isCompletedTask(task);
+        const dueLabel = completed ? "Completed" : formatTaskDate(task.due_at);
+
+        return (
+          <button
+            key={task.id}
+            type="button"
+            className="block w-full py-3 text-left first:pt-0 last:pb-0 hover:bg-muted/30"
+            onClick={() => onTaskClick(task)}
+          >
+            <div className="flex items-start gap-3">
+              <Avatar className="mt-0.5 h-8 w-8 shrink-0">
+                {assignedUserAvatar ? (
+                  <AvatarImage
+                    src={assignedUserAvatar}
+                    alt={`${getAvatarInitials(
+                      { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                      "U",
+                    )} avatar`}
+                  />
+                ) : null}
+                <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
+                  {getAvatarInitials(
+                    { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                    "U",
+                  )}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 flex-1">
+                <div className={cn("font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
+                  {task.title}
+                </div>
+                <div className="mt-0.5 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+                  <div className="min-w-0 truncate capitalize">
+                    {[formatTaskStatusLabel(task.status), task.priority].filter(Boolean).join(" · ")}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 text-right">
+                    <Clock className="h-3.5 w-3.5" />
+                    <span>{dueLabel}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatFileSize(value?: number | null) {
+  const bytes = Number(value || 0);
+  if (!bytes) return "0 bytes";
+  if (bytes < 1024) return `${bytes} bytes`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function MatterDocumentList({ documents }: { documents: any[] }) {
+  if (documents.length === 0) {
+    return <div className="py-4 text-center text-sm text-muted-foreground">No documents found.</div>;
+  }
+
+  return (
+    <div className="divide-y pt-3">
+      {documents.map((document) => {
+        const documentType = String(document.document_type || "Document").replace(/_/g, " ");
+        const mimeType = document.mime_type || "file";
+
+        return (
+          <div key={document.id || document.file_name} className="block w-full py-3 text-left first:pt-0 last:pb-0">
+            <div className="flex items-start gap-3">
+              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <FileText className="h-4 w-4" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium text-[#2384CA]">{document.file_name || "Untitled document"}</div>
+                <div className="mt-0.5 flex items-center justify-between gap-4 text-xs text-muted-foreground">
+                  <div className="min-w-0 truncate capitalize">
+                    {[documentType, mimeType].filter(Boolean).join(" · ")}
+                  </div>
+                  <div className="flex shrink-0 items-center gap-1 text-right">
+                    <span>{formatFileSize(document.size_bytes)}</span>
+                  </div>
+                </div>
+                <div className="mt-0.5 text-xs text-muted-foreground">{formatDateTime(document.created_at)}</div>
+              </div>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function MatterNoteList({ notes }: { notes: any[] }) {
+  if (notes.length === 0) {
+    return <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>;
+  }
+
+  return (
+    <div className="divide-y pt-3">
+      {notes.map((note) => (
+        <div key={note.id || note.created_at} className="block w-full py-3 text-left first:pt-0 last:pb-0">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+              <NotebookPen className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="line-clamp-3 whitespace-pre-line text-sm text-foreground">
+                {note.body || "Untitled note"}
+              </p>
+              <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(note.created_at)}</div>
+            </div>
+          </div>
         </div>
-        <Textarea placeholder="Description" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
-      </div>
-      <ListCard title="Tasks" items={detail.tasks} emptyIcon={CheckSquare} emptyText="No tasks yet." render={(task) => (
-        <Row title={task.title} meta={`${task.status} · ${task.priority} · Due ${formatDateTime(task.due_at)}`} badge={task.template_key ? "template" : undefined} />
-      )} />
-    </TwoColumnTab>
+      ))}
+    </div>
   );
 }
 

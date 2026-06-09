@@ -33,6 +33,27 @@ export type TaskRecord = {
   } | null;
 };
 
+export function formatTaskStatusLabel(status?: string | null) {
+  const normalizedStatus = String(status || "").trim();
+  if (normalizedStatus === "todo") return "To Do";
+  return normalizedStatus
+    .replace(/_/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
+    .join(" ");
+}
+
+export async function generateTaskDueNotifications(locationId?: string | null) {
+  const resolvedLocationId = locationId || await getLocationId();
+  const { data, error } = await supabase.rpc("generate_task_due_notifications", {
+    p_location_id: resolvedLocationId,
+  });
+
+  if (error) throw new Error(error.message);
+  return Number(data || 0);
+}
+
 async function getLocationId() {
   const context = await getAppLocationContext();
   const locationId = context.location?.id;

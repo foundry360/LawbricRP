@@ -1443,13 +1443,13 @@ export function CalendarPage() {
             </h2>
             <div className="mt-0 flex items-center space-x-4">
               <div className="flex items-center space-x-2">
-                <Button variant="outline" size="icon" onClick={handlePrev}>
+                <Button variant="outline" size="icon" onClick={handlePrev} tooltip="Previous period" aria-label="Previous period">
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <Button variant="outline" size="sm" onClick={handleToday}>
                   Today
                 </Button>
-                <Button variant="outline" size="icon" onClick={handleNext}>
+                <Button variant="outline" size="icon" onClick={handleNext} tooltip="Next period" aria-label="Next period">
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
@@ -1469,8 +1469,10 @@ export function CalendarPage() {
                 </div>
                 <Button
                   size="icon"
-                  className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+                  className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
                   onClick={() => setIsSheetOpen(true)}
+                  tooltip="New appointment"
+                  aria-label="New appointment"
                 >
                   <Plus className="h-5 w-5" />
                   <span className="sr-only">New Appointment</span>
@@ -1987,7 +1989,9 @@ function EventDetailsSheet({
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-10 w-10"
+                    className="h-10 w-10 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                    tooltip="Edit appointment"
+                    aria-label="Edit appointment"
                     onClick={() => {
                       setEditFormData({
                         calendarId: selectedEvent.calendarId || "",
@@ -2002,10 +2006,18 @@ function EventDetailsSheet({
                       setIsEditingEvent(true);
                     }}
                   >
-                    <Edit className="h-6 w-6 text-muted-foreground hover:text-foreground" />
+                    <Edit className="h-6 w-6" />
                   </Button>
-                  <Button variant="ghost" size="icon" className="h-10 w-10" onClick={onDelete} disabled={isDeletingEvent}>
-                    {isDeletingEvent ? <Loader2 className="h-6 w-6 animate-spin" /> : <Trash2 className="h-6 w-6 text-muted-foreground hover:text-foreground" />}
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-10 w-10 text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                    onClick={onDelete}
+                    disabled={isDeletingEvent}
+                    tooltip="Delete appointment"
+                    aria-label="Delete appointment"
+                  >
+                    {isDeletingEvent ? <Loader2 className="h-6 w-6 animate-spin" /> : <Trash2 className="h-6 w-6" />}
                   </Button>
                 </div>
               )}

@@ -12,6 +12,7 @@ import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
+import { getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { useToast } from "@/hooks/use-toast";
 
 type MatterActionMode = "view" | "edit" | "delete";
@@ -22,6 +23,7 @@ type MatterActionSheetProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   locationId?: string;
+  users?: AssignableUser[];
   onSaved: (matter: CaseRecord) => void;
   onDeleted: (matterId: string) => void;
 };
@@ -41,6 +43,7 @@ type MatterCreateSheetProps = {
     id: string;
     name: string;
   } | null;
+  users?: AssignableUser[];
   onCreated: (matter: CaseRecord) => void;
 };
 
@@ -89,7 +92,7 @@ function DetailRow({ label, value }: { label: string; value?: string | null }) {
   );
 }
 
-export function MatterCreateSheet({ open, onOpenChange, locationId, contact, relatedCompany, onCreated }: MatterCreateSheetProps) {
+export function MatterCreateSheet({ open, onOpenChange, locationId, contact, relatedCompany, users = [], onCreated }: MatterCreateSheetProps) {
   const { toast } = useToast();
   const [submitting, setSubmitting] = useState(false);
   const [pipelines, setPipelines] = useState<GhlPipeline[]>([]);
@@ -102,6 +105,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
     pipelineId: "",
     pipelineStageId: "",
     assignedUserId: "",
+    sourceAttorneyUserId: "",
     notes: "",
   });
 
@@ -116,6 +120,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
       pipelineId: "",
       pipelineStageId: "",
       assignedUserId: contact?.assignedUserId || "",
+      sourceAttorneyUserId: "",
       notes: "",
     });
   }, [contact?.assignedUserId, open]);
@@ -132,6 +137,8 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
 
   const closeSheet = () => onOpenChange(false);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+  const selectedLeadAttorney = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedSourceAttorney = users.find((user) => getUserId(user) === form.sourceAttorneyUserId);
 
   const handlePipelineChange = (pipelineId: string) => {
     if (pipelineId === NO_PIPELINE_VALUE) {
@@ -183,12 +190,15 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
         contactEmail: contact.email || "",
         contactPhone: formatPhoneNumber(contact.phone, ""),
         assignedUserId: form.assignedUserId || null,
+        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         notes: form.notes,
         metadata: {
           clientType: relatedCompany ? "company" : "contact",
           relatedRecordType: relatedCompany ? "company" : "contact",
+          assigned_user_name: selectedLeadAttorney ? getUserName(selectedLeadAttorney) : "",
+          source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
           ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
           ...(relatedCompany ? { companyId: relatedCompany.id, companyName: relatedCompany.name } : {}),
@@ -302,6 +312,47 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
               </Select>
             </div>
           </div>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="space-y-2">
+              <Label>Lead Attorney</Label>
+              <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
+                <SelectTrigger>
+                  <span className={!form.assignedUserId ? "text-muted-foreground" : undefined}>
+                    {selectedLeadAttorney ? getUserName(selectedLeadAttorney) : "Unassigned"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  <SelectItem value="">Unassigned</SelectItem>
+                  {users.map((user) => (
+                    <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                      {getUserName(user)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-2">
+              <Label>Source Attorney</Label>
+              <Select
+                value={form.sourceAttorneyUserId}
+                onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+              >
+                <SelectTrigger>
+                  <span className={!form.sourceAttorneyUserId ? "text-muted-foreground" : undefined}>
+                    {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
+                  </span>
+                </SelectTrigger>
+                <SelectContent className="max-h-72 overflow-y-auto">
+                  <SelectItem value="">Unassigned</SelectItem>
+                  {users.map((user) => (
+                    <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                      {getUserName(user)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
           <div className="space-y-2">
             <Label>Internal Notes</Label>
             <Input value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} placeholder="Optional context for this matter" />
@@ -327,6 +378,7 @@ export function MatterActionSheet({
   open,
   onOpenChange,
   locationId,
+  users = [],
   onSaved,
   onDeleted,
 }: MatterActionSheetProps) {
@@ -341,6 +393,8 @@ export function MatterActionSheet({
     stage: "",
     pipelineId: "",
     pipelineStageId: "",
+    assignedUserId: "",
+    sourceAttorneyUserId: "",
   });
   const [deleteConfirmationText, setDeleteConfirmationText] = useState("");
 
@@ -356,6 +410,8 @@ export function MatterActionSheet({
       stage: matter.stage || "",
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
+      assignedUserId: matter.assigned_user_id || "",
+      sourceAttorneyUserId: matter.source_attorney_user_id || "",
     });
   }, [matter, open, pipelines]);
 
@@ -371,6 +427,8 @@ export function MatterActionSheet({
 
   const closeSheet = () => onOpenChange(false);
   const selectedPipeline = pipelines.find((pipeline) => pipeline.id === form.pipelineId);
+  const selectedLeadAttorney = users.find((user) => getUserId(user) === form.assignedUserId);
+  const selectedSourceAttorney = users.find((user) => getUserId(user) === form.sourceAttorneyUserId);
 
   const handlePipelineChange = (pipelineId: string) => {
     if (pipelineId === NO_PIPELINE_VALUE) {
@@ -416,7 +474,10 @@ export function MatterActionSheet({
         stage: form.stage,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
+        assignedUserId: form.assignedUserId || null,
+        sourceAttorneyUserId: form.sourceAttorneyUserId || null,
         metadata: {
+          source_attorney_name: selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "",
           ...(selectedPipeline ? { ghl_pipeline_name: selectedPipeline.name } : {}),
           ...(form.pipelineStageId ? { ghl_pipeline_stage_name: form.stage } : {}),
         },
@@ -458,6 +519,8 @@ export function MatterActionSheet({
   const title = mode === "edit" ? "Edit Matter" : mode === "delete" ? "Delete Matter" : "View Matter";
   const caseTypeOptions = PRACTICE_AREAS.includes(form.caseType) ? PRACTICE_AREAS : [form.caseType, ...PRACTICE_AREAS].filter(Boolean);
   const canDelete = deleteConfirmationText === "DELETE" && !submitting;
+  const matterLeadAttorney = users.find((user) => getUserId(user) === matter?.assigned_user_id);
+  const matterSourceAttorney = users.find((user) => getUserId(user) === matter?.source_attorney_user_id);
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -548,6 +611,47 @@ export function MatterActionSheet({
                 </Select>
               </div>
             </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2">
+                <Label>Lead Attorney</Label>
+                <Select value={form.assignedUserId} onValueChange={(assignedUserId) => setForm({ ...form, assignedUserId })}>
+                  <SelectTrigger>
+                    <span className={!form.assignedUserId ? "text-muted-foreground" : undefined}>
+                      {selectedLeadAttorney ? getUserName(selectedLeadAttorney) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72 overflow-y-auto">
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Source Attorney</Label>
+                <Select
+                  value={form.sourceAttorneyUserId}
+                  onValueChange={(sourceAttorneyUserId) => setForm({ ...form, sourceAttorneyUserId })}
+                >
+                  <SelectTrigger>
+                    <span className={!form.sourceAttorneyUserId ? "text-muted-foreground" : undefined}>
+                      {selectedSourceAttorney ? getUserName(selectedSourceAttorney) : "Unassigned"}
+                    </span>
+                  </SelectTrigger>
+                  <SelectContent className="max-h-72 overflow-y-auto">
+                    <SelectItem value="">Unassigned</SelectItem>
+                    {users.map((user) => (
+                      <SelectItem key={getUserId(user)} value={getUserId(user)}>
+                        {getUserName(user)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
             <div className="flex gap-3 pt-2">
               <Button type="button" variant="outline" className="flex-1" onClick={closeSheet}>
                 Cancel
@@ -592,10 +696,12 @@ export function MatterActionSheet({
             <DetailRow label="Status" value={formatMatterStatus(matter.status)} />
             <DetailRow label="Practice Area" value={matter.case_type} />
             <DetailRow label="Stage" value={formatMatterStatus(matter.stage)} />
+            <DetailRow label="Lead Attorney" value={matterLeadAttorney ? getUserName(matterLeadAttorney) : "Unassigned"} />
+            <DetailRow label="Source Attorney" value={matterSourceAttorney ? getUserName(matterSourceAttorney) : "Unassigned"} />
             <DetailRow label="Client" value={matter.primary_contact_name || matter.ghl_contact_id} />
             <Link
               to={`/case/${matter.id}`}
-              className="mt-2 inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              className="mt-2 inline-flex h-10 w-full items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-[#0484C8]"
             >
               Open Matter
             </Link>
