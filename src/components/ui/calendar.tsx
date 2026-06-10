@@ -53,7 +53,7 @@ export function Calendar({
   };
 
   return (
-    <div className={cn("w-[280px] rounded-md border border-border bg-background p-3 shadow-sm", className)}>
+    <div className={cn("min-w-[280px] rounded-md border border-border bg-background p-3 shadow-sm", className)}>
       <div className="mb-3 flex items-center justify-between">
         <button className="rounded-md p-1 hover:bg-muted" onClick={() => moveMonth(-1)} type="button">
           <ChevronLeft className="h-4 w-4" />
@@ -112,7 +112,7 @@ export function Calendar({
               disabled={isDisabled}
               onClick={() => onSelect?.(day)}
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-md text-sm hover:bg-muted disabled:pointer-events-none disabled:opacity-40",
+                "flex h-8 w-full items-center justify-center rounded-md text-sm hover:bg-muted disabled:pointer-events-none disabled:opacity-40",
                 !isCurrentMonth && "text-muted-foreground/40",
                 isSelected && "bg-primary text-primary-foreground hover:bg-primary",
               )}

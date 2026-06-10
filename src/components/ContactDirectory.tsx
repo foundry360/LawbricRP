@@ -687,7 +687,9 @@ export function ContactDirectory() {
 
         const mappedContacts = getArrayFromResponse(response, "contacts").map((contact: any): Contact => {
           const tags = contact.tags || [];
-          const isCompanyContact = tags.some((tag: string) => tag.toLowerCase() === "company");
+          const isCompanyContact = tags.some((tag: string) =>
+            ["company", "company contact"].includes(tag.toLowerCase()),
+          );
           const personName = formatPersonName(
             `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || contact.name || "",
           );
@@ -701,7 +703,7 @@ export function ContactDirectory() {
             );
           const type = Array.isArray(accountTypeValue)
             ? accountTypeValue.join(", ")
-            : accountTypeValue || DEFAULT_ACCOUNT_TYPE;
+            : accountTypeValue || (isCompanyContact ? "Company Contact" : DEFAULT_ACCOUNT_TYPE);
 
           const status = normalizeContactStatus(getCustomFieldValue(contact, customFieldsMap, "status")) || "Active";
 
@@ -740,7 +742,10 @@ export function ContactDirectory() {
           };
         });
 
-        setContacts(mappedContacts);
+        setContacts((current) => [
+          ...current.filter((contact) => contact.recordKind === "company"),
+          ...mappedContacts,
+        ]);
       } catch (error) {
         const message = getUserFriendlyErrorMessage(error, "We couldn't load your contacts right now.");
         console.error("Failed to fetch CRM contacts:", error);

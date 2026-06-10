@@ -1288,7 +1288,7 @@ export function CalendarPage() {
   };
 
   return (
-    <div className="mx-auto flex h-[calc(100vh-64px)] w-full max-w-[1600px] flex-col overflow-hidden px-0 py-4">
+    <div className="flex h-[calc(100vh-64px)] w-full flex-col overflow-hidden px-0 pb-4">
       <CreateCalendarSheet
         open={isCreateCalendarOpen}
         onOpenChange={(open) => {
@@ -1354,8 +1354,8 @@ export function CalendarPage() {
         onDelete={handleDeleteEvent}
       />
 
-      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 border-t md:grid-cols-[220px_1fr] lg:grid-cols-[240px_1fr]">
-        <aside className="flex min-h-0 flex-col border-r">
+      <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 md:grid-cols-[250px_1fr] lg:grid-cols-[270px_1fr]">
+        <aside className="flex min-h-0 flex-col border-r pl-3">
           <div className="shrink-0 pb-2 pl-0 pr-6 pt-4">
             <h1 className="text-2xl font-bold tracking-tight">Calendars</h1>
           </div>
@@ -1481,7 +1481,7 @@ export function CalendarPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-hidden p-0 sm:p-6 sm:pt-6">
+          <div className="min-h-0 flex-1 overflow-hidden p-2 sm:p-3">
             <div className="flex h-full flex-col overflow-hidden rounded-md border bg-background shadow-sm">
               {loading && (
                 <div className="absolute right-8 top-24 z-10 flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow">

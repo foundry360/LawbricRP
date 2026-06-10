@@ -5,6 +5,7 @@ import {
   ArrowUpDown,
   Briefcase,
   Calendar,
+  Check,
   CheckSquare,
   Clock,
   DollarSign,
@@ -98,9 +99,10 @@ import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from 
 import { cn } from "@/lib/utils";
 
 const CASE_DETAIL_TAB_TRIGGER_CLASS =
-  "rounded-none border-b-2 border-border py-3 text-muted-foreground/70 data-[state=active]:border-[#2384CA] data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
+  "rounded-none border-b-2 border-border py-3 text-muted-foreground/70 data-[state=active]:border-b-4 data-[state=active]:border-[#2384CA] data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none";
 const CASE_TYPE_OPTIONS = PRACTICE_AREAS;
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
+const MATTER_LIFECYCLE_TIMELINE_COLORS = ["bg-slate-600", "bg-sky-800", "bg-sky-500", "bg-sky-300", "bg-cyan-500", "bg-blue-700"];
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
 const UNASSIGNED_USER_VALUE = "__unassigned__";
@@ -261,6 +263,96 @@ function getStatusClass(status: string) {
     default:
       return "bg-slate-100 text-slate-700";
   }
+}
+
+function formatMatterLifecycleLabel(value?: string | null) {
+  const text = String(value || "").trim();
+  if (!text) return "Not set";
+  return text
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function getMatterDaysOpen(caseRecord: CaseRecord) {
+  const createdAt = new Date(caseRecord.opened_at || caseRecord.created_at);
+  if (Number.isNaN(createdAt.getTime())) return 0;
+
+  const start = new Date(createdAt);
+  start.setHours(0, 0, 0, 0);
+  const end = new Date();
+  end.setHours(0, 0, 0, 0);
+
+  return Math.max(0, Math.floor((end.getTime() - start.getTime()) / 86_400_000));
+}
+
+function formatMatterTimelineDate(value?: string | null) {
+  if (!value) return "Not set";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  return new Intl.DateTimeFormat(undefined, { month: "2-digit", day: "2-digit", year: "numeric" }).format(date);
+}
+
+function getMatterTimelineStageLabel(value?: string | null) {
+  const label = formatMatterLifecycleLabel(value);
+  return label === "Not set" ? "No Stage" : label;
+}
+
+function formatMatterTimelineDuration(duration: number) {
+  const days = Math.floor(duration / 86_400_000);
+  if (days < 1) return "< 1 Day";
+  return `${days} ${days === 1 ? "Day" : "Days"}`;
+}
+
+function getMatterLifecycleSegments(caseRecord: CaseRecord, events: any[]) {
+  const startDate = new Date(caseRecord.opened_at || caseRecord.created_at);
+  const endDate = new Date(caseRecord.closed_at || new Date());
+  const startTime = Number.isNaN(startDate.getTime()) ? Date.now() : startDate.getTime();
+  const endTime = Number.isNaN(endDate.getTime()) || endDate.getTime() < startTime ? Date.now() : endDate.getTime();
+  const stageChangeEvents = [...(events || [])]
+    .filter((event) => event?.event_type === "stage_change")
+    .map((event) => ({ ...event, eventTime: new Date(event.start_at || event.created_at).getTime() }))
+    .filter((event) => Number.isFinite(event.eventTime) && event.eventTime >= startTime && event.eventTime <= endTime)
+    .sort((first, second) => first.eventTime - second.eventTime);
+
+  const timelineSegments: Array<{ label: string; duration: number }> = [];
+  let currentStageLabel = stageChangeEvents[0]
+    ? getMatterTimelineStageLabel(stageChangeEvents[0].metadata?.previous_stage)
+    : getMatterTimelineStageLabel(caseRecord.stage);
+  let cursor = startTime;
+
+  stageChangeEvents.forEach((event) => {
+    const duration = Math.max(0, event.eventTime - cursor);
+    if (duration > 0) timelineSegments.push({ label: currentStageLabel, duration });
+    currentStageLabel = getMatterTimelineStageLabel(event.metadata?.stage);
+    cursor = event.eventTime;
+  });
+
+  const finalDuration = Math.max(0, endTime - cursor);
+  if (finalDuration > 0 || timelineSegments.length === 0) {
+    timelineSegments.push({ label: currentStageLabel, duration: finalDuration });
+  }
+
+  const mergedSegments = timelineSegments.reduce<Array<{ label: string; duration: number }>>((segments, segment) => {
+    const previousSegment = segments[segments.length - 1];
+    if (previousSegment?.label === segment.label) {
+      previousSegment.duration += segment.duration;
+      return segments;
+    }
+    return [...segments, segment];
+  }, []);
+  const totalDuration = mergedSegments.reduce((total, segment) => total + segment.duration, 0);
+
+  return mergedSegments.map((segment, index) => {
+    const percent = totalDuration > 0 ? (segment.duration / totalDuration) * 100 : 100;
+    return {
+      key: `${segment.label}-${index}`,
+      label: segment.label,
+      colorClassName: MATTER_LIFECYCLE_TIMELINE_COLORS[index % MATTER_LIFECYCLE_TIMELINE_COLORS.length],
+      duration: segment.duration,
+      durationLabel: formatMatterTimelineDuration(segment.duration),
+      percent,
+    };
+  });
 }
 
 function money(amountCents?: number, currency = "USD") {
@@ -632,12 +724,6 @@ export function CaseDetailPage() {
                 <Badge variant="outline" className="h-6 shrink-0 border-transparent bg-gray-100 px-3 font-semibold text-gray-900">
                   {detail.case.case_type}
                 </Badge>
-                <Badge
-                  variant="outline"
-                  className={cn("h-6 shrink-0 border-transparent px-3 capitalize", getStatusClass(detail.case.status))}
-                >
-                  {detail.case.status}
-                </Badge>
               </div>
             </div>
           </div>
@@ -704,7 +790,7 @@ export function CaseDetailPage() {
         </div>
       </div>
 
-      <div className="grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[25fr_75fr] lg:divide-x lg:divide-border">
+      <div className="grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[22fr_78fr] lg:divide-x lg:divide-border">
         <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pr-6">
           <div className="mb-2 border-b border-border pb-3">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -766,20 +852,44 @@ export function CaseDetailPage() {
           <Tabs value={activeDetailTab} onValueChange={setActiveDetailTab} className="flex h-full min-h-0 w-full flex-col">
             <div className="shrink-0 bg-background pb-4 pt-6">
               <TabsList className="grid h-auto w-full grid-cols-4 rounded-none bg-transparent p-0 xl:grid-cols-8">
-                <TabsTrigger value="dashboard" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Dashboard</TabsTrigger>
-                <TabsTrigger value="tasks" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Tasks</TabsTrigger>
-                <TabsTrigger value="contacts" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Contacts</TabsTrigger>
-                <TabsTrigger value="notes" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Notes</TabsTrigger>
-                <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Timeline</TabsTrigger>
-                <TabsTrigger value="events" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Events</TabsTrigger>
-                <TabsTrigger value="documents" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Documents</TabsTrigger>
-                <TabsTrigger value="financials" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Financials</TabsTrigger>
+                <TabsTrigger value="dashboard" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <Briefcase className="mr-2 h-4 w-4" />
+                  Dashboard
+                </TabsTrigger>
+                <TabsTrigger value="tasks" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <CheckSquare className="mr-2 h-4 w-4" />
+                  Tasks
+                </TabsTrigger>
+                <TabsTrigger value="contacts" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <Users className="mr-2 h-4 w-4" />
+                  Contacts
+                </TabsTrigger>
+                <TabsTrigger value="notes" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <NotebookPen className="mr-2 h-4 w-4" />
+                  Notes
+                </TabsTrigger>
+                <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <Clock className="mr-2 h-4 w-4" />
+                  Timeline
+                </TabsTrigger>
+                <TabsTrigger value="events" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <Calendar className="mr-2 h-4 w-4" />
+                  Events
+                </TabsTrigger>
+                <TabsTrigger value="documents" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <FileText className="mr-2 h-4 w-4" />
+                  Documents
+                </TabsTrigger>
+                <TabsTrigger value="financials" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <DollarSign className="mr-2 h-4 w-4" />
+                  Financials
+                </TabsTrigger>
               </TabsList>
             </div>
 
             <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
               <TabsContent value="dashboard" className="m-0">
-                <MatterDashboardTab detail={detail} />
+                <MatterDashboardTab detail={detail} onTabChange={setActiveDetailTab} />
               </TabsContent>
               <TabsContent value="tasks" className="m-0">
                 <TasksTab
@@ -1454,8 +1564,10 @@ function MatterNoteSheet({
 
 function MatterDashboardTab({
   detail,
+  onTabChange,
 }: {
   detail: CaseDetail;
+  onTabChange: (tab: string) => void;
 }) {
   const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
   const completedTasks = detail.tasks.filter(isCompletedTask);
@@ -1485,6 +1597,12 @@ function MatterDashboardTab({
   const recentDocuments = [...((detail.documents || []) as DocumentRecord[])]
     .sort((first, second) => String(second.created_at || "").localeCompare(String(first.created_at || "")))
     .slice(0, 5);
+  const daysOpen = getMatterDaysOpen(detail.case);
+  const lifecycleSegments = getMatterLifecycleSegments(detail.case, detail.events);
+  const visibleLifecycleSegments = lifecycleSegments.filter((stage) => stage.percent > 0);
+  const currentLifecycleSegment = visibleLifecycleSegments[visibleLifecycleSegments.length - 1];
+  const currentLifecycleSegmentKey = currentLifecycleSegment?.key;
+  const openedDateLabel = formatMatterTimelineDate(detail.case.opened_at || detail.case.created_at);
   const stats = [
     { label: "Open Tasks", value: activeTasks.length, icon: CheckSquare },
     { label: "Overdue", value: overdueTasks.length, icon: Clock },
@@ -1513,59 +1631,77 @@ function MatterDashboardTab({
       </div>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card className="order-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FileText className="h-4 w-4" />
-              Recent Documents
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3 pb-4">
+            <CardTitle className="flex items-center gap-2 text-sm">
+              <Briefcase className="h-3.5 w-3.5" />
+              Matter Timeline
             </CardTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs text-[#2384CA] hover:bg-transparent hover:text-[#2384CA]"
+              onClick={() => onTabChange("timeline")}
+            >
+              View full timeline
+            </Button>
           </CardHeader>
-          <CardContent>
-            {recentDocuments.length === 0 ? (
-              <div className="py-4 text-center text-sm text-muted-foreground">No recent documents.</div>
-            ) : (
-              <div className="overflow-hidden">
-                <table className="w-full table-fixed text-left text-sm">
-                  <colgroup>
-                    <col className="w-[40%]" />
-                    <col className="w-[18%]" />
-                    <col className="w-[42%]" />
-                  </colgroup>
-                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
-                    <tr>
-                      <th className="h-10 px-3 py-3 font-medium">Document</th>
-                      <th className="h-10 px-3 py-3 font-medium">Folder</th>
-                      <th className="h-10 px-3 py-3 font-medium">Uploaded</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {recentDocuments.map((document) => (
-                      <tr key={document.id} className="border-b last:border-0">
-                        <td className="min-w-0 px-3 py-2">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <DocumentTypeIcon documentRecord={document} className="h-[18px] w-[18px] shrink-0" />
-                            <span className="truncate font-medium text-[#2384CA]">{getDocumentName(document)}</span>
-                          </div>
-                        </td>
-                        <td className="px-3 py-2 text-foreground/70">
-                          <div className="truncate">{getDisplayFolderName(document)}</div>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(document.created_at)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+          <CardContent className="space-y-3">
+            <div className="text-sm text-muted-foreground">
+              Days Open: <span className="font-medium text-foreground">{daysOpen}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Opened: {openedDateLabel}</span>
+              <span>Today</span>
+            </div>
+            <div className="space-y-2">
+              <div className="flex h-5 overflow-hidden rounded-sm bg-muted">
+                {visibleLifecycleSegments.map((stage) => {
+                  const isCurrentStage = stage.key === currentLifecycleSegmentKey;
+
+                  return (
+                    <div
+                      key={stage.key}
+                      className={cn(
+                        "flex min-w-[8px] shrink-0 items-center justify-center border-r border-background last:border-r-0",
+                        stage.colorClassName,
+                      )}
+                      style={{ flexBasis: `${stage.percent}%` }}
+                      aria-label={`${stage.label}: ${stage.durationLabel}`}
+                    >
+                      {isCurrentStage ? <Check className="h-3 w-3 text-white" /> : null}
+                    </div>
+                  );
+                })}
               </div>
-            )}
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Current Stage:</span>
+                <span className={cn("h-2.5 w-2.5 rounded-[2px]", currentLifecycleSegment?.colorClassName || "bg-muted-foreground")} />
+                <span className="font-medium text-foreground">
+                  {currentLifecycleSegment?.label || getMatterTimelineStageLabel(detail.case.stage)}
+                </span>
+                <span>{currentLifecycleSegment?.durationLabel || "< 1 Day"}</span>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
-        <Card className="order-1">
-          <CardHeader>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
             <CardTitle className="flex items-center gap-2 text-base">
               <CheckSquare className="h-4 w-4" />
               Tasks
             </CardTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs text-[#2384CA] hover:bg-transparent hover:text-[#2384CA]"
+              onClick={() => onTabChange("tasks")}
+            >
+              View all tasks
+            </Button>
           </CardHeader>
           <CardContent>
             {dashboardTasks.length === 0 ? (
@@ -1610,36 +1746,104 @@ function MatterDashboardTab({
             )}
           </CardContent>
         </Card>
-      </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <NotebookPen className="h-4 w-4" />
-            Recent Activity
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          {recentActivity.length === 0 ? (
-            <div className="py-4 text-center text-sm text-muted-foreground">No recent activity.</div>
-          ) : (
-            <div className="divide-y">
-              {recentActivity.map((item) => (
-                <div key={`${item.type}-${item.id}`} className="py-3 first:pt-0 last:pb-0">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="truncate font-medium text-foreground">{item.title}</div>
-                      {item.body ? <div className="line-clamp-1 text-sm text-muted-foreground">{item.body}</div> : null}
-                    </div>
-                    <Badge variant="outline" className="shrink-0 capitalize">{item.type}</Badge>
-                  </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(item.occurred_at)}</div>
-                </div>
-              ))}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <NotebookPen className="h-4 w-4" />
+              Recent Activity
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {recentActivity.length === 0 ? (
+              <div className="py-4 text-center text-sm text-muted-foreground">No recent activity.</div>
+            ) : (
+              <div className="overflow-hidden">
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[50%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[30%]" />
+                  </colgroup>
+                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="h-10 px-3 py-3 font-medium">Activity</th>
+                      <th className="h-10 px-3 py-3 font-medium">Type</th>
+                      <th className="h-10 px-3 py-3 font-medium">Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentActivity.map((item) => (
+                      <tr key={`${item.type}-${item.id}`} className="border-b last:border-0">
+                        <td className="min-w-0 px-3 py-2">
+                          <div className="truncate font-medium text-foreground">{item.title}</div>
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className="capitalize">{item.type}</Badge>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(item.occurred_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between gap-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FileText className="h-4 w-4" />
+              Recent Documents
+            </CardTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs text-[#2384CA] hover:bg-transparent hover:text-[#2384CA]"
+              onClick={() => onTabChange("documents")}
+            >
+              View all documents
+            </Button>
+          </CardHeader>
+          <CardContent>
+            {recentDocuments.length === 0 ? (
+              <div className="py-4 text-center text-sm text-muted-foreground">No recent documents.</div>
+            ) : (
+              <div className="overflow-hidden">
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[40%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[42%]" />
+                  </colgroup>
+                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="h-10 px-3 py-3 font-medium">Document</th>
+                      <th className="h-10 px-3 py-3 font-medium">Folder</th>
+                      <th className="h-10 px-3 py-3 font-medium">Uploaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentDocuments.map((document) => (
+                      <tr key={document.id} className="border-b last:border-0">
+                        <td className="min-w-0 px-3 py-2">
+                          <div className="truncate font-medium text-[#2384CA]">{getDocumentName(document)}</div>
+                        </td>
+                        <td className="px-3 py-2 text-foreground/70">
+                          <div className="truncate">{getDisplayFolderName(document)}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(document.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
