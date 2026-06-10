@@ -9,6 +9,7 @@ type SheetContextValue = {
 };
 
 const SheetContext = createContext<SheetContextValue | null>(null);
+const SheetContentContext = createContext<{ hasInsetPadding: boolean } | null>(null);
 
 function useSheet() {
   const value = useContext(SheetContext);
@@ -62,6 +63,7 @@ export function SheetContent({
 }) {
   const { open, setOpen } = useSheet();
   if (!open || typeof document === "undefined") return null;
+  const hasInsetPadding = !className?.split(/\s+/).includes("p-0");
 
   return createPortal(
     <div className="fixed inset-0 z-[120]">
@@ -85,7 +87,9 @@ export function SheetContent({
         >
           <X className="h-4 w-4" />
         </button>
-        {children}
+        <SheetContentContext.Provider value={{ hasInsetPadding }}>
+          {children}
+        </SheetContentContext.Provider>
       </aside>
     </div>,
     document.body,
@@ -93,7 +97,18 @@ export function SheetContent({
 }
 
 export function SheetHeader({ className, children }: { className?: string; children: ReactNode }) {
-  return <div className={className}>{children}</div>;
+  const contentContext = useContext(SheetContentContext);
+  return (
+    <div
+      className={cn(
+        "bg-[#F0F6FF] px-6 py-4",
+        contentContext?.hasInsetPadding !== false && "-mx-6 -mt-6",
+        className,
+      )}
+    >
+      {children}
+    </div>
+  );
 }
 
 export function SheetTitle({ className, children }: { className?: string; children: ReactNode }) {

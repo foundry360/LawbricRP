@@ -32,6 +32,14 @@ serve(async (req) => {
     if (!existingNote) return jsonResponse({ error: "Note not found" }, 404);
 
     await getCaseOrThrow(context, existingNote.case_id);
+    const existingMetadata = existingNote.metadata && typeof existingNote.metadata === "object" ? existingNote.metadata : {};
+    const requestMetadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
+    const metadata = { ...existingMetadata, ...requestMetadata };
+    if (typeof body.subject === "string") {
+      if (subject) metadata.subject = subject;
+      else delete metadata.subject;
+    }
 
     const { data, error } = await context.supabase
       .from("notes")
@@ -39,7 +47,7 @@ serve(async (req) => {
         body: body.body.trim(),
         note_type: body.noteType || existingNote.note_type || "case",
         is_pinned: body.isPinned === undefined ? Boolean(existingNote.is_pinned) : Boolean(body.isPinned),
-        metadata: body.metadata || existingNote.metadata || {},
+        metadata,
       })
       .eq("id", existingNote.id)
       .select("*")

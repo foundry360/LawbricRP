@@ -19,13 +19,18 @@ serve(async (req) => {
 
     const { data: existing, error: existingError } = await context.supabase
       .from("tasks")
-      .select("id, ghl_contact_id, metadata")
+      .select("id, ghl_contact_id, metadata, created_by")
       .eq("id", body.taskId)
       .eq("location_id", context.location.id)
       .maybeSingle();
 
     if (existingError) throw new Error(existingError.message);
     if (!existing) return jsonResponse({ error: "Task not found" }, 404);
+    const existingMetadata = existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {};
+    const privateOwnerId = existingMetadata.private_owner_user_id || existing.created_by || null;
+    if (existingMetadata.is_private === true && privateOwnerId !== context.user.id) {
+      return jsonResponse({ error: "Task not found" }, 404);
+    }
 
     const ghlDelete = await deleteTaskFromGhl(context, existing);
 

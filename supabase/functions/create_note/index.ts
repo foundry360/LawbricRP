@@ -22,6 +22,8 @@ serve(async (req) => {
     if (!body.body?.trim()) return jsonResponse({ error: "Note is required" }, 400);
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
+    const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
+    const subject = typeof body.subject === "string" ? body.subject.trim() : "";
     const { data, error } = await context.supabase
       .from("notes")
       .insert({
@@ -30,7 +32,7 @@ serve(async (req) => {
         body: body.body.trim(),
         note_type: body.noteType || "case",
         is_pinned: Boolean(body.isPinned),
-        metadata: body.metadata || {},
+        metadata: subject ? { ...metadata, subject } : metadata,
         created_by: context.user.id,
       })
       .select("*")

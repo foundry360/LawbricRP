@@ -113,6 +113,8 @@ const ALL_MATTER_CONTACT_ROLES = "all";
 const ALL_MATTER_TASK_STATUSES = "all";
 const ALL_MATTER_TASK_PRIORITIES = "all";
 const ALL_MATTER_TASK_ASSIGNEES = "all";
+const ALL_MATTER_NOTE_AUTHORS = "all";
+const ALL_MATTER_NOTE_TYPES = "all";
 const UNFILED_FOLDER_NAME = "Unfiled";
 const TASK_STATUS_OPTIONS = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"];
@@ -227,6 +229,10 @@ function formatTaskDate(value?: string | null) {
 
 function isCompletedTask(task: any) {
   return ["done", "completed"].includes(String(task.status || "").toLowerCase());
+}
+
+function isPrivateTask(task: any) {
+  return task?.metadata?.is_private === true;
 }
 
 function getMatterTaskAssignedInfo(task: any, users: AssignableUser[]) {
@@ -499,6 +505,22 @@ function getNoteAuthorName(note: { created_by?: string | null }, users: Assignab
   if (!note.created_by) return "Unknown user";
   const matchedUser = users.find((user) => getUserId(user) === note.created_by);
   return matchedUser ? getUserName(matchedUser) : "Unknown user";
+}
+
+function getNotePreviewText(value?: string | null) {
+  if (!value) return "Untitled note";
+
+  if (typeof DOMParser !== "undefined") {
+    const doc = new DOMParser().parseFromString(value, "text/html");
+    return doc.body.textContent?.replace(/\s+/g, " ").trim() || "Untitled note";
+  }
+
+  return String(value).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "Untitled note";
+}
+
+function getNoteSubject(note?: any | null) {
+  const subject = typeof note?.metadata?.subject === "string" ? note.metadata.subject.trim() : "";
+  return subject || "Untitled note";
 }
 
 export function CaseDetailPage() {
@@ -923,6 +945,11 @@ export function CaseDetailPage() {
                     setNoteSheetMode("edit");
                     setIsNoteSheetOpen(true);
                   }}
+                  onCreateNote={() => {
+                    setSelectedNote(null);
+                    setNoteSheetMode("create");
+                    setIsNoteSheetOpen(true);
+                  }}
                   onDeleteNote={handleDeleteMatterNote}
                 />
               </TabsContent>
@@ -1284,6 +1311,7 @@ function CreateMatterTaskSheet({
     priority: "normal",
     assignedUserId: defaultAssignedUserId || "",
     description: "",
+    isPrivate: false,
   });
   const [submitting, setSubmitting] = useState(false);
   const selectedUser = users.find((user) => getUserId(user) === form.assignedUserId);
@@ -1303,6 +1331,7 @@ function CreateMatterTaskSheet({
       priority: task?.priority || "normal",
       assignedUserId: task?.assigned_user_id || defaultAssignedUserId || "",
       description: task?.description || "",
+      isPrivate: Boolean(task?.metadata?.is_private),
     });
   }, [defaultAssignedUserId, open, task]);
 
@@ -1315,6 +1344,9 @@ function CreateMatterTaskSheet({
 
     setSubmitting(true);
     try {
+      const privacyChanged = !task || form.isPrivate !== Boolean(task?.metadata?.is_private);
+      const metadata = { ...(task?.metadata || {}), is_private: form.isPrivate };
+
       if (task) {
         await updateTask({
           taskId: task.id,
@@ -1327,6 +1359,7 @@ function CreateMatterTaskSheet({
           assignedUserId: form.assignedUserId || null,
           description: form.description,
           relatedType: "case",
+          ...(privacyChanged ? { metadata } : {}),
         });
       } else {
         await createCaseTask({
@@ -1338,6 +1371,7 @@ function CreateMatterTaskSheet({
           priority: form.priority,
           assignedUserId: form.assignedUserId || null,
           description: form.description,
+          metadata,
         });
       }
       onCreated();
@@ -1374,27 +1408,52 @@ function CreateMatterTaskSheet({
             />
           </div>
 
-          <div className="space-y-2">
-            <Label>Assign To</Label>
-            <SearchableSelect
-              value={form.assignedUserId || UNASSIGNED_USER_VALUE}
-              onValueChange={(assignedUserId) =>
-                setForm({
-                  ...form,
-                  assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
-                })
-              }
-              options={userSelectOptions}
-              placeholder="Search and select user"
-              searchPlaceholder="Search users..."
-              emptyMessage="No users found."
-              getOptionLabel={(userId) => {
-                if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
-                const user = users.find((candidate) => getUserId(candidate) === userId);
-                return user ? getUserName(user) : userId;
-              }}
-              className={cn(!selectedUser && "text-muted-foreground")}
-            />
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="space-y-2">
+              <Label>Assign To</Label>
+              <SearchableSelect
+                value={form.assignedUserId || UNASSIGNED_USER_VALUE}
+                onValueChange={(assignedUserId) =>
+                  setForm({
+                    ...form,
+                    assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
+                  })
+                }
+                options={userSelectOptions}
+                placeholder="Search and select user"
+                searchPlaceholder="Search users..."
+                emptyMessage="No users found."
+                getOptionLabel={(userId) => {
+                  if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
+                  const user = users.find((candidate) => getUserId(candidate) === userId);
+                  return user ? getUserName(user) : userId;
+                }}
+                className={cn(!selectedUser && "text-muted-foreground")}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 sm:h-10">
+              <Label htmlFor="matter-task-private" className="cursor-pointer whitespace-nowrap text-sm">
+                Private
+              </Label>
+              <button
+                id="matter-task-private"
+                type="button"
+                role="switch"
+                aria-checked={form.isPrivate}
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors",
+                  form.isPrivate ? "border-primary bg-primary" : "border-border bg-muted",
+                )}
+                onClick={() => setForm({ ...form, isPrivate: !form.isPrivate })}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 rounded-full bg-background shadow transition-transform",
+                    form.isPrivate ? "translate-x-5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -1490,6 +1549,7 @@ function MatterNoteSheet({
   onChanged: () => void;
 }) {
   const { toast } = useToast();
+  const [subject, setSubject] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const isViewingNote = Boolean(noteRecord) && mode === "view";
@@ -1497,7 +1557,10 @@ function MatterNoteSheet({
   const sheetTitle = isViewingNote ? "View Note" : isEditingNote ? "Edit Note" : "Add Note";
 
   useEffect(() => {
-    if (open) setNote(noteRecord?.body || "");
+    if (open) {
+      setSubject(typeof noteRecord?.metadata?.subject === "string" ? noteRecord.metadata.subject : "");
+      setNote(noteRecord?.body || "");
+    }
   }, [open, noteRecord]);
 
   const handleSubmit = async (event: FormEvent) => {
@@ -1509,10 +1572,25 @@ function MatterNoteSheet({
 
     setSubmitting(true);
     try {
+      const trimmedSubject = subject.trim();
+      const nextMetadata = { ...(noteRecord?.metadata || {}) };
+      if (trimmedSubject) nextMetadata.subject = trimmedSubject;
+      else delete nextMetadata.subject;
+
       if (isEditingNote) {
-        await updateCaseNote({ noteId: noteRecord.id, body: note });
+        await updateCaseNote({
+          noteId: noteRecord.id,
+          subject,
+          body: note,
+          metadata: nextMetadata,
+        });
       } else {
-        await createCaseNote({ caseId: detail.case.id, body: note });
+        await createCaseNote({
+          caseId: detail.case.id,
+          subject,
+          body: note,
+          metadata: trimmedSubject ? { subject: trimmedSubject } : {},
+        });
       }
       onChanged();
       onOpenChange(false);
@@ -1536,6 +1614,15 @@ function MatterNoteSheet({
         </SheetHeader>
 
         <form onSubmit={handleSubmit} className="mt-6 space-y-4">
+          <div className="space-y-2">
+            <Label>Subject</Label>
+            <Input
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              readOnly={isViewingNote}
+              placeholder="Subject"
+            />
+          </div>
           <div className="space-y-2">
             <Label>Note</Label>
             <NoteRichTextEditor value={note} onChange={setNote} readOnly={isViewingNote} placeholder="Add a matter note" />
@@ -1727,7 +1814,10 @@ function MatterDashboardTab({
                     {dashboardTasks.map((task) => (
                       <tr key={task.id} className="border-b last:border-0">
                         <td className="min-w-0 px-3 py-2">
-                          <div className="truncate font-medium text-[#2384CA]">{task.title}</div>
+                          <div className="flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]">
+                            <span className="truncate">{task.title}</span>
+                            {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+                          </div>
                         </td>
                         <td className="px-3 py-2">
                           <Badge variant="outline" className="capitalize">{task.priority || "normal"}</Badge>
@@ -1919,9 +2009,12 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
 
   return (
     <>
+      <Card className="mt-3">
+        <CardContent>
       <div className="mb-4 flex flex-col gap-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-muted-foreground">
-          Contacts <span className="font-medium text-foreground">({contactRows.length})</span>
+        <div className="flex items-center gap-2 text-sm text-foreground">
+          <Users className="h-4 w-4" />
+          <span className="font-medium text-foreground">Contacts ({contactRows.length})</span>
         </div>
         <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
           <div
@@ -2253,6 +2346,8 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
           </div>
         </div>
       ) : null}
+        </CardContent>
+      </Card>
 
       <AddRelatedContactSheet
         detail={detail}
@@ -2652,24 +2747,186 @@ function NotesTab({
   users,
   onViewNote,
   onEditNote,
+  onCreateNote,
   onDeleteNote,
 }: {
   detail: CaseDetail;
   users: AssignableUser[];
   onViewNote: (note: any) => void;
   onEditNote: (note: any) => void;
+  onCreateNote: () => void;
   onDeleteNote: (note: any) => void;
 }) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [authorFilter, setAuthorFilter] = useState(ALL_MATTER_NOTE_AUTHORS);
+  const [typeFilter, setTypeFilter] = useState(ALL_MATTER_NOTE_TYPES);
+  const authorOptions = useMemo(() => {
+    const optionMap = new Map<string, string>();
+    detail.notes.forEach((note) => {
+      optionMap.set(note.created_by || UNASSIGNED_USER_VALUE, getNoteAuthorName(note, users));
+    });
+    return [...optionMap.entries()].sort((first, second) => first[1].localeCompare(second[1]));
+  }, [detail.notes, users]);
+  const typeOptions = useMemo(() => {
+    return Array.from(new Set(detail.notes.map((note) => String(note.note_type || "case")).filter(Boolean))).sort();
+  }, [detail.notes]);
+  const filteredNotes = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    return detail.notes.filter((note) => {
+      const authorValue = note.created_by || UNASSIGNED_USER_VALUE;
+      const authorName = getNoteAuthorName(note, users);
+      const typeValue = String(note.note_type || "case");
+      const matchesSearch = !normalizedSearch ||
+        [
+          getNoteSubject(note),
+          getNotePreviewText(note.body),
+          authorName,
+          typeValue,
+          formatDateTime(note.created_at),
+        ].some((value) => String(value || "").toLowerCase().includes(normalizedSearch));
+      const matchesAuthor = authorFilter === ALL_MATTER_NOTE_AUTHORS || authorValue === authorFilter;
+      const matchesType = typeFilter === ALL_MATTER_NOTE_TYPES || typeValue === typeFilter;
+      return matchesSearch && matchesAuthor && matchesType;
+    });
+  }, [authorFilter, detail.notes, searchTerm, typeFilter, users]);
+  const activeFilterCount =
+    Number(authorFilter !== ALL_MATTER_NOTE_AUTHORS) +
+    Number(typeFilter !== ALL_MATTER_NOTE_TYPES);
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <NotebookPen className="h-4 w-4" />
-          Notes
-        </CardTitle>
-      </CardHeader>
+    <Card className="mt-3">
       <CardContent>
-        <MatterNoteList notes={detail.notes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
+      <div className="flex flex-col gap-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-2 text-sm text-foreground">
+            <NotebookPen className="h-4 w-4" />
+            <span className="font-medium text-foreground">Notes ({detail.notes.length})</span>
+        </div>
+        <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
+          <div
+            className={`relative flex items-center transition-all duration-300 ${
+              isSearchExpanded || searchTerm ? "w-full sm:w-64" : "w-10"
+            }`}
+          >
+            <Button
+              type="button"
+              variant={isSearchExpanded || searchTerm ? "ghost" : "outline"}
+              size="icon"
+              className="absolute left-0 z-10 h-10 w-10 rounded-full"
+              aria-label="Search notes"
+              title="Search notes"
+              onClick={() => {
+                if (!isSearchExpanded && !searchTerm) {
+                  setIsSearchExpanded(true);
+                  window.setTimeout(() => document.getElementById("matter-note-search")?.focus(), 100);
+                }
+              }}
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+            <Input
+              id="matter-note-search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search notes..."
+              className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
+                isSearchExpanded || searchTerm ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
+              }`}
+              onBlur={() => {
+                if (!searchTerm) setIsSearchExpanded(false);
+              }}
+            />
+          </div>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn(
+                  "relative h-10 w-10 shrink-0 rounded-full",
+                  activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                )}
+                aria-label="Filter notes"
+                title="Filter notes"
+              >
+                <Filter className="h-4 w-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="right-0 top-full mt-2 w-80 p-4">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold">Filter Notes</div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs text-muted-foreground"
+                    onClick={() => {
+                      setAuthorFilter(ALL_MATTER_NOTE_AUTHORS);
+                      setTypeFilter(ALL_MATTER_NOTE_TYPES);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  <Label>Created By</Label>
+                  <Select value={authorFilter} onValueChange={setAuthorFilter}>
+                    <SelectTrigger>
+                      <span className={authorFilter === ALL_MATTER_NOTE_AUTHORS ? "text-muted-foreground" : undefined}>
+                        {authorFilter === ALL_MATTER_NOTE_AUTHORS
+                          ? "Any Author"
+                          : authorOptions.find(([value]) => value === authorFilter)?.[1] || "Unknown user"}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                      <SelectItem value={ALL_MATTER_NOTE_AUTHORS}>Any Author</SelectItem>
+                      {authorOptions.map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Type</Label>
+                  <Select value={typeFilter} onValueChange={setTypeFilter}>
+                    <SelectTrigger>
+                      <span className={typeFilter === ALL_MATTER_NOTE_TYPES ? "text-muted-foreground" : "capitalize"}>
+                        {typeFilter === ALL_MATTER_NOTE_TYPES ? "Any Type" : typeFilter}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                      <SelectItem value={ALL_MATTER_NOTE_TYPES}>Any Type</SelectItem>
+                      {typeOptions.map((type) => (
+                        <SelectItem key={type} value={type}>
+                          <span className="capitalize">{type}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <Button
+            type="button"
+            size="icon"
+            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+            aria-label="Add note"
+            title="Add note"
+            onClick={onCreateNote}
+          >
+            <Plus className="h-5 w-5" />
+          </Button>
+        </div>
+      </div>
+      <MatterNoteList notes={filteredNotes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
       </CardContent>
     </Card>
   );
@@ -2839,10 +3096,12 @@ function TasksTab({
   };
 
   return (
-    <div className="space-y-4">
+    <Card className="mt-3">
+      <CardContent>
       <div className="flex flex-col gap-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="text-sm text-muted-foreground">
-          Tasks <span className="font-medium text-foreground">({detail.tasks.length})</span>
+        <div className="flex items-center gap-2 text-sm text-foreground">
+          <CheckSquare className="h-4 w-4" />
+          <span className="font-medium text-foreground">Tasks ({detail.tasks.length})</span>
         </div>
         <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
           <div
@@ -2993,7 +3252,8 @@ function TasksTab({
         handleSort={handleSort}
         renderSortIcon={renderSortIcon}
       />
-    </div>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -3097,8 +3357,9 @@ function MatterTaskList({
                         <CheckSquare className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
-                        <div className={cn("truncate font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
-                          {task.title}
+                        <div className={cn("flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
+                          <span className="truncate">{task.title}</span>
+                          {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
                         </div>
                         {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
                       </div>
@@ -3286,83 +3547,194 @@ function MatterNoteList({
   onEditNote: (note: any) => void;
   onDeleteNote: (note: any) => void;
 }) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const sortedNotes = [...notes].sort((first, second) => String(second.created_at || "").localeCompare(String(first.created_at || "")));
+  const displayTotalCount = sortedNotes.length;
+  const safeTotalPages = Math.max(1, Math.ceil(displayTotalCount / itemsPerPage));
+  const effectiveCurrentPage = Math.min(currentPage, safeTotalPages);
+  const firstVisibleRow = displayTotalCount === 0 ? 0 : (effectiveCurrentPage - 1) * itemsPerPage + 1;
+  const lastVisibleRow = Math.min(displayTotalCount, effectiveCurrentPage * itemsPerPage);
+  const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
+  const paginatedNotes = sortedNotes.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [notes.length, itemsPerPage]);
+
   if (notes.length === 0) {
     return <div className="py-4 text-center text-sm text-muted-foreground">No notes found.</div>;
   }
 
   return (
-    <div className="divide-y pt-3">
-      {notes.map((note) => (
-        <div
-          key={note.id || note.created_at}
-          role="button"
-          tabIndex={0}
-          className="block w-full cursor-pointer py-3 text-left first:pt-0 last:pb-0 transition-colors hover:bg-muted/30"
-          onClick={() => onViewNote(note)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              onViewNote(note);
-            }
-          }}
-        >
-          <div className="flex items-start gap-3">
-            <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <NotebookPen className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <NoteRichTextBody value={note.body || "Untitled note"} className="line-clamp-3 text-sm text-foreground" />
-              <div className="mt-1 text-xs text-muted-foreground">
-                Created by {getNoteAuthorName(note, users)} · {formatDateTime(note.created_at)}
-              </div>
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 shrink-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                  aria-label="Note actions"
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  <MoreVertical className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
+    <>
+      <div className="overflow-x-auto pt-3">
+        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[26%]" />
+            <col className="w-[30%]" />
+            <col className="w-[18%]" />
+            <col className="w-[18%]" />
+            <col className="w-[8%]" />
+          </colgroup>
+          <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+            <tr>
+              <th className="h-10 px-3 py-3 font-medium">Subject</th>
+              <th className="h-10 px-3 py-3 font-medium">Note</th>
+              <th className="h-10 px-3 py-3 font-medium">Created By</th>
+              <th className="h-10 px-3 py-3 font-medium">Created</th>
+              <th className="h-10 px-3 py-3 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paginatedNotes.map((note) => (
+              <tr
+                key={note.id || note.created_at}
+                role="button"
+                tabIndex={0}
+                className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
+                onClick={() => onViewNote(note)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
                     onViewNote(note);
-                  }}
-                >
-                  <Eye className="mr-2 h-4 w-4" />
-                  View
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onEditNote(note);
-                  }}
-                >
-                  <Pencil className="mr-2 h-4 w-4" />
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteNote(note);
-                  }}
-                >
-                  <Trash2 className="mr-2 h-4 w-4" />
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
+                  }
+                }}
+              >
+                <td className="min-w-0 px-3 py-2">
+                  <div className="truncate font-medium text-[#2384CA]">{getNoteSubject(note)}</div>
+                </td>
+                <td className="min-w-0 px-3 py-2">
+                  <div className="truncate text-foreground/80">{getNotePreviewText(note.body)}</div>
+                </td>
+                <td className="px-3 py-2 text-foreground/70">
+                  <div className="truncate">{getNoteAuthorName(note, users)}</div>
+                </td>
+                <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(note.created_at)}</td>
+                <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label="Note actions"
+                      >
+                        <MoreVertical className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem onClick={() => onViewNote(note)}>
+                        <Eye className="mr-2 h-4 w-4" />
+                        View
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onEditNote(note)}>
+                        <Pencil className="mr-2 h-4 w-4" />
+                        Edit
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => onDeleteNote(note)}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-muted-foreground">
+          Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
+          {" - "}
+          <span className="font-medium text-foreground">{lastVisibleRow}</span>
+          {" of "}
+          <span className="font-medium text-foreground">{displayTotalCount}</span> notes
         </div>
-      ))}
-    </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center justify-between gap-2 text-muted-foreground sm:justify-start">
+            <span>Rows per page</span>
+            <Select
+              value={itemsPerPage.toString()}
+              onValueChange={(value) => {
+                setItemsPerPage(Number(value));
+                setCurrentPage(1);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[78px] rounded-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="min-w-[78px]">
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="75">75</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Pagination className="mx-0 w-full justify-end sm:w-auto">
+            <PaginationContent className="justify-end">
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.max(1, effectiveCurrentPage - 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer",
+                  )}
+                />
+              </PaginationItem>
+              {visiblePageItems.map((item, index) =>
+                item === "ellipsis" ? (
+                  <PaginationItem key={`notes-ellipsis-${index}`} className="hidden px-1 text-muted-foreground sm:block">
+                    ...
+                  </PaginationItem>
+                ) : (
+                  <PaginationItem key={item} className="hidden sm:block">
+                    <PaginationLink
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setCurrentPage(item);
+                      }}
+                      isActive={effectiveCurrentPage === item}
+                      className="h-9 min-w-9 cursor-pointer rounded-full px-3"
+                    >
+                      {item}
+                    </PaginationLink>
+                  </PaginationItem>
+                ),
+              )}
+              <PaginationItem className="sm:hidden">
+                <span className="flex h-9 items-center rounded-full px-3 text-sm text-muted-foreground">
+                  Page {effectiveCurrentPage} of {safeTotalPages}
+                </span>
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.min(safeTotalPages, effectiveCurrentPage + 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === safeTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer",
+                  )}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -3702,8 +4074,9 @@ function DocumentsTab({
         onConfirm={handleDeleteDocument}
       />
 
-      <div className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+      <Card className="mt-3">
+        <CardContent className="space-y-4">
+        <div className="flex flex-col gap-3 pt-2 lg:flex-row lg:items-center lg:justify-between">
           {selectedFolderGroup ? (
             <nav aria-label="Document folder breadcrumb" className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
               <button
@@ -3720,7 +4093,10 @@ function DocumentsTab({
               <span className="shrink-0 text-xs">({formatDocumentCount(selectedFolderGroup.documents.length)})</span>
             </nav>
           ) : (
-            <div />
+            <div className="flex items-center gap-2 text-sm text-foreground">
+              <FileText className="h-4 w-4" />
+              <span className="font-medium text-foreground">Documents ({documents.length})</span>
+            </div>
           )}
           <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
             <div
@@ -3862,7 +4238,6 @@ function DocumentsTab({
             )}
           </div>
         </div>
-
         {documents.length === 0 ? (
           <EmptyState icon={FileText} text="No documents yet." />
         ) : sortedDocuments.length === 0 ? (
@@ -4188,7 +4563,8 @@ function DocumentsTab({
             </div>
           </div>
         ) : null}
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

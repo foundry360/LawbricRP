@@ -165,6 +165,10 @@ function isTaskOverdue(task: TaskRecord) {
   return !Number.isNaN(dueDate.getTime()) && dueDate.getTime() < Date.now();
 }
 
+function isPrivateTask(task: TaskRecord) {
+  return task.metadata?.is_private === true;
+}
+
 function formatDateTimeInput(value?: string | null) {
   if (!value) return "";
   const date = new Date(value);
@@ -1179,7 +1183,10 @@ function TaskCard({
           </div>
           <div className="min-w-0">
             <div className="flex min-w-0 items-center gap-2">
-              <h3 className="min-w-0 truncate text-sm font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
+              <h3 className="flex min-w-0 items-center gap-1.5 text-sm font-semibold leading-tight text-[#2384CA]">
+                <span className="truncate">{task.title}</span>
+                {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+              </h3>
               <Badge variant="outline" className={cn("shrink-0 border-transparent px-2 py-0 text-[10px] capitalize", getTaskStatusClass(task.status))}>
                 {formatTaskStatusLabel(task.status)}
               </Badge>
@@ -1323,7 +1330,10 @@ function KanbanTaskCard({
     >
       <CardHeader className="space-y-1.5 bg-muted/30 p-2.5">
         <div className="flex items-center justify-between gap-3">
-          <h3 className="min-w-0 truncate text-xs font-semibold leading-tight text-[#2384CA]">{task.title}</h3>
+          <h3 className="flex min-w-0 items-center gap-1.5 text-xs font-semibold leading-tight text-[#2384CA]">
+            <span className="truncate">{task.title}</span>
+            {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+          </h3>
           <TaskActions
             onView={onEdit}
             onEdit={onEdit}
@@ -1470,8 +1480,11 @@ function TaskTable({
                     <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
                       <CheckSquare className="h-4 w-4" />
                     </div>
-                    <div>
-                      <div className="text-[#2384CA] hover:underline">{task.title}</div>
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-1.5 text-[#2384CA] hover:underline">
+                        <span className="truncate">{task.title}</span>
+                        {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+                      </div>
                       {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
                     </div>
                   </div>
@@ -1739,6 +1752,7 @@ function TaskSheet({
     contactId: "none",
     opportunityId: "",
     opportunityName: "",
+    isPrivate: false,
   });
 
   useEffect(() => {
@@ -1756,6 +1770,7 @@ function TaskSheet({
       contactId: task?.ghl_contact_id || "none",
       opportunityId: task?.ghl_opportunity_id || "",
       opportunityName: task?.ghl_opportunity_name || "",
+      isPrivate: Boolean(task?.metadata?.is_private),
     });
   }, [open, task]);
 
@@ -1788,6 +1803,7 @@ function TaskSheet({
       return;
     }
 
+    const privacyChanged = !task || form.isPrivate !== Boolean(task?.metadata?.is_private);
     const payload = {
       locationId,
       title: form.title,
@@ -1815,6 +1831,7 @@ function TaskSheet({
             : null,
       ghlOpportunityId: form.relatedType === "opportunity" ? form.opportunityId : null,
       ghlOpportunityName: form.relatedType === "opportunity" ? form.opportunityName : null,
+      ...(privacyChanged ? { metadata: { ...(task?.metadata || {}), is_private: form.isPrivate } } : {}),
     };
 
     setSubmitting(true);
@@ -1855,27 +1872,52 @@ function TaskSheet({
             />
           </div>
 
-          <div className="space-y-2">
-            <Label>Assign To</Label>
-            <SearchableSelect
-              value={form.assignedUserId || UNASSIGNED_USER_VALUE}
-              onValueChange={(assignedUserId) =>
-                setForm({
-                  ...form,
-                  assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
-                })
-              }
-              options={userSelectOptions}
-              placeholder="Search and select user"
-              searchPlaceholder="Search users..."
-              emptyMessage="No users found."
-              getOptionLabel={(userId) => {
-                if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
-                const user = users.find((candidate) => getUserId(candidate) === userId);
-                return user ? getUserName(user) : userId;
-              }}
-              className={cn(!selectedUser && "text-muted-foreground")}
-            />
+          <div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div className="space-y-2">
+              <Label>Assign To</Label>
+              <SearchableSelect
+                value={form.assignedUserId || UNASSIGNED_USER_VALUE}
+                onValueChange={(assignedUserId) =>
+                  setForm({
+                    ...form,
+                    assignedUserId: assignedUserId === UNASSIGNED_USER_VALUE ? "" : assignedUserId,
+                  })
+                }
+                options={userSelectOptions}
+                placeholder="Search and select user"
+                searchPlaceholder="Search users..."
+                emptyMessage="No users found."
+                getOptionLabel={(userId) => {
+                  if (userId === UNASSIGNED_USER_VALUE) return "Unassigned";
+                  const user = users.find((candidate) => getUserId(candidate) === userId);
+                  return user ? getUserName(user) : userId;
+                }}
+                className={cn(!selectedUser && "text-muted-foreground")}
+              />
+            </div>
+            <div className="flex items-center justify-between gap-3 rounded-md border px-3 py-2 sm:h-10">
+              <Label htmlFor="task-private" className="cursor-pointer whitespace-nowrap text-sm">
+                Private
+              </Label>
+              <button
+                id="task-private"
+                type="button"
+                role="switch"
+                aria-checked={form.isPrivate}
+                className={cn(
+                  "relative inline-flex h-6 w-11 shrink-0 items-center rounded-full border transition-colors",
+                  form.isPrivate ? "border-primary bg-primary" : "border-border bg-muted",
+                )}
+                onClick={() => setForm({ ...form, isPrivate: !form.isPrivate })}
+              >
+                <span
+                  className={cn(
+                    "inline-block h-5 w-5 rounded-full bg-background shadow transition-transform",
+                    form.isPrivate ? "translate-x-5" : "translate-x-0.5",
+                  )}
+                />
+              </button>
+            </div>
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">

@@ -26,6 +26,10 @@ serve(async (req) => {
 
     const caseRow = body.caseId ? await getCaseOrThrow(context, body.caseId) : null;
     if (relatedType === "case" && !caseRow) return jsonResponse({ error: "Case ID is required" }, 400);
+    const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata : {};
+    if (metadata.is_private === true && !metadata.private_owner_user_id) {
+      metadata.private_owner_user_id = context.user.id;
+    }
 
     const { data, error } = await context.supabase
       .from("tasks")
@@ -46,7 +50,7 @@ serve(async (req) => {
         ghl_opportunity_name: body.ghlOpportunityName || null,
         template_key: body.templateKey || null,
         automation_key: body.automationKey || null,
-        metadata: body.metadata || {},
+        metadata,
         created_by: context.user.id,
       })
       .select(`

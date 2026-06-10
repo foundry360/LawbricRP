@@ -50,12 +50,18 @@ serve(async (req) => {
       if (result.error) throw new Error(result.error.message);
     }
 
+    const visibleTasks = (tasks.data ?? []).filter((task) => {
+      const metadata = task.metadata && typeof task.metadata === "object" ? task.metadata : {};
+      const privateOwnerId = metadata.private_owner_user_id || task.created_by || null;
+      return metadata.is_private !== true || privateOwnerId === context.user.id;
+    });
+
     return jsonResponse({
       ok: true,
       case: caseRow,
       parties: parties.data ?? [],
       assignments: assignments.data ?? [],
-      tasks: tasks.data ?? [],
+      tasks: visibleTasks,
       events: events.data ?? [],
       documents: documents.data ?? [],
       financials: financials.data ?? [],
@@ -63,7 +69,7 @@ serve(async (req) => {
       contactAssignment: contactAssignment.data ?? null,
       timeline: buildTimeline({
         notes: notes.data ?? [],
-        tasks: tasks.data ?? [],
+        tasks: visibleTasks,
         events: events.data ?? [],
       }),
     });

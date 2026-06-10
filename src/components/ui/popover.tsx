@@ -87,16 +87,29 @@ export function PopoverTrigger({ children, asChild }: { children: ReactNode; asC
 
 export function PopoverContent({
   className,
+  align,
+  side = "bottom",
   children,
 }: {
   className?: string;
   align?: "start" | "center" | "end";
+  side?: "top" | "bottom";
   children: ReactNode;
 }) {
   const { open } = usePopover();
   if (!open) return null;
   return (
-    <div className={cn("absolute z-[140] mt-1 rounded-md border border-border bg-background shadow-lg", className)}>
+    <div
+      className={cn(
+        "absolute z-[140] rounded-md border border-border bg-background shadow-lg",
+        side === "bottom" && "top-full mt-1",
+        side === "top" && "bottom-full mb-1",
+        align === "start" && "left-0",
+        align === "center" && "left-1/2 -translate-x-1/2",
+        align === "end" && "right-0",
+        className,
+      )}
+    >
       {children}
     </div>
   );

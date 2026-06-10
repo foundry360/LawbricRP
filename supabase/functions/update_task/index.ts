@@ -28,6 +28,11 @@ serve(async (req) => {
 
     if (existingError) throw new Error(existingError.message);
     if (!existing) return jsonResponse({ error: "Task not found" }, 404);
+    const existingMetadata = existing.metadata && typeof existing.metadata === "object" ? existing.metadata : {};
+    const existingPrivateOwnerId = existingMetadata.private_owner_user_id || existing.created_by || null;
+    if (existingMetadata.is_private === true && existingPrivateOwnerId !== context.user.id) {
+      return jsonResponse({ error: "Task not found" }, 404);
+    }
 
     const updates: Record<string, unknown> = {};
     if (body.title !== undefined) updates.title = String(body.title).trim();
@@ -45,6 +50,26 @@ serve(async (req) => {
     if (body.ghlContactName !== undefined) updates.ghl_contact_name = body.ghlContactName || null;
     if (body.ghlOpportunityId !== undefined) updates.ghl_opportunity_id = body.ghlOpportunityId || null;
     if (body.ghlOpportunityName !== undefined) updates.ghl_opportunity_name = body.ghlOpportunityName || null;
+    if (body.metadata !== undefined) {
+      const nextMetadata = body.metadata && typeof body.metadata === "object"
+        ? { ...existingMetadata, ...body.metadata }
+        : existingMetadata;
+      if (
+        body.metadata &&
+        typeof body.metadata === "object" &&
+        "is_private" in body.metadata &&
+        existingPrivateOwnerId &&
+        existingPrivateOwnerId !== context.user.id
+      ) {
+        return jsonResponse({ error: "Only the task author can change task privacy" }, 403);
+      }
+      if (nextMetadata.is_private === true) {
+        nextMetadata.private_owner_user_id = existingPrivateOwnerId || context.user.id;
+      } else if ("is_private" in nextMetadata) {
+        delete nextMetadata.private_owner_user_id;
+      }
+      updates.metadata = nextMetadata;
+    }
 
     if (body.caseId !== undefined) {
       if (body.caseId) {
