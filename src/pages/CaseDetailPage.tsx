@@ -58,7 +58,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
+import { apiClient, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
   createCaseEvent,
@@ -70,6 +70,7 @@ import {
   type CaseRecord,
   type CaseDetail,
   updateCase,
+  updateCaseParty,
   updateCaseNote,
 } from "@/lib/cases";
 import {
@@ -113,6 +114,35 @@ const ALL_MATTER_TASK_ASSIGNEES = "all";
 const UNFILED_FOLDER_NAME = "Unfiled";
 const TASK_STATUS_OPTIONS = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"];
+const MATTER_CONTACT_TYPE_OPTIONS = [
+  "Related Contact",
+  "Client",
+  "Family Member",
+  "Attorney",
+  "Opposing Party",
+  "Witness",
+  "Expert",
+  "Medical Provider",
+  "Insurance",
+  "Court",
+  "Other",
+];
+const MATTER_CONTACT_ROLE_OPTIONS = [
+  "Associated Contact",
+  "Spouse",
+  "Parent",
+  "Child",
+  "Guardian",
+  "Referring Attorney",
+  "Co-Counsel",
+  "Opposing Counsel",
+  "Witness",
+  "Expert Witness",
+  "Treating Provider",
+  "Adjuster",
+  "Court Clerk",
+  "Other",
+];
 type MatterTaskSortColumn = "title" | "assigned_to" | "priority" | "status" | "due_at";
 type MatterDocumentDisplayMode = "documents" | "folders";
 type MatterDocumentSortColumn = "name" | "storage_type" | "folder" | "created_at";
@@ -1562,7 +1592,6 @@ function MatterDashboardTab({
                       <tr key={task.id} className="border-b last:border-0">
                         <td className="min-w-0 px-3 py-2">
                           <div className="truncate font-medium text-[#2384CA]">{task.title}</div>
-                          {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
                         </td>
                         <td className="px-3 py-2">
                           <Badge variant="outline" className="capitalize">{task.priority || "normal"}</Badge>
@@ -1616,6 +1645,7 @@ function MatterDashboardTab({
 }
 
 function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void | Promise<void> }) {
+  const navigate = useNavigate();
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
   const [searchQuery, setSearchQuery] = useState("");
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
@@ -1624,6 +1654,7 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(25);
   const [isAddRelatedContactOpen, setIsAddRelatedContactOpen] = useState(false);
+  const [partyToEdit, setPartyToEdit] = useState<any | null>(null);
   const primaryContactMatchValues = new Set(
     [detail.case.ghl_contact_id, detail.case.primary_contact_email, detail.case.primary_contact_name]
       .map((value) => normalizeMatterContactMatch(value))
@@ -1643,6 +1674,8 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
       role: "Primary",
       emailOrPhone: detail.case.primary_contact_email || detail.case.primary_contact_phone || "Not set",
       email: detail.case.primary_contact_email || "",
+      phone: detail.case.primary_contact_phone || "",
+      party: null,
     },
     ...associatedContacts.map((party) => ({
       id: String(party.id || `${party.ghl_contact_id || ""}-${party.email || ""}-${party.name || ""}`),
@@ -1650,14 +1683,16 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
       contactId: String(party.ghl_contact_id || ""),
       name: getMatterPartyDisplayName(party),
       type: party.party_type || "Related Contact",
-      role: party.role || "Not set",
+      role: party.role || "Associated Contact",
       emailOrPhone: party.email || party.phone || "Not set",
       email: party.email || "",
+      phone: party.phone || "",
+      party,
     })),
   ];
   const normalizedSearch = searchQuery.trim().toLowerCase();
-  const typeOptions = Array.from(new Set(contactRows.map((row) => row.type).filter(Boolean))).sort((a, b) => a.localeCompare(b));
-  const roleOptions = Array.from(new Set(contactRows.map((row) => row.role).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const typeOptions = Array.from(new Set([...MATTER_CONTACT_TYPE_OPTIONS, ...contactRows.map((row) => row.type).filter(Boolean)]));
+  const roleOptions = Array.from(new Set([...MATTER_CONTACT_ROLE_OPTIONS, ...contactRows.map((row) => row.role).filter(Boolean)]));
   const filteredContactRows = contactRows.filter((row) => {
     const matchesSearch = !normalizedSearch ||
       [row.name, row.type, row.role, row.emailOrPhone].some((value) => String(value || "").toLowerCase().includes(normalizedSearch));
@@ -1806,12 +1841,13 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
       </div>
 
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+        <table className="w-full min-w-[860px] table-fixed text-left text-sm">
           <colgroup>
-            <col className="w-[38%]" />
-            <col className="w-[20%]" />
-            <col className="w-[20%]" />
+            <col className="w-[34%]" />
+            <col className="w-[18%]" />
+            <col className="w-[18%]" />
             <col className="w-[22%]" />
+            <col className="w-[8%]" />
           </colgroup>
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
@@ -1819,6 +1855,7 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
               <th className="h-12 px-4 py-4 font-medium">Type</th>
               <th className="h-12 px-4 py-4 font-medium">Role</th>
               <th className="h-12 px-4 py-4 font-medium">Email / Phone</th>
+              <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1864,12 +1901,56 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
                   <td className="px-4 py-2 text-foreground/70">
                     <div className="truncate">{row.emailOrPhone}</div>
                   </td>
+                  <td className="px-4 py-2 text-right">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                          aria-label={`${row.name} contact actions`}
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-40">
+                        {row.party ? (
+                          <DropdownMenuItem onClick={() => setPartyToEdit(row.party)}>
+                            <Pencil className="mr-2 h-4 w-4" />
+                            Edit
+                          </DropdownMenuItem>
+                        ) : null}
+                        {row.contactId ? (
+                          <DropdownMenuItem onClick={() => navigate(`/contact/${row.contactId}`)}>
+                            <Eye className="mr-2 h-4 w-4" />
+                            View
+                          </DropdownMenuItem>
+                        ) : null}
+                        {row.email ? (
+                          <DropdownMenuItem onClick={() => { window.location.href = `mailto:${row.email}`; }}>
+                            <Mail className="mr-2 h-4 w-4" />
+                            Email
+                          </DropdownMenuItem>
+                        ) : null}
+                        {row.phone ? (
+                          <DropdownMenuItem onClick={() => { window.location.href = `tel:${row.phone}`; }}>
+                            <Phone className="mr-2 h-4 w-4" />
+                            Call
+                          </DropdownMenuItem>
+                        ) : null}
+                        {!row.contactId && !row.email && !row.phone ? (
+                          <div className="px-2 py-2 text-sm text-muted-foreground">No actions available</div>
+                        ) : null}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </td>
                 </tr>
               ))}
 
             {displayTotalCount === 0 ? (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                <td colSpan={5} className="px-4 py-8 text-center text-sm text-muted-foreground">
                   No contacts found.
                 </td>
               </tr>
@@ -1975,6 +2056,15 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
         onOpenChange={setIsAddRelatedContactOpen}
         onSaved={onChanged}
       />
+      <EditRelatedContactSheet
+        detail={detail}
+        party={partyToEdit}
+        open={Boolean(partyToEdit)}
+        onOpenChange={(open) => {
+          if (!open) setPartyToEdit(null);
+        }}
+        onSaved={onChanged}
+      />
     </>
   );
 }
@@ -1994,7 +2084,7 @@ function AddRelatedContactSheet({
   const [contacts, setContacts] = useState<any[]>([]);
   const [selectedContactId, setSelectedContactId] = useState("");
   const [partyType, setPartyType] = useState("Related Contact");
-  const [role, setRole] = useState("");
+  const [role, setRole] = useState("Associated Contact");
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -2028,13 +2118,17 @@ function AddRelatedContactSheet({
     if (!open) {
       setSelectedContactId("");
       setPartyType("Related Contact");
-      setRole("");
+      setRole("Associated Contact");
       return;
     }
 
     let cancelled = false;
     setLoadingContacts(true);
-    getContacts(detail.case.location_id)
+    getActiveGhlLocationId()
+      .then((ghlLocationId) => {
+        if (!ghlLocationId) throw new Error("GHL location is not configured.");
+        return getContacts(ghlLocationId);
+      })
       .then((response: any) => {
         if (cancelled) return;
         const nextContacts = Array.isArray(response?.contacts)
@@ -2061,7 +2155,7 @@ function AddRelatedContactSheet({
     return () => {
       cancelled = true;
     };
-  }, [detail.case.location_id, open, toast]);
+  }, [open]);
 
   const handleSubmit = async () => {
     if (!selectedContact) return;
@@ -2073,8 +2167,8 @@ function AddRelatedContactSheet({
         name: getMatterContactName(selectedContact),
         email: getMatterContactEmail(selectedContact) || null,
         phone: getMatterContactPhone(selectedContact) || null,
-        partyType: partyType.trim() || "Related Contact",
-        role: role.trim() || null,
+        partyType,
+        role,
       });
       await onSaved();
       onOpenChange(false);
@@ -2115,11 +2209,29 @@ function AddRelatedContactSheet({
           </div>
           <div className="space-y-2">
             <Label>Type</Label>
-            <Input value={partyType} onChange={(event) => setPartyType(event.target.value)} placeholder="Related Contact" />
+            <Select value={partyType} onValueChange={setPartyType}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                {MATTER_CONTACT_TYPE_OPTIONS.map((type) => (
+                  <SelectItem key={type} value={type}>{type}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
           <div className="space-y-2">
             <Label>Role</Label>
-            <Input value={role} onChange={(event) => setRole(event.target.value)} placeholder="Role on this matter" />
+            <Select value={role} onValueChange={setRole}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select role" />
+              </SelectTrigger>
+              <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                {MATTER_CONTACT_ROLE_OPTIONS.map((roleOption) => (
+                  <SelectItem key={roleOption} value={roleOption}>{roleOption}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -2129,6 +2241,201 @@ function AddRelatedContactSheet({
           </Button>
           <Button type="button" onClick={handleSubmit} disabled={!selectedContactId || submitting}>
             {submitting ? "Adding..." : "Add Related Contact"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function EditRelatedContactSheet({
+  detail,
+  party,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  detail: CaseDetail;
+  party: any | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [contacts, setContacts] = useState<any[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState("");
+  const [partyType, setPartyType] = useState("Related Contact");
+  const [role, setRole] = useState("Associated Contact");
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const currentPartyId = String(party?.id || "");
+  const existingContactIds = useMemo(
+    () => new Set(
+      [detail.case.ghl_contact_id, ...detail.parties.filter((item) => String(item.id || "") !== currentPartyId).map((item) => item.ghl_contact_id)]
+        .filter(Boolean)
+        .map((value) => String(value)),
+    ),
+    [currentPartyId, detail.case.ghl_contact_id, detail.parties],
+  );
+  const existingContactEmails = useMemo(
+    () => new Set(
+      [
+        detail.case.primary_contact_email,
+        ...detail.parties
+          .filter((item) => String(item.id || "") !== currentPartyId)
+          .map((item) => item.email),
+      ]
+        .map((value) => normalizeMatterContactMatch(value))
+        .filter(Boolean),
+    ),
+    [currentPartyId, detail.case.primary_contact_email, detail.parties],
+  );
+  const contactOptions = useMemo(
+    () => contacts.filter((contact) => {
+      const contactId = getMatterContactId(contact);
+      const email = normalizeMatterContactMatch(getMatterContactEmail(contact));
+      return contactId && !existingContactIds.has(contactId) && (!email || !existingContactEmails.has(email));
+    }),
+    [contacts, existingContactEmails, existingContactIds],
+  );
+  const selectedContact = contacts.find((contact) => getMatterContactId(contact) === selectedContactId);
+
+  useEffect(() => {
+    if (!open || !party) {
+      setSelectedContactId("");
+      setPartyType("Related Contact");
+      setRole("Associated Contact");
+      return;
+    }
+
+    setSelectedContactId(String(party.ghl_contact_id || ""));
+    setPartyType(party.party_type || "Related Contact");
+    setRole(party.role || "Associated Contact");
+
+    let cancelled = false;
+    setLoadingContacts(true);
+    getActiveGhlLocationId()
+      .then((ghlLocationId) => {
+        if (!ghlLocationId) throw new Error("GHL location is not configured.");
+        return getContacts(ghlLocationId);
+      })
+      .then((response: any) => {
+        if (cancelled) return;
+        const nextContacts = Array.isArray(response?.contacts)
+          ? response.contacts
+          : Array.isArray(response?.data)
+            ? response.data
+            : Array.isArray(response?.data?.contacts)
+              ? response.data.contacts
+              : [];
+        setContacts(nextContacts);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        toast({
+          title: "Contacts Not Loaded",
+          description: getUserFriendlyErrorMessage(error, "Could not load contacts. Please try again."),
+          variant: "destructive",
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingContacts(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, party]);
+
+  const handleSubmit = async () => {
+    if (!party) return;
+    const nextContact = selectedContact || null;
+    setSubmitting(true);
+    try {
+      await updateCaseParty({
+        caseId: detail.case.id,
+        partyId: party.id,
+        contactId: selectedContactId || null,
+        name: nextContact ? getMatterContactName(nextContact) : getMatterPartyDisplayName(party),
+        email: nextContact ? getMatterContactEmail(nextContact) || null : party.email || null,
+        phone: nextContact ? getMatterContactPhone(nextContact) || null : party.phone || null,
+        partyType,
+        role,
+        metadata: party.metadata || {},
+      });
+      await onSaved();
+      onOpenChange(false);
+      toast({ title: "Related Contact Updated", description: "The related contact has been saved." });
+    } catch (error) {
+      toast({
+        title: "Related Contact Not Updated",
+        description: getUserFriendlyErrorMessage(error, "Could not update this related contact. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Edit Related Contact</SheetTitle>
+        </SheetHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Contact</Label>
+            <SearchableSelect
+              value={selectedContactId}
+              onValueChange={setSelectedContactId}
+              options={contactOptions.map((contact) => getMatterContactId(contact))}
+              placeholder={loadingContacts ? "Loading contacts..." : "Select contact"}
+              searchPlaceholder="Search contacts..."
+              emptyMessage={loadingContacts ? "Loading contacts..." : "No contacts found."}
+              disabled={loadingContacts}
+              getOptionLabel={(contactId) =>
+                getMatterContactOptionLabel(contacts.find((contact) => getMatterContactId(contact) === contactId)) ||
+                (contactId === String(party?.ghl_contact_id || "") ? getMatterPartyDisplayName(party) : contactId)
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Type</Label>
+            <Select value={partyType} onValueChange={setPartyType}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select type" />
+              </SelectTrigger>
+              <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                {MATTER_CONTACT_TYPE_OPTIONS.map((type) => (
+                  <SelectItem key={type} value={type}>{type}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label>Role</Label>
+            <Select value={role} onValueChange={setRole}>
+              <SelectTrigger>
+                <SelectValue placeholder="Select role" />
+              </SelectTrigger>
+              <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                {MATTER_CONTACT_ROLE_OPTIONS.map((roleOption) => (
+                  <SelectItem key={roleOption} value={roleOption}>{roleOption}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!party || submitting}>
+            {submitting ? "Saving..." : "Save Changes"}
           </Button>
         </SheetFooter>
       </SheetContent>

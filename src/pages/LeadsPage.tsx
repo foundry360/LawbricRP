@@ -718,7 +718,6 @@ export function LeadsPage() {
                       size="icon"
                       className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                       aria-label="List actions"
-                      tooltip="List actions"
                     >
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
@@ -1389,7 +1388,6 @@ function LeadActions({
           size="icon"
           className={cn("h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white", triggerClassName)}
           aria-label="Lead actions"
-          tooltip="Lead actions"
         >
           <MoreVertical className="h-4 w-4" />
         </Button>

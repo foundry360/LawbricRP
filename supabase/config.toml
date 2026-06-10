@@ -72,6 +72,9 @@ verify_jwt = true
 [functions.add_case_party]
 verify_jwt = true
 
+[functions.update_case_party]
+verify_jwt = true
+
 [functions.create_task]
 verify_jwt = true
 

@@ -629,7 +629,6 @@ function ContactMatterList({
                     size="icon"
                     className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                     aria-label="Matter actions"
-                    tooltip="Matter actions"
                   >
                     <MoreVertical className="h-4 w-4" />
                   </Button>

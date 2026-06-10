@@ -1407,7 +1407,6 @@ export function ContactDirectory() {
                       size="icon"
                       className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                       aria-label="List actions"
-                      tooltip="List actions"
                     >
                       <MoreHorizontal className="h-4 w-4" />
                     </Button>
@@ -2018,7 +2017,6 @@ function ContactActions({
           size="icon"
           className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
           aria-label="Contact actions"
-          tooltip="Contact actions"
         >
           <MoreVertical className="h-4 w-4" />
         </Button>

@@ -137,6 +137,11 @@ export async function addCaseParty(payload: Record<string, unknown>) {
   return data.party;
 }
 
+export async function updateCaseParty(payload: Record<string, unknown>) {
+  const data = await invokeCaseFunction<{ party: any }>("update_case_party", payload);
+  return data.party;
+}
+
 export async function createCaseTask(payload: Record<string, unknown>) {
   const data = await invokeCaseFunction<{ task: any }>("create_task", payload);
   return data.task;

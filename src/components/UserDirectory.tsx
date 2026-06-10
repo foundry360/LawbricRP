@@ -403,7 +403,6 @@ export function UserDirectory() {
                           size="icon"
                           className="h-8 w-8 rounded-full text-muted-foreground hover:bg-[#0484C8] hover:text-white"
                           aria-label="User actions"
-                          tooltip="User actions"
                         >
                           <MoreVertical className="h-4 w-4" />
                         </Button>
