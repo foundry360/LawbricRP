@@ -573,7 +573,9 @@ export function Layout({ children }: { children: ReactNode }) {
                 <div className="mx-4 my-2 h-px bg-border group-data-[collapsible=icon]:mx-2" />
                 {canViewLeads && <NavItem icon={Target} label="Leads" to="/leads" active={location.pathname === "/leads"} />}
                 <NavItem icon={CreditCard} label="Billing" to="/billing" active={location.pathname === "/billing"} />
-                <NavItem icon={FileText} label="Documents" to="/documents" active={location.pathname === "/documents"} />
+                {canViewMatters && (
+                  <NavItem icon={FileText} label="Documents" to="/documents" active={location.pathname === "/documents"} />
+                )}
                 <NavItem icon={DollarSign} label="Payments" to="/payments" active={location.pathname === "/payments"} />
                 <ToolsNavItem active={location.pathname.startsWith("/tools")} />
               </SidebarMenu>

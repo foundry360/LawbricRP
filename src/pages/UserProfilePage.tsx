@@ -53,7 +53,7 @@ import {
 import { cn } from "@/lib/utils";
 
 const TAB_TRIGGER_CLASS =
-  "w-full !justify-start gap-2 rounded-none border-l-2 border-transparent px-3 py-2 text-left text-muted-foreground/70 data-[state=active]:border-[#2384CA] data-[state=active]:bg-[#F0F6FF] data-[state=active]:text-foreground data-[state=active]:shadow-none";
+  "w-full !justify-start gap-2 whitespace-nowrap rounded-none border-l-2 border-transparent px-3 py-2 text-left text-muted-foreground/70 data-[state=active]:border-[#2384CA] data-[state=active]:bg-[#F0F6FF] data-[state=active]:text-foreground data-[state=active]:shadow-none";
 const NO_REPORTS_TO_VALUE = "__none__";
 
 function emptyCredential(): UserCredential {
@@ -273,7 +273,7 @@ export function UserProfilePage() {
         </div>
       </Card>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="grid min-h-0 flex-1 gap-6 overflow-hidden lg:grid-cols-[250px_minmax(0,1fr)]">
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="grid min-h-0 flex-1 gap-6 overflow-hidden lg:grid-cols-[290px_minmax(0,1fr)]">
         <TabsList className="flex w-full shrink-0 flex-col items-stretch gap-1 rounded-lg bg-transparent p-0">
           <TabsTrigger value="profile" className={TAB_TRIGGER_CLASS}>
             <UserRound className="h-4 w-4 shrink-0" />

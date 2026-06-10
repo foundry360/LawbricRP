@@ -7,6 +7,7 @@ import {
   handleError,
   jsonResponse,
   readJsonBody,
+  userHasPermission,
 } from "../_shared/case-utils.ts";
 
 serve(async (req) => {
@@ -19,6 +20,7 @@ serve(async (req) => {
     if (!body.caseId) return jsonResponse({ error: "Case ID is required" }, 400);
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
+    const canViewDocuments = await userHasPermission(context, "documents.view");
     const [parties, assignments, tasks, events, documents, financials, notes, contactAssignment] = await Promise.all([
       context.supabase.from("case_parties").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: true }),
       context.supabase
@@ -27,7 +29,13 @@ serve(async (req) => {
         .eq("case_id", caseRow.id),
       context.supabase.from("tasks").select("*").eq("case_id", caseRow.id).order("due_at", { ascending: true, nullsFirst: false }),
       context.supabase.from("case_events").select("*").eq("case_id", caseRow.id).order("start_at", { ascending: false }),
-      context.supabase.from("documents").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
+      canViewDocuments
+        ? context.supabase
+          .from("documents")
+          .select("*, uploaded_user:profiles!documents_uploaded_by_fkey(id, full_name, email), updated_user:profiles!documents_updated_by_fkey(id, full_name, email)")
+          .eq("case_id", caseRow.id)
+          .order("created_at", { ascending: false })
+        : Promise.resolve({ data: [], error: null }),
       context.supabase.from("financials").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
       context.supabase.from("notes").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
       context.supabase

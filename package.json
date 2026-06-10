@@ -21,6 +21,7 @@
     "react": "latest",
     "react-dom": "latest",
     "react-hook-form": "^7.77.0",
+    "react-pdf": "^10.4.1",
     "react-router-dom": "latest",
     "zod": "^4.4.3"
   },

@@ -257,6 +257,58 @@ export async function requireContextPermission(context: RequestContext, permissi
   }
 }
 
+export async function userHasAnyRole(context: RequestContext, roleKeys: string[]) {
+  const normalizedRoleKeys = roleKeys.map((roleKey) => roleKey.trim()).filter(Boolean);
+  if (normalizedRoleKeys.length === 0) return false;
+
+  const { data: profile, error: profileError } = await context.supabase
+    .from("profiles")
+    .select("role, is_active")
+    .eq("id", context.user.id)
+    .maybeSingle();
+
+  if (profileError || !profile?.is_active) return false;
+  if (profile.role === "admin" && normalizedRoleKeys.includes("admin")) return true;
+
+  const { data: userRoleRows, error: userRolesError } = await context.supabase
+    .from("user_roles")
+    .select("role_id")
+    .eq("user_id", context.user.id);
+
+  if (userRolesError || !userRoleRows?.length) return false;
+
+  const roleIds = userRoleRows.map((row: any) => row.role_id).filter(Boolean);
+  if (roleIds.length === 0) return false;
+
+  const { data: roleRows, error: rolesError } = await context.supabase
+    .from("roles")
+    .select("key")
+    .in("id", roleIds)
+    .in("key", normalizedRoleKeys);
+
+  if (rolesError) return false;
+  return Boolean(roleRows?.length);
+}
+
+export async function requireAnyRole(context: RequestContext, roleKeys: string[], message: string) {
+  if (!await userHasAnyRole(context, roleKeys)) {
+    throw new Response(JSON.stringify({ error: message }), { status: 403 });
+  }
+}
+
+export async function getDocumentCapabilities(context: RequestContext) {
+  const [canView, canUpload, canEdit, canMove, canDelete, canManageFolders] = await Promise.all([
+    userHasPermission(context, "documents.view"),
+    userHasPermission(context, "documents.upload"),
+    userHasPermission(context, "documents.edit"),
+    userHasPermission(context, "documents.move"),
+    userHasPermission(context, "documents.delete"),
+    userHasPermission(context, "folders.manage"),
+  ]);
+
+  return { canView, canUpload, canEdit, canMove, canDelete, canManageFolders };
+}
+
 export async function canViewMatter(context: RequestContext, caseRow: any) {
   if (!caseRow) return false;
   if (!caseRow.location_id || caseRow.location_id !== context.location.id) return false;

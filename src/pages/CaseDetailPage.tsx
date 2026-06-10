@@ -1,16 +1,22 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
+  ArrowUpDown,
   Briefcase,
   Calendar,
-  ChevronLeft,
-  ChevronRight,
   CheckSquare,
   Clock,
   DollarSign,
+  ExternalLink,
+  FileArchive,
+  FileImage,
+  FileSpreadsheet,
   Eye,
   FileText,
+  Filter,
+  FolderOpen,
+  Link2,
   Loader2,
   Mail,
   MoreVertical,
@@ -18,6 +24,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  Search,
   Trash2,
   Upload,
   UserRound,
@@ -28,19 +35,30 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DateTimePicker } from "@/components/DatePicker";
+import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Pagination,
+  PaginationContent,
+  PaginationItem,
+  PaginationLink,
+  PaginationNext,
+  PaginationPrevious,
+} from "@/components/ui/pagination";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
+import { apiClient, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
   createCaseEvent,
@@ -48,12 +66,29 @@ import {
   createCaseTask,
   deleteCaseNote,
   getCase,
+  listCases,
+  type CaseRecord,
   type CaseDetail,
   updateCase,
   updateCaseNote,
-  uploadCaseDocument,
 } from "@/lib/cases";
-import { formatTaskStatusLabel, updateTask } from "@/lib/tasks";
+import {
+  createExternalDocument,
+  deleteDocument,
+  getAllDocuments,
+  getDocumentCapabilities,
+  getDocumentFolderName,
+  getDocumentName,
+  getStorageTypeLabel,
+  moveDocument,
+  renameDocument,
+  renameDocumentFolder,
+  uploadDocument,
+  type DocumentCapabilities,
+  type DocumentRecord,
+  type DocumentStorageType,
+} from "@/lib/documents";
+import { deleteTask, formatTaskStatusLabel, updateTask } from "@/lib/tasks";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
@@ -68,8 +103,25 @@ const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
 const UNASSIGNED_USER_VALUE = "__unassigned__";
+const ALL_MATTER_DOCUMENT_STORAGE_TYPES = "all";
+const ALL_MATTER_DOCUMENT_FOLDERS = "all";
+const ALL_MATTER_CONTACT_TYPES = "all";
+const ALL_MATTER_CONTACT_ROLES = "all";
+const ALL_MATTER_TASK_STATUSES = "all";
+const ALL_MATTER_TASK_PRIORITIES = "all";
+const ALL_MATTER_TASK_ASSIGNEES = "all";
+const UNFILED_FOLDER_NAME = "Unfiled";
 const TASK_STATUS_OPTIONS = ["todo", "in_progress", "blocked", "done", "cancelled"];
 const TASK_PRIORITY_OPTIONS = ["low", "normal", "high", "urgent"];
+type MatterTaskSortColumn = "title" | "assigned_to" | "priority" | "status" | "due_at";
+type MatterDocumentDisplayMode = "documents" | "folders";
+type MatterDocumentSortColumn = "name" | "storage_type" | "folder" | "created_at";
+type MatterDocumentFolderSortColumn = "folder" | "matter" | "documents" | "latest_uploaded" | "last_user_edit";
+type MatterDocumentFolderGroup = {
+  id: string;
+  folderName: string;
+  documents: DocumentRecord[];
+};
 
 function getPipelineSelection(
   pipelines: GhlPipeline[],
@@ -108,6 +160,12 @@ function formatDateTime(value?: string | null) {
   }).format(new Date(value));
 }
 
+function getCaseDisplayName(caseRecord: Pick<CaseRecord, "case_name" | "case_number">) {
+  return caseRecord.case_number
+    ? `${caseRecord.case_name} (${caseRecord.case_number})`
+    : caseRecord.case_name;
+}
+
 function formatDateTimeInput(value?: string | null) {
   if (!value) return "";
   const date = new Date(value);
@@ -137,6 +195,24 @@ function formatTaskDate(value?: string | null) {
 
 function isCompletedTask(task: any) {
   return ["done", "completed"].includes(String(task.status || "").toLowerCase());
+}
+
+function getMatterTaskAssignedInfo(task: any, users: AssignableUser[]) {
+  const assignedUserId = task.assigned_user?.id || task.assigned_user_id || "";
+  const matchedUser = users.find((user) => getUserId(user) === assignedUserId);
+  const assignedUserName =
+    (task.assigned_user?.full_name ? formatPersonName(task.assigned_user.full_name) : "") ||
+    task.assigned_user?.email ||
+    (matchedUser ? getUserName(matchedUser) : "");
+  const assignedUserEmail = task.assigned_user?.email || matchedUser?.email;
+  const assignedUserAvatar =
+    task.assigned_user?.avatar_url ||
+    task.assigned_user?.profilePhoto ||
+    matchedUser?.avatar_url ||
+    matchedUser?.profilePhoto ||
+    "";
+
+  return { assignedUserId, matchedUser, assignedUserName, assignedUserEmail, assignedUserAvatar };
 }
 
 function getStatusClass(status: string) {
@@ -177,8 +253,124 @@ function normalizeMatterContactMatch(value?: string | null) {
   return String(value || "").trim().toLowerCase();
 }
 
+function getMatterContactId(contact: any) {
+  return String(contact?.id || contact?._id || contact?.contactId || "");
+}
+
+function getMatterContactName(contact: any) {
+  const rawName = `${contact?.firstName || ""} ${contact?.lastName || ""}`.trim() || contact?.name || contact?.fullName || "";
+  return formatPersonName(rawName) || contact?.email || "Unnamed contact";
+}
+
+function getMatterContactEmail(contact: any) {
+  return contact?.email || contact?.primaryEmail || "";
+}
+
+function getMatterContactPhone(contact: any) {
+  return contact?.phone || contact?.primaryPhone || "";
+}
+
+function getMatterContactOptionLabel(contact?: any) {
+  if (!contact) return "";
+  const name = getMatterContactName(contact);
+  const email = getMatterContactEmail(contact);
+  return `${name}${email ? ` (${email})` : ""}`;
+}
+
 function getMatterPartyDisplayName(party: any) {
   return formatPersonName(party?.name || "") || party?.email || party?.phone || "Unnamed contact";
+}
+
+function getPaginationItems(currentPage: number, totalPages: number): Array<number | "ellipsis"> {
+  if (totalPages <= 7) {
+    return Array.from({ length: totalPages }, (_, index) => index + 1);
+  }
+
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sortedPages = Array.from(pages)
+    .filter((page) => page >= 1 && page <= totalPages)
+    .sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+
+  sortedPages.forEach((page, index) => {
+    if (index > 0 && page - sortedPages[index - 1] > 1) items.push("ellipsis");
+    items.push(page);
+  });
+
+  return items;
+}
+
+function getDisplayFolderName(document: DocumentRecord) {
+  return getDocumentFolderName(document) || UNFILED_FOLDER_NAME;
+}
+
+function getDocumentExtension(document: DocumentRecord) {
+  const name = getDocumentName(document).toLowerCase();
+  return name.includes(".") ? name.split(".").pop() || "" : "";
+}
+
+function getDocumentTypeIconInfo(document: DocumentRecord) {
+  const mimeType = String(document.mime_type || "").toLowerCase();
+  const extension = getDocumentExtension(document);
+  if (document.storage_type && document.storage_type !== "internal") {
+    return { Icon: ExternalLink, className: "text-sky-600" };
+  }
+  if (mimeType.includes("pdf") || extension === "pdf") {
+    return { Icon: FileText, className: "text-red-600" };
+  }
+  if (mimeType.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg", "heic"].includes(extension)) {
+    return { Icon: FileImage, className: "text-purple-600" };
+  }
+  if (
+    mimeType.includes("spreadsheet") ||
+    mimeType.includes("excel") ||
+    mimeType.includes("csv") ||
+    ["xls", "xlsx", "csv"].includes(extension)
+  ) {
+    return { Icon: FileSpreadsheet, className: "text-green-600" };
+  }
+  if (mimeType.includes("zip") || mimeType.includes("compressed") || ["zip", "rar", "7z", "gz"].includes(extension)) {
+    return { Icon: FileArchive, className: "text-amber-600" };
+  }
+  return { Icon: FileText, className: "text-primary" };
+}
+
+function DocumentTypeIcon({ documentRecord, className = "h-4 w-4" }: { documentRecord: DocumentRecord; className?: string }) {
+  const { Icon, className: iconClassName } = getDocumentTypeIconInfo(documentRecord);
+  return <Icon className={cn(className, iconClassName)} />;
+}
+
+function getDocumentUserName(document?: DocumentRecord | null) {
+  return (
+    document?.updated_user?.full_name ||
+    document?.updated_user?.email ||
+    document?.uploaded_user?.full_name ||
+    document?.uploaded_user?.email ||
+    "Unknown user"
+  );
+}
+
+function getDocumentUserId(document?: DocumentRecord | null) {
+  return document?.updated_user?.id || document?.updated_by || document?.uploaded_user?.id || document?.uploaded_by || "";
+}
+
+function formatDocumentCount(count: number) {
+  return `${count} ${count === 1 ? "document" : "documents"}`;
+}
+
+function getVisiblePageItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+
+  const pages = new Set([1, totalPages, currentPage - 1, currentPage, currentPage + 1]);
+  const sortedPages = [...pages].filter((page) => page >= 1 && page <= totalPages).sort((a, b) => a - b);
+  const items: Array<number | "ellipsis"> = [];
+
+  sortedPages.forEach((page, index) => {
+    if (index > 0 && page - sortedPages[index - 1] > 1) items.push("ellipsis");
+    items.push(page);
+  });
+
+  return items;
 }
 
 function getNoteAuthorName(note: { created_by?: string | null }, users: AssignableUser[]) {
@@ -189,17 +381,20 @@ function getNoteAuthorName(note: { created_by?: string | null }, users: Assignab
 
 export function CaseDetailPage() {
   const { caseId } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const { toast } = useToast();
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [isEditOpen, setIsEditOpen] = useState(false);
   const [isCreateTaskOpen, setIsCreateTaskOpen] = useState(false);
   const [selectedTask, setSelectedTask] = useState<any | null>(null);
+  const [taskToDelete, setTaskToDelete] = useState<any | null>(null);
+  const [isDeletingTask, setIsDeletingTask] = useState(false);
   const [isNoteSheetOpen, setIsNoteSheetOpen] = useState(false);
   const [selectedNote, setSelectedNote] = useState<any | null>(null);
   const [noteSheetMode, setNoteSheetMode] = useState<"view" | "edit" | "create">("create");
-  const [isOverviewCollapsed, setIsOverviewCollapsed] = useState(false);
-  const [activeDetailTab, setActiveDetailTab] = useState("tasks");
+  const [activeDetailTab, setActiveDetailTab] = useState("dashboard");
   const [contactAddress, setContactAddress] = useState("Not set");
   const [users, setUsers] = useState<AssignableUser[]>([]);
 
@@ -236,6 +431,11 @@ export function CaseDetailPage() {
   }, [caseId]);
 
   useEffect(() => {
+    const requestedTab = (location.state as { activeDetailTab?: string } | null)?.activeDetailTab;
+    if (requestedTab) setActiveDetailTab(requestedTab);
+  }, [location.state]);
+
+  useEffect(() => {
     getAssignableUsers()
       .then(setUsers)
       .catch((error) => console.error("Failed to load assignable users", error));
@@ -256,6 +456,25 @@ export function CaseDetailPage() {
         description: getUserFriendlyErrorMessage(error, "Could not delete this matter note. Please try again."),
         variant: "destructive",
       });
+    }
+  };
+
+  const handleDeleteMatterTask = async () => {
+    if (!taskToDelete || !detail) return;
+    setIsDeletingTask(true);
+    try {
+      await deleteTask({ locationId: detail.case.location_id, taskId: taskToDelete.id });
+      setTaskToDelete(null);
+      await loadCase();
+      toast({ title: "Task Deleted", description: `${taskToDelete.title} was permanently deleted.` });
+    } catch (error) {
+      toast({
+        title: "Task Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete this task. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsDeletingTask(false);
     }
   };
 
@@ -340,6 +559,17 @@ export function CaseDetailPage() {
         users={users}
         defaultAssignedUserId={assignedUserId}
         onCreated={loadCase}
+      />
+      <DeleteConfirmationDialog
+        open={Boolean(taskToDelete)}
+        onOpenChange={(open) => {
+          if (!open) setTaskToDelete(null);
+        }}
+        title="Permanently delete task?"
+        recordType="task"
+        recordName={taskToDelete?.title}
+        isDeleting={isDeletingTask}
+        onConfirm={handleDeleteMatterTask}
       />
       <MatterNoteSheet
         open={isNoteSheetOpen}
@@ -444,12 +674,7 @@ export function CaseDetailPage() {
         </div>
       </div>
 
-      <div
-        className={cn(
-          "grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:divide-x lg:divide-border",
-          isOverviewCollapsed ? "lg:grid-cols-[25fr_75fr_40px]" : "lg:grid-cols-[25fr_45fr_30fr]",
-        )}
-      >
+      <div className="grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[25fr_75fr] lg:divide-x lg:divide-border">
         <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pr-6">
           <div className="mb-2 border-b border-border pb-3">
             <h2 className="flex items-center gap-2 text-lg font-semibold">
@@ -510,17 +735,22 @@ export function CaseDetailPage() {
         <div className="h-full overflow-hidden lg:px-6">
           <Tabs value={activeDetailTab} onValueChange={setActiveDetailTab} className="flex h-full min-h-0 w-full flex-col">
             <div className="shrink-0 bg-background pb-4 pt-6">
-              <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0 xl:grid-cols-6">
+              <TabsList className="grid h-auto w-full grid-cols-4 rounded-none bg-transparent p-0 xl:grid-cols-8">
+                <TabsTrigger value="dashboard" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Dashboard</TabsTrigger>
                 <TabsTrigger value="tasks" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Tasks</TabsTrigger>
+                <TabsTrigger value="contacts" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Contacts</TabsTrigger>
+                <TabsTrigger value="notes" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Notes</TabsTrigger>
                 <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Timeline</TabsTrigger>
-                <TabsTrigger value="parties" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Parties</TabsTrigger>
                 <TabsTrigger value="events" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Events</TabsTrigger>
-                <TabsTrigger value="documents" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Docs</TabsTrigger>
+                <TabsTrigger value="documents" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Documents</TabsTrigger>
                 <TabsTrigger value="financials" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>Financials</TabsTrigger>
               </TabsList>
             </div>
 
             <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
+              <TabsContent value="dashboard" className="m-0">
+                <MatterDashboardTab detail={detail} />
+              </TabsContent>
               <TabsContent value="tasks" className="m-0">
                 <TasksTab
                   detail={detail}
@@ -529,19 +759,49 @@ export function CaseDetailPage() {
                     setSelectedTask(task);
                     setIsCreateTaskOpen(true);
                   }}
+                  onTaskCreate={() => {
+                    setSelectedTask(null);
+                    setIsCreateTaskOpen(true);
+                  }}
+                  onTaskDelete={setTaskToDelete}
+                />
+              </TabsContent>
+              <TabsContent value="contacts" className="m-0">
+                <ContactsTab detail={detail} onChanged={loadCase} />
+              </TabsContent>
+              <TabsContent value="notes" className="m-0">
+                <NotesTab
+                  detail={detail}
+                  users={users}
+                  onViewNote={(note) => {
+                    setSelectedNote(note);
+                    setNoteSheetMode("view");
+                    setIsNoteSheetOpen(true);
+                  }}
+                  onEditNote={(note) => {
+                    setSelectedNote(note);
+                    setNoteSheetMode("edit");
+                    setIsNoteSheetOpen(true);
+                  }}
+                  onDeleteNote={handleDeleteMatterNote}
                 />
               </TabsContent>
               <TabsContent value="timeline" className="m-0">
                 <TimelineTab detail={detail} onChanged={loadCase} />
               </TabsContent>
-              <TabsContent value="parties" className="m-0">
-                <PartiesTab detail={detail} onChanged={loadCase} />
-              </TabsContent>
               <TabsContent value="events" className="m-0">
                 <EventsTab detail={detail} onChanged={loadCase} />
               </TabsContent>
               <TabsContent value="documents" className="m-0">
-                <DocumentsTab detail={detail} onChanged={loadCase} />
+                <DocumentsTab
+                  detail={detail}
+                  onChanged={loadCase}
+                  onDocumentView={(document) =>
+                    navigate(`/documents/${document.id}`, {
+                      state: { documentViewerOrigin: "matterDocuments", caseId: detail.case.id },
+                    })
+                  }
+                />
               </TabsContent>
               <TabsContent value="financials" className="m-0">
                 <FinancialsTab detail={detail} />
@@ -549,42 +809,6 @@ export function CaseDetailPage() {
             </div>
           </Tabs>
         </div>
-
-        {!isOverviewCollapsed && (
-          <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pl-6">
-            <OverviewTab
-              detail={detail}
-              users={users}
-              onViewAllDocuments={() => setActiveDetailTab("documents")}
-              onViewNote={(note) => {
-                setSelectedNote(note);
-                setNoteSheetMode("view");
-                setIsNoteSheetOpen(true);
-              }}
-              onEditNote={(note) => {
-                setSelectedNote(note);
-                setNoteSheetMode("edit");
-                setIsNoteSheetOpen(true);
-              }}
-              onDeleteNote={handleDeleteMatterNote}
-              onToggleCollapse={() => setIsOverviewCollapsed(true)}
-            />
-          </div>
-        )}
-        {isOverviewCollapsed && (
-          <div className="hidden h-full items-start justify-center bg-[#F8FAFC] py-6 lg:flex">
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8 rounded-full text-muted-foreground"
-              onClick={() => setIsOverviewCollapsed(false)}
-              title="Show overview"
-            >
-              <ChevronLeft className="h-4 w-4" />
-            </Button>
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1198,26 +1422,208 @@ function MatterNoteSheet({
   );
 }
 
-function OverviewTab({
+function MatterDashboardTab({
   detail,
-  users,
-  onViewAllDocuments,
-  onViewNote,
-  onEditNote,
-  onDeleteNote,
-  onToggleCollapse,
 }: {
   detail: CaseDetail;
-  users: AssignableUser[];
-  onViewAllDocuments: () => void;
-  onViewNote: (note: any) => void;
-  onEditNote: (note: any) => void;
-  onDeleteNote: (note: any) => void;
-  onToggleCollapse: () => void;
 }) {
+  const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
+  const completedTasks = detail.tasks.filter(isCompletedTask);
+  const overdueTasks = activeTasks.filter((task) => {
+    if (!task.due_at) return false;
+    const dueDate = new Date(task.due_at);
+    return !Number.isNaN(dueDate.getTime()) && dueDate.getTime() < Date.now();
+  });
+  const dashboardTasks = [...activeTasks]
+    .sort((first, second) => {
+      const firstDue = first.due_at ? new Date(first.due_at).getTime() : Number.POSITIVE_INFINITY;
+      const secondDue = second.due_at ? new Date(second.due_at).getTime() : Number.POSITIVE_INFINITY;
+      return firstDue - secondDue;
+    })
+    .slice(0, 5);
+  const relatedContactCount = detail.parties.filter((party) => {
+    const primaryValues = [detail.case.ghl_contact_id, detail.case.primary_contact_email, detail.case.primary_contact_name]
+      .map((value) => normalizeMatterContactMatch(value))
+      .filter(Boolean);
+    const partyValues = [party.ghl_contact_id, party.email, party.name].map((value) => normalizeMatterContactMatch(value));
+    return !partyValues.some((value) => value && primaryValues.includes(value));
+  }).length;
+  const financialTotal = detail.financials.reduce((total, entry) => total + Number(entry.amount_cents || 0), 0);
+  const recentActivity = [...detail.timeline]
+    .sort((first, second) => String(second.occurred_at || "").localeCompare(String(first.occurred_at || "")))
+    .slice(0, 5);
+  const recentDocuments = [...((detail.documents || []) as DocumentRecord[])]
+    .sort((first, second) => String(second.created_at || "").localeCompare(String(first.created_at || "")))
+    .slice(0, 5);
+  const stats = [
+    { label: "Open Tasks", value: activeTasks.length, icon: CheckSquare },
+    { label: "Overdue", value: overdueTasks.length, icon: Clock },
+    { label: "Contacts", value: relatedContactCount + 1, icon: Users },
+    { label: "Documents", value: detail.documents.length, icon: FileText },
+    { label: "Notes", value: detail.notes.length, icon: NotebookPen },
+    { label: "Financials", value: money(financialTotal, detail.financials[0]?.currency || "USD"), icon: DollarSign },
+  ];
+
+  return (
+    <div className="space-y-4 pt-8">
+      <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
+        {stats.map(({ label, value, icon: Icon }) => (
+          <Card key={label} className="min-h-[104px]">
+            <div className="flex min-h-[104px] items-center gap-3 px-4 py-6">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                <Icon className="h-4 w-4" />
+              </div>
+              <div className="min-w-0">
+                <div className="truncate text-xs text-muted-foreground">{label}</div>
+                <div className="truncate text-lg font-semibold text-foreground">{value}</div>
+              </div>
+            </div>
+          </Card>
+        ))}
+      </div>
+
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Card className="order-2">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <FileText className="h-4 w-4" />
+              Recent Documents
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {recentDocuments.length === 0 ? (
+              <div className="py-4 text-center text-sm text-muted-foreground">No recent documents.</div>
+            ) : (
+              <div className="overflow-hidden">
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[40%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[42%]" />
+                  </colgroup>
+                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="h-10 px-3 py-3 font-medium">Document</th>
+                      <th className="h-10 px-3 py-3 font-medium">Folder</th>
+                      <th className="h-10 px-3 py-3 font-medium">Uploaded</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentDocuments.map((document) => (
+                      <tr key={document.id} className="border-b last:border-0">
+                        <td className="min-w-0 px-3 py-2">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <DocumentTypeIcon documentRecord={document} className="h-[18px] w-[18px] shrink-0" />
+                            <span className="truncate font-medium text-[#2384CA]">{getDocumentName(document)}</span>
+                          </div>
+                        </td>
+                        <td className="px-3 py-2 text-foreground/70">
+                          <div className="truncate">{getDisplayFolderName(document)}</div>
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(document.created_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="order-1">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <CheckSquare className="h-4 w-4" />
+              Tasks
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {dashboardTasks.length === 0 ? (
+              <div className="py-4 text-center text-sm text-muted-foreground">No active tasks.</div>
+            ) : (
+              <div className="overflow-hidden">
+                <table className="w-full table-fixed text-left text-sm">
+                  <colgroup>
+                    <col className="w-[42%]" />
+                    <col className="w-[18%]" />
+                    <col className="w-[20%]" />
+                    <col className="w-[20%]" />
+                  </colgroup>
+                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                    <tr>
+                      <th className="h-10 px-3 py-3 font-medium">Task</th>
+                      <th className="h-10 px-3 py-3 font-medium">Priority</th>
+                      <th className="h-10 px-3 py-3 font-medium">Status</th>
+                      <th className="h-10 px-3 py-3 font-medium">Due Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {dashboardTasks.map((task) => (
+                      <tr key={task.id} className="border-b last:border-0">
+                        <td className="min-w-0 px-3 py-2">
+                          <div className="truncate font-medium text-[#2384CA]">{task.title}</div>
+                          {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className="capitalize">{task.priority || "normal"}</Badge>
+                        </td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className={cn("whitespace-nowrap border-transparent capitalize", getStatusClass(task.status))}>
+                            {formatTaskStatusLabel(task.status)}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-2 text-foreground/70">{formatTaskDate(task.due_at)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <NotebookPen className="h-4 w-4" />
+            Recent Activity
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {recentActivity.length === 0 ? (
+            <div className="py-4 text-center text-sm text-muted-foreground">No recent activity.</div>
+          ) : (
+            <div className="divide-y">
+              {recentActivity.map((item) => (
+                <div key={`${item.type}-${item.id}`} className="py-3 first:pt-0 last:pb-0">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-foreground">{item.title}</div>
+                      {item.body ? <div className="line-clamp-1 text-sm text-muted-foreground">{item.body}</div> : null}
+                    </div>
+                    <Badge variant="outline" className="shrink-0 capitalize">{item.type}</Badge>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{formatDateTime(item.occurred_at)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void | Promise<void> }) {
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
-  const recentDocuments = detail.documents.slice(0, 5);
-  const recentNotes = detail.notes.slice(0, 5);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [typeFilter, setTypeFilter] = useState(ALL_MATTER_CONTACT_TYPES);
+  const [roleFilter, setRoleFilter] = useState(ALL_MATTER_CONTACT_ROLES);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [isAddRelatedContactOpen, setIsAddRelatedContactOpen] = useState(false);
   const primaryContactMatchValues = new Set(
     [detail.case.ghl_contact_id, detail.case.primary_contact_email, detail.case.primary_contact_name]
       .map((value) => normalizeMatterContactMatch(value))
@@ -1227,122 +1633,534 @@ function OverviewTab({
     const values = [party.ghl_contact_id, party.email, party.name].map((value) => normalizeMatterContactMatch(value));
     return !values.some((value) => value && primaryContactMatchValues.has(value));
   });
+  const contactRows = [
+    {
+      id: `primary-${detail.case.id}`,
+      isPrimary: true,
+      contactId: detail.case.ghl_contact_id || "",
+      name: clientName,
+      type: "Primary Contact",
+      role: "Primary",
+      emailOrPhone: detail.case.primary_contact_email || detail.case.primary_contact_phone || "Not set",
+      email: detail.case.primary_contact_email || "",
+    },
+    ...associatedContacts.map((party) => ({
+      id: String(party.id || `${party.ghl_contact_id || ""}-${party.email || ""}-${party.name || ""}`),
+      isPrimary: false,
+      contactId: String(party.ghl_contact_id || ""),
+      name: getMatterPartyDisplayName(party),
+      type: party.party_type || "Related Contact",
+      role: party.role || "Not set",
+      emailOrPhone: party.email || party.phone || "Not set",
+      email: party.email || "",
+    })),
+  ];
+  const normalizedSearch = searchQuery.trim().toLowerCase();
+  const typeOptions = Array.from(new Set(contactRows.map((row) => row.type).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const roleOptions = Array.from(new Set(contactRows.map((row) => row.role).filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  const filteredContactRows = contactRows.filter((row) => {
+    const matchesSearch = !normalizedSearch ||
+      [row.name, row.type, row.role, row.emailOrPhone].some((value) => String(value || "").toLowerCase().includes(normalizedSearch));
+    const matchesType = typeFilter === ALL_MATTER_CONTACT_TYPES || row.type === typeFilter;
+    const matchesRole = roleFilter === ALL_MATTER_CONTACT_ROLES || row.role === roleFilter;
+    return matchesSearch && matchesType && matchesRole;
+  });
+  const displayTotalCount = filteredContactRows.length;
+  const safeTotalPages = Math.max(1, Math.ceil(displayTotalCount / itemsPerPage));
+  const effectiveCurrentPage = Math.min(currentPage, safeTotalPages);
+  const firstVisibleRow = displayTotalCount === 0 ? 0 : (effectiveCurrentPage - 1) * itemsPerPage + 1;
+  const lastVisibleRow = Math.min(displayTotalCount, effectiveCurrentPage * itemsPerPage);
+  const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
+  const paginatedContactRows = filteredContactRows.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
+  const activeFilterCount = Number(typeFilter !== ALL_MATTER_CONTACT_TYPES) + Number(roleFilter !== ALL_MATTER_CONTACT_ROLES);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, typeFilter, roleFilter, detail.parties.length]);
 
   return (
     <>
-      <div className="mb-4 flex items-center justify-between border-b border-border pb-3">
-        <h3 className="text-sm font-semibold uppercase tracking-wider text-foreground/70">Additional Information</h3>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 rounded-full text-muted-foreground"
-          onClick={onToggleCollapse}
-          title="Hide overview"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </Button>
+      <div className="mb-4 flex flex-col gap-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-muted-foreground">
+          Contacts <span className="font-medium text-foreground">({contactRows.length})</span>
+        </div>
+        <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
+          <div
+            className={`relative flex items-center transition-all duration-300 ${
+              isSearchExpanded || searchQuery ? "w-full sm:w-64" : "w-10"
+            }`}
+          >
+            <Button
+              type="button"
+              variant={isSearchExpanded || searchQuery ? "ghost" : "outline"}
+              size="icon"
+              className="absolute left-0 z-10 h-10 w-10 rounded-full"
+              aria-label="Search contacts"
+              title="Search contacts"
+              onClick={() => {
+                if (!isSearchExpanded && !searchQuery) {
+                  setIsSearchExpanded(true);
+                  window.setTimeout(() => document.getElementById("matter-contact-search")?.focus(), 100);
+                }
+              }}
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+            <Input
+              id="matter-contact-search"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search contacts..."
+              className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
+                isSearchExpanded || searchQuery ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
+              }`}
+              onBlur={() => {
+                if (!searchQuery) setIsSearchExpanded(false);
+              }}
+            />
+          </div>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn(
+                  "relative h-10 w-10 shrink-0 rounded-full",
+                  activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                )}
+                aria-label="Filter contacts"
+                title="Filter contacts"
+              >
+                <Filter className="h-4 w-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="right-0 top-full mt-2 w-80 p-4">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold">Filter Contacts</div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs text-muted-foreground"
+                    onClick={() => {
+                      setTypeFilter(ALL_MATTER_CONTACT_TYPES);
+                      setRoleFilter(ALL_MATTER_CONTACT_ROLES);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  <Label>Type</Label>
+                  <Select value={typeFilter} onValueChange={setTypeFilter}>
+                    <SelectTrigger>
+                      <span className={typeFilter === ALL_MATTER_CONTACT_TYPES ? "text-muted-foreground" : undefined}>
+                        {typeFilter === ALL_MATTER_CONTACT_TYPES ? "Any Type" : typeFilter}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                      <SelectItem value={ALL_MATTER_CONTACT_TYPES}>Any Type</SelectItem>
+                      {typeOptions.map((type) => (
+                        <SelectItem key={type} value={type}>{type}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Role</Label>
+                  <Select value={roleFilter} onValueChange={setRoleFilter}>
+                    <SelectTrigger>
+                      <span className={roleFilter === ALL_MATTER_CONTACT_ROLES ? "text-muted-foreground" : undefined}>
+                        {roleFilter === ALL_MATTER_CONTACT_ROLES ? "Any Role" : roleFilter}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                      <SelectItem value={ALL_MATTER_CONTACT_ROLES}>Any Role</SelectItem>
+                      {roleOptions.map((roleOption) => (
+                        <SelectItem key={roleOption} value={roleOption}>{roleOption}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <Button
+            type="button"
+            size="icon"
+            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+            aria-label="Add related contact"
+            title="Add related contact"
+            onClick={() => setIsAddRelatedContactOpen(true)}
+          >
+            <Plus className="h-5 w-5" />
+          </Button>
+        </div>
       </div>
-      <div className="space-y-4">
-        <Accordion type="multiple" defaultValue={["contacts"]} className="w-full">
-          <AccordionItem value="contacts">
-            <AccordionTrigger>Contacts</AccordionTrigger>
-            <AccordionContent>
-              <div className="divide-y divide-border pt-2">
-                <div className="py-3 first:pt-0">
-                  <div className="flex items-center justify-between gap-3">
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[38%]" />
+            <col className="w-[20%]" />
+            <col className="w-[20%]" />
+            <col className="w-[22%]" />
+          </colgroup>
+          <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+            <tr>
+              <th className="h-12 px-4 py-4 font-medium">Contact</th>
+              <th className="h-12 px-4 py-4 font-medium">Type</th>
+              <th className="h-12 px-4 py-4 font-medium">Role</th>
+              <th className="h-12 px-4 py-4 font-medium">Email / Phone</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paginatedContactRows.map((row) => (
+                <tr
+                  key={row.id}
+                  className="border-b transition-colors last:border-0 hover:bg-muted/30"
+                >
+                  <td className="max-w-xs px-4 py-2">
                     <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
-                        <UserRound className="h-4 w-4" />
+                      <div className={cn(
+                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary",
+                        !row.isPrimary && "text-[11px] font-medium",
+                      )}>
+                        {row.isPrimary ? <UserRound className="h-4 w-4" /> : getAvatarInitials({ fullName: row.name, email: row.email }, "C")}
                       </div>
-                      <div className="min-w-0 space-y-0.5">
-                        {detail.case.ghl_contact_id ? (
+                      <div className="min-w-0">
+                        {row.contactId ? (
                           <Link
-                            to={`/contact/${detail.case.ghl_contact_id}`}
-                            className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
+                            to={`/contact/${row.contactId}`}
+                            className="block truncate font-medium text-[#2384CA] hover:underline"
                           >
-                            {clientName}
+                            {row.name}
                           </Link>
                         ) : (
-                          <div className="truncate text-sm font-semibold">{clientName}</div>
+                          <div className="truncate font-medium text-foreground">{row.name}</div>
                         )}
-                        <div className="truncate text-xs text-muted-foreground">Primary Contact</div>
-                        {detail.case.primary_contact_email ? (
-                          <div className="truncate text-xs text-[#2384CA]">{detail.case.primary_contact_email}</div>
-                        ) : null}
                       </div>
                     </div>
-                    <Badge variant="outline" className="shrink-0 border-primary/20 bg-primary/5 text-xs font-medium text-primary">
-                      Primary
-                    </Badge>
-                  </div>
-                </div>
+                  </td>
+                  <td className="px-4 py-2 capitalize text-foreground/70">
+                    <div className="truncate">{row.type}</div>
+                  </td>
+                  <td className="px-4 py-2">
+                    {row.isPrimary ? (
+                      <Badge variant="outline" className="border-primary/20 bg-primary/5 text-xs font-medium text-primary">
+                        Primary
+                      </Badge>
+                    ) : (
+                      <div className="truncate text-foreground/70">{row.role}</div>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-foreground/70">
+                    <div className="truncate">{row.emailOrPhone}</div>
+                  </td>
+                </tr>
+              ))}
 
-                {associatedContacts.map((party) => {
-                  const name = getMatterPartyDisplayName(party);
-                  const contactId = String(party.ghl_contact_id || "");
-                  return (
-                    <div key={party.id || `${name}-${party.email || party.phone || party.role}`} className="py-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex min-w-0 flex-1 items-center gap-3">
-                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/5 text-sm font-semibold text-primary">
-                            {getAvatarInitials({ fullName: name, email: party.email }, "C")}
-                          </div>
-                          <div className="min-w-0 space-y-0.5">
-                            {contactId ? (
-                              <Link
-                                to={`/contact/${contactId}`}
-                                className="block truncate text-sm font-semibold text-[#2384CA] hover:text-[#1b6da8]"
-                              >
-                                {name}
-                              </Link>
-                            ) : (
-                              <div className="truncate text-sm font-semibold text-foreground">{name}</div>
-                            )}
-                            <div className="truncate text-xs text-muted-foreground">
-                              {[party.party_type, party.role].filter(Boolean).join(" - ") || "Associated Contact"}
-                            </div>
-                            {party.email || party.phone ? (
-                              <div className="truncate text-xs text-[#2384CA]">{party.email || party.phone}</div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-
-              </div>
-            </AccordionContent>
-          </AccordionItem>
-          <AccordionItem value="documents">
-            <AccordionTrigger
-              action={
-                <button
-                  type="button"
-                  className="shrink-0 text-xs font-medium text-[#2384CA] hover:text-[#1b6da8]"
-                  onClick={onViewAllDocuments}
-                >
-                  View all documents
-                </button>
-              }
-            >
-              Recent Documents ({recentDocuments.length})
-            </AccordionTrigger>
-            <AccordionContent>
-              <MatterDocumentList documents={recentDocuments} />
-            </AccordionContent>
-          </AccordionItem>
-          <AccordionItem value="notes">
-            <AccordionTrigger>Notes ({recentNotes.length})</AccordionTrigger>
-            <AccordionContent>
-              <MatterNoteList notes={recentNotes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
-            </AccordionContent>
-          </AccordionItem>
-        </Accordion>
-
+            {displayTotalCount === 0 ? (
+              <tr>
+                <td colSpan={4} className="px-4 py-8 text-center text-sm text-muted-foreground">
+                  No contacts found.
+                </td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
       </div>
+
+      {displayTotalCount > 0 ? (
+        <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <div className="text-muted-foreground">
+            Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
+            {" - "}
+            <span className="font-medium text-foreground">{lastVisibleRow}</span>
+            {" of "}
+            <span className="font-medium text-foreground">{displayTotalCount}</span> contacts
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex items-center justify-between gap-2 text-muted-foreground sm:justify-start">
+              <span>Rows per page</span>
+              <Select
+                value={itemsPerPage.toString()}
+                onValueChange={(value) => {
+                  setItemsPerPage(Number(value));
+                  setCurrentPage(1);
+                }}
+              >
+                <SelectTrigger className="h-9 w-[78px] rounded-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="min-w-[78px]">
+                  <SelectItem value="25">25</SelectItem>
+                  <SelectItem value="75">75</SelectItem>
+                  <SelectItem value="100">100</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Pagination className="mx-0 w-full justify-end sm:w-auto">
+              <PaginationContent className="justify-end">
+                <PaginationItem>
+                  <PaginationPrevious
+                    href="#"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setCurrentPage(Math.max(1, effectiveCurrentPage - 1));
+                    }}
+                    className={cn(
+                      "h-9 rounded-full px-3",
+                      effectiveCurrentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer",
+                    )}
+                  />
+                </PaginationItem>
+                {visiblePageItems.map((item, index) =>
+                  item === "ellipsis" ? (
+                    <PaginationItem key={`contacts-ellipsis-${index}`} className="hidden px-1 text-muted-foreground sm:block">
+                      ...
+                    </PaginationItem>
+                  ) : (
+                    <PaginationItem key={item} className="hidden sm:block">
+                      <PaginationLink
+                        href="#"
+                        onClick={(event) => {
+                          event.preventDefault();
+                          setCurrentPage(item);
+                        }}
+                        isActive={effectiveCurrentPage === item}
+                        className="h-9 min-w-9 cursor-pointer rounded-full px-3"
+                      >
+                        {item}
+                      </PaginationLink>
+                    </PaginationItem>
+                  ),
+                )}
+                <PaginationItem className="sm:hidden">
+                  <span className="flex h-9 items-center rounded-full px-3 text-sm text-muted-foreground">
+                    Page {effectiveCurrentPage} of {safeTotalPages}
+                  </span>
+                </PaginationItem>
+                <PaginationItem>
+                  <PaginationNext
+                    href="#"
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setCurrentPage(Math.min(safeTotalPages, effectiveCurrentPage + 1));
+                    }}
+                    className={cn(
+                      "h-9 rounded-full px-3",
+                      effectiveCurrentPage === safeTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer",
+                    )}
+                  />
+                </PaginationItem>
+              </PaginationContent>
+            </Pagination>
+          </div>
+        </div>
+      ) : null}
+
+      <AddRelatedContactSheet
+        detail={detail}
+        open={isAddRelatedContactOpen}
+        onOpenChange={setIsAddRelatedContactOpen}
+        onSaved={onChanged}
+      />
     </>
+  );
+}
+
+function AddRelatedContactSheet({
+  detail,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  detail: CaseDetail;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const { toast } = useToast();
+  const [contacts, setContacts] = useState<any[]>([]);
+  const [selectedContactId, setSelectedContactId] = useState("");
+  const [partyType, setPartyType] = useState("Related Contact");
+  const [role, setRole] = useState("");
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  const existingContactIds = useMemo(
+    () => new Set(
+      [detail.case.ghl_contact_id, ...detail.parties.map((party) => party.ghl_contact_id)]
+        .filter(Boolean)
+        .map((value) => String(value)),
+    ),
+    [detail.case.ghl_contact_id, detail.parties],
+  );
+  const existingContactEmails = useMemo(
+    () => new Set(
+      [detail.case.primary_contact_email, ...detail.parties.map((party) => party.email)]
+        .map((value) => normalizeMatterContactMatch(value))
+        .filter(Boolean),
+    ),
+    [detail.case.primary_contact_email, detail.parties],
+  );
+  const contactOptions = useMemo(
+    () => contacts.filter((contact) => {
+      const contactId = getMatterContactId(contact);
+      const email = normalizeMatterContactMatch(getMatterContactEmail(contact));
+      return contactId && !existingContactIds.has(contactId) && (!email || !existingContactEmails.has(email));
+    }),
+    [contacts, existingContactEmails, existingContactIds],
+  );
+  const selectedContact = contacts.find((contact) => getMatterContactId(contact) === selectedContactId);
+
+  useEffect(() => {
+    if (!open) {
+      setSelectedContactId("");
+      setPartyType("Related Contact");
+      setRole("");
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingContacts(true);
+    getContacts(detail.case.location_id)
+      .then((response: any) => {
+        if (cancelled) return;
+        const nextContacts = Array.isArray(response?.contacts)
+          ? response.contacts
+          : Array.isArray(response?.data)
+            ? response.data
+            : Array.isArray(response?.data?.contacts)
+              ? response.data.contacts
+              : [];
+        setContacts(nextContacts);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        toast({
+          title: "Contacts Not Loaded",
+          description: getUserFriendlyErrorMessage(error, "Could not load contacts. Please try again."),
+          variant: "destructive",
+        });
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingContacts(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detail.case.location_id, open, toast]);
+
+  const handleSubmit = async () => {
+    if (!selectedContact) return;
+    setSubmitting(true);
+    try {
+      await addCaseParty({
+        caseId: detail.case.id,
+        contactId: selectedContactId,
+        name: getMatterContactName(selectedContact),
+        email: getMatterContactEmail(selectedContact) || null,
+        phone: getMatterContactPhone(selectedContact) || null,
+        partyType: partyType.trim() || "Related Contact",
+        role: role.trim() || null,
+      });
+      await onSaved();
+      onOpenChange(false);
+      toast({ title: "Related Contact Added", description: "The contact has been added to this matter." });
+    } catch (error) {
+      toast({
+        title: "Related Contact Not Added",
+        description: getUserFriendlyErrorMessage(error, "Could not add this contact to the matter. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Add Related Contact</SheetTitle>
+        </SheetHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Contact</Label>
+            <SearchableSelect
+              value={selectedContactId}
+              onValueChange={setSelectedContactId}
+              options={contactOptions.map((contact) => getMatterContactId(contact))}
+              placeholder={loadingContacts ? "Loading contacts..." : "Select contact"}
+              searchPlaceholder="Search contacts..."
+              emptyMessage={loadingContacts ? "Loading contacts..." : "No contacts found."}
+              disabled={loadingContacts}
+              getOptionLabel={(contactId) =>
+                getMatterContactOptionLabel(contacts.find((contact) => getMatterContactId(contact) === contactId)) || contactId
+              }
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Type</Label>
+            <Input value={partyType} onChange={(event) => setPartyType(event.target.value)} placeholder="Related Contact" />
+          </div>
+          <div className="space-y-2">
+            <Label>Role</Label>
+            <Input value={role} onChange={(event) => setRole(event.target.value)} placeholder="Role on this matter" />
+          </div>
+        </div>
+
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!selectedContactId || submitting}>
+            {submitting ? "Adding..." : "Add Related Contact"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function NotesTab({
+  detail,
+  users,
+  onViewNote,
+  onEditNote,
+  onDeleteNote,
+}: {
+  detail: CaseDetail;
+  users: AssignableUser[];
+  onViewNote: (note: any) => void;
+  onEditNote: (note: any) => void;
+  onDeleteNote: (note: any) => void;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <NotebookPen className="h-4 w-4" />
+          Notes
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <MatterNoteList notes={detail.notes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
+      </CardContent>
+    </Card>
   );
 }
 
@@ -1413,71 +2231,257 @@ function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
   );
 }
 
-function PartiesTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void }) {
-  const { toast } = useToast();
-  const [form, setForm] = useState({ name: "", partyType: "client", role: "", email: "", phone: "" });
-  const [submitting, setSubmitting] = useState(false);
-
-  const submit = async () => {
-    if (!form.name.trim()) return;
-    setSubmitting(true);
-    try {
-      await addCaseParty({ caseId: detail.case.id, ...form });
-      setForm({ name: "", partyType: "client", role: "", email: "", phone: "" });
-      onChanged();
-    } catch (error) {
-      toast({ title: "Party Not Added", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <TwoColumnTab title="Add Party" icon={Users} action={<Button disabled={submitting || !form.name.trim()} onClick={submit}>{submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}Add Party</Button>}>
-      <div className="space-y-3">
-        <Input placeholder="Name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
-        <div className="grid gap-3 sm:grid-cols-2">
-          <Input placeholder="Type" value={form.partyType} onChange={(event) => setForm({ ...form, partyType: event.target.value })} />
-          <Input placeholder="Role" value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })} />
-        </div>
-        <Input placeholder="Email" value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} />
-        <Input placeholder="Phone" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value })} />
-      </div>
-      <ListCard title="Parties" items={detail.parties} emptyIcon={Users} emptyText="No parties yet." render={(party) => (
-        <Row title={party.name} meta={[party.party_type, party.role, party.email].filter(Boolean).join(" · ")} />
-      )} />
-    </TwoColumnTab>
-  );
-}
-
 function TasksTab({
   detail,
   users,
   onTaskClick,
+  onTaskCreate,
+  onTaskDelete,
 }: {
   detail: CaseDetail;
   users: AssignableUser[];
   onTaskClick: (task: any) => void;
+  onTaskCreate: () => void;
+  onTaskDelete: (task: any) => void;
 }) {
-  const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
-  const completedTasks = detail.tasks.filter(isCompletedTask);
+  const [sortColumn, setSortColumn] = useState<MatterTaskSortColumn>("due_at");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [statusFilter, setStatusFilter] = useState(ALL_MATTER_TASK_STATUSES);
+  const [priorityFilter, setPriorityFilter] = useState(ALL_MATTER_TASK_PRIORITIES);
+  const [assigneeFilter, setAssigneeFilter] = useState(ALL_MATTER_TASK_ASSIGNEES);
+
+  const sortTasks = (tasks: any[]) => {
+    const priorityOrder: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+    return [...tasks].sort((a, b) => {
+      const getSortValue = (task: any) => {
+        switch (sortColumn) {
+          case "assigned_to":
+            return getMatterTaskAssignedInfo(task, users).assignedUserName || "Unassigned";
+          case "priority":
+            return priorityOrder[String(task.priority || "normal").toLowerCase()] ?? 99;
+          case "status":
+            return formatTaskStatusLabel(task.status);
+          case "due_at":
+            return task.due_at ? new Date(task.due_at).getTime() : Number.POSITIVE_INFINITY;
+          default:
+            return task.title || "";
+        }
+      };
+
+      const firstValue = getSortValue(a);
+      const secondValue = getSortValue(b);
+      const comparison = typeof firstValue === "number" && typeof secondValue === "number"
+        ? firstValue - secondValue
+        : String(firstValue).toLowerCase().localeCompare(String(secondValue).toLowerCase());
+
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+  };
+
+  const assigneeOptions = useMemo(() => {
+    const optionMap = new Map<string, string>();
+    detail.tasks.forEach((task) => {
+      const { assignedUserId, assignedUserName } = getMatterTaskAssignedInfo(task, users);
+      optionMap.set(assignedUserId || UNASSIGNED_USER_VALUE, assignedUserName || "Unassigned");
+    });
+    return [...optionMap.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+  }, [detail.tasks, users]);
+  const filteredTasks = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    return sortTasks(detail.tasks.filter((task) => {
+      const { assignedUserId, assignedUserName } = getMatterTaskAssignedInfo(task, users);
+      const taskAssigneeValue = assignedUserId || UNASSIGNED_USER_VALUE;
+      const matchesSearch = !normalizedSearch ||
+        [
+          task.title,
+          task.description,
+          assignedUserName,
+          task.priority,
+          formatTaskStatusLabel(task.status),
+          formatTaskDate(task.due_at),
+        ].some((value) => String(value || "").toLowerCase().includes(normalizedSearch));
+      const matchesStatus = statusFilter === ALL_MATTER_TASK_STATUSES || String(task.status || "") === statusFilter;
+      const matchesPriority = priorityFilter === ALL_MATTER_TASK_PRIORITIES || String(task.priority || "normal") === priorityFilter;
+      const matchesAssignee = assigneeFilter === ALL_MATTER_TASK_ASSIGNEES || taskAssigneeValue === assigneeFilter;
+      return matchesSearch && matchesStatus && matchesPriority && matchesAssignee;
+    }));
+  }, [assigneeFilter, detail.tasks, priorityFilter, searchTerm, sortColumn, sortDirection, statusFilter, users]);
+  const activeFilterCount =
+    Number(statusFilter !== ALL_MATTER_TASK_STATUSES) +
+    Number(priorityFilter !== ALL_MATTER_TASK_PRIORITIES) +
+    Number(assigneeFilter !== ALL_MATTER_TASK_ASSIGNEES);
+
+  const handleSort = (column: MatterTaskSortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortColumn(column);
+    setSortDirection("asc");
+  };
+
+  const renderSortIcon = (column: MatterTaskSortColumn) => {
+    if (sortColumn !== column) return <ArrowUpDown className="ml-2 h-3.5 w-3.5 text-muted-foreground/50" />;
+    return <ArrowUpDown className={cn("ml-2 h-3.5 w-3.5 text-primary", sortDirection === "desc" && "rotate-180")} />;
+  };
 
   return (
     <div className="space-y-4">
-      <Accordion type="multiple" defaultValue={["active-tasks", "completed-tasks"]} className="w-full">
-        <AccordionItem value="active-tasks">
-          <AccordionTrigger>Active Tasks ({activeTasks.length})</AccordionTrigger>
-          <AccordionContent>
-            <MatterTaskList tasks={activeTasks} users={users} onTaskClick={onTaskClick} />
-          </AccordionContent>
-        </AccordionItem>
-        <AccordionItem value="completed-tasks">
-          <AccordionTrigger>Completed Tasks ({completedTasks.length})</AccordionTrigger>
-          <AccordionContent>
-            <MatterTaskList tasks={completedTasks} users={users} onTaskClick={onTaskClick} />
-          </AccordionContent>
-        </AccordionItem>
-      </Accordion>
+      <div className="flex flex-col gap-3 pt-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="text-sm text-muted-foreground">
+          Tasks <span className="font-medium text-foreground">({detail.tasks.length})</span>
+        </div>
+        <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
+          <div
+            className={`relative flex items-center transition-all duration-300 ${
+              isSearchExpanded || searchTerm ? "w-full sm:w-64" : "w-10"
+            }`}
+          >
+            <Button
+              type="button"
+              variant={isSearchExpanded || searchTerm ? "ghost" : "outline"}
+              size="icon"
+              className="absolute left-0 z-10 h-10 w-10 rounded-full"
+              aria-label="Search tasks"
+              title="Search tasks"
+              onClick={() => {
+                if (!isSearchExpanded && !searchTerm) {
+                  setIsSearchExpanded(true);
+                  window.setTimeout(() => document.getElementById("matter-task-search")?.focus(), 100);
+                }
+              }}
+            >
+              <Search className="h-4 w-4" />
+            </Button>
+            <Input
+              id="matter-task-search"
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Search tasks..."
+              className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
+                isSearchExpanded || searchTerm ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
+              }`}
+              onBlur={() => {
+                if (!searchTerm) setIsSearchExpanded(false);
+              }}
+            />
+          </div>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon"
+                className={cn(
+                  "relative h-10 w-10 shrink-0 rounded-full",
+                  activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                )}
+                aria-label="Filter tasks"
+                title="Filter tasks"
+              >
+                <Filter className="h-4 w-4" />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="right-0 top-full mt-2 w-80 p-4">
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="text-sm font-semibold">Filter Tasks</div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 px-2 text-xs text-muted-foreground"
+                    onClick={() => {
+                      setStatusFilter(ALL_MATTER_TASK_STATUSES);
+                      setPriorityFilter(ALL_MATTER_TASK_PRIORITIES);
+                      setAssigneeFilter(ALL_MATTER_TASK_ASSIGNEES);
+                    }}
+                  >
+                    Clear
+                  </Button>
+                </div>
+                <div className="space-y-2">
+                  <Label>Status</Label>
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger>
+                      <span className={statusFilter === ALL_MATTER_TASK_STATUSES ? "text-muted-foreground" : undefined}>
+                        {statusFilter === ALL_MATTER_TASK_STATUSES ? "Any Status" : formatTaskStatusLabel(statusFilter)}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150]">
+                      <SelectItem value={ALL_MATTER_TASK_STATUSES}>Any Status</SelectItem>
+                      {TASK_STATUS_OPTIONS.map((status) => (
+                        <SelectItem key={status} value={status}>{formatTaskStatusLabel(status)}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Priority</Label>
+                  <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                    <SelectTrigger>
+                      <span className={priorityFilter === ALL_MATTER_TASK_PRIORITIES ? "text-muted-foreground" : "capitalize"}>
+                        {priorityFilter === ALL_MATTER_TASK_PRIORITIES ? "Any Priority" : priorityFilter}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150]">
+                      <SelectItem value={ALL_MATTER_TASK_PRIORITIES}>Any Priority</SelectItem>
+                      {TASK_PRIORITY_OPTIONS.map((priority) => (
+                        <SelectItem key={priority} value={priority}>
+                          <span className="capitalize">{priority}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label>Assigned To</Label>
+                  <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+                    <SelectTrigger>
+                      <span className={assigneeFilter === ALL_MATTER_TASK_ASSIGNEES ? "text-muted-foreground" : undefined}>
+                        {assigneeFilter === ALL_MATTER_TASK_ASSIGNEES
+                          ? "Any Assignee"
+                          : assigneeOptions.find(([value]) => value === assigneeFilter)?.[1] || "Unassigned"}
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                      <SelectItem value={ALL_MATTER_TASK_ASSIGNEES}>Any Assignee</SelectItem>
+                      {assigneeOptions.map(([value, label]) => (
+                        <SelectItem key={value} value={value}>{label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
+          <Button
+            type="button"
+            size="icon"
+            className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+            aria-label="Add task"
+            title="Add task"
+            onClick={onTaskCreate}
+          >
+            <Plus className="h-5 w-5" />
+          </Button>
+        </div>
+      </div>
+      <MatterTaskList
+        tasks={filteredTasks}
+        users={users}
+        onTaskClick={onTaskClick}
+        onTaskDelete={onTaskDelete}
+        handleSort={handleSort}
+        renderSortIcon={renderSortIcon}
+      />
     </div>
   );
 }
@@ -1486,139 +2490,275 @@ function MatterTaskList({
   tasks,
   users,
   onTaskClick,
+  onTaskDelete,
+  handleSort,
+  renderSortIcon,
 }: {
   tasks: any[];
   users: AssignableUser[];
   onTaskClick: (task: any) => void;
+  onTaskDelete: (task: any) => void;
+  handleSort: (column: MatterTaskSortColumn) => void;
+  renderSortIcon: (column: MatterTaskSortColumn) => ReactNode;
 }) {
+  const [currentPage, setCurrentPage] = useState(1);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const displayTotalCount = tasks.length;
+  const safeTotalPages = Math.max(1, Math.ceil(displayTotalCount / itemsPerPage));
+  const effectiveCurrentPage = Math.min(currentPage, safeTotalPages);
+  const firstVisibleRow = displayTotalCount === 0 ? 0 : (effectiveCurrentPage - 1) * itemsPerPage + 1;
+  const lastVisibleRow = Math.min(displayTotalCount, effectiveCurrentPage * itemsPerPage);
+  const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
+  const paginatedTasks = tasks.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
+  const columns: Array<[MatterTaskSortColumn, string]> = [
+    ["title", "Task"],
+    ["assigned_to", "Assigned To"],
+    ["priority", "Priority"],
+    ["status", "Status"],
+    ["due_at", "Due Date"],
+  ];
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [tasks.length, itemsPerPage]);
+
   if (tasks.length === 0) {
     return <div className="py-4 text-center text-sm text-muted-foreground">No tasks found.</div>;
   }
 
   return (
-    <div className="divide-y pt-3">
-      {tasks.map((task) => {
-        const assignedUserId = task.assigned_user?.id || task.assigned_user_id || "";
-        const matchedUser = users.find((user) => getUserId(user) === assignedUserId);
-        const assignedUserName =
-          (task.assigned_user?.full_name ? formatPersonName(task.assigned_user.full_name) : "") ||
-          task.assigned_user?.email ||
-          (matchedUser ? getUserName(matchedUser) : "");
-        const assignedUserEmail = task.assigned_user?.email || matchedUser?.email;
-        const assignedUserAvatar =
-          task.assigned_user?.avatar_url ||
-          task.assigned_user?.profilePhoto ||
-          matchedUser?.avatar_url ||
-          matchedUser?.profilePhoto ||
-          "";
-        const completed = isCompletedTask(task);
-        const dueLabel = completed ? "Completed" : formatTaskDate(task.due_at);
+    <>
+      <div className="overflow-x-auto pt-3">
+        <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+          <colgroup>
+            <col className="w-[32%]" />
+            <col className="w-[22%]" />
+            <col className="w-[12%]" />
+            <col className="w-[12%]" />
+            <col className="w-[14%]" />
+            <col className="w-[8%]" />
+          </colgroup>
+          <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+            <tr>
+              {columns.map(([column, label]) => (
+                <th
+                  key={column}
+                  className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
+                  onClick={() => handleSort(column)}
+                >
+                  <div className="flex items-center">
+                    {label} {renderSortIcon(column)}
+                  </div>
+                </th>
+              ))}
+              <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {paginatedTasks.map((task) => {
+              const {
+                assignedUserId,
+                matchedUser,
+                assignedUserName,
+                assignedUserEmail,
+                assignedUserAvatar,
+              } = getMatterTaskAssignedInfo(task, users);
+              const completed = isCompletedTask(task);
+              const dueLabel = formatTaskDate(task.due_at);
 
-        return (
-          <div
-            key={task.id}
-            role="button"
-            tabIndex={0}
-            className="block w-full cursor-pointer py-3 text-left first:pt-0 last:pb-0 hover:bg-muted/30"
-            onClick={() => onTaskClick(task)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                onTaskClick(task);
-              }
-            }}
-          >
-            <div className="flex items-start gap-3">
-              <Avatar className="mt-0.5 h-8 w-8 shrink-0">
-                {assignedUserAvatar ? (
-                  <AvatarImage
-                    src={assignedUserAvatar}
-                    alt={`${getAvatarInitials(
-                      { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
-                      "U",
-                    )} avatar`}
-                  />
-                ) : null}
-                <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
-                  {getAvatarInitials(
-                    { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
-                    "U",
+              return (
+                <tr
+                  key={task.id}
+                  role="button"
+                  tabIndex={0}
+                  className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
+                  onClick={() => onTaskClick(task)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onTaskClick(task);
+                    }
+                  }}
+                >
+                  <td className="max-w-xs px-4 py-2">
+                    <div className="flex items-center gap-3">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                        <CheckSquare className="h-4 w-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className={cn("truncate font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
+                          {task.title}
+                        </div>
+                        {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-foreground/70">
+                    <div className="flex min-w-0 items-center gap-3">
+                      <Avatar className="h-8 w-8 shrink-0">
+                        {assignedUserAvatar ? (
+                          <AvatarImage
+                            src={assignedUserAvatar}
+                            alt={`${getAvatarInitials(
+                              { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                              "U",
+                            )} avatar`}
+                          />
+                        ) : null}
+                        <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
+                          {getAvatarInitials(
+                            { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                            "U",
+                          )}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="min-w-0 truncate" onClick={(event) => event.stopPropagation()}>
+                        <UserLink
+                          userId={assignedUserId}
+                          user={matchedUser}
+                          name={assignedUserName || "Unassigned"}
+                          stopPropagation
+                        />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2">
+                    <Badge variant="outline" className="capitalize">
+                      {task.priority || "normal"}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-2">
+                    <Badge variant="outline" className={cn("border-transparent capitalize", getStatusClass(task.status))}>
+                      {formatTaskStatusLabel(task.status)}
+                    </Badge>
+                  </td>
+                  <td className="px-4 py-2 text-foreground/70">
+                    <div className="flex items-center">
+                      <Clock className="mr-2 h-3.5 w-3.5 shrink-0" />
+                      <span>{dueLabel}</span>
+                    </div>
+                  </td>
+                  <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                          aria-label="Task actions"
+                        >
+                          <MoreVertical className="h-4 w-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem onClick={() => onTaskClick(task)}>
+                          <Eye className="mr-2 h-4 w-4" />
+                          View
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={() => onTaskDelete(task)}>
+                          <Trash2 className="mr-2 h-4 w-4" />
+                          Delete
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <div className="text-muted-foreground">
+          Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
+          {" - "}
+          <span className="font-medium text-foreground">{lastVisibleRow}</span>
+          {" of "}
+          <span className="font-medium text-foreground">{displayTotalCount}</span> tasks
+        </div>
+
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div className="flex items-center justify-between gap-2 text-muted-foreground sm:justify-start">
+            <span>Rows per page</span>
+            <Select
+              value={itemsPerPage.toString()}
+              onValueChange={(value) => {
+                setItemsPerPage(Number(value));
+                setCurrentPage(1);
+              }}
+            >
+              <SelectTrigger className="h-9 w-[78px] rounded-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent className="min-w-[78px]">
+                <SelectItem value="25">25</SelectItem>
+                <SelectItem value="75">75</SelectItem>
+                <SelectItem value="100">100</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Pagination className="mx-0 w-full justify-end sm:w-auto">
+            <PaginationContent className="justify-end">
+              <PaginationItem>
+                <PaginationPrevious
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.max(1, effectiveCurrentPage - 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer",
                   )}
-                </AvatarFallback>
-              </Avatar>
-              <div className="min-w-0 flex-1">
-                <div className={cn("font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
-                  {task.title}
-                </div>
-                <div className="mt-0.5 flex items-center justify-between gap-4 text-xs text-muted-foreground">
-                  <div className="min-w-0 truncate capitalize">
-                    {[formatTaskStatusLabel(task.status), task.priority].filter(Boolean).join(" · ")}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1 text-right">
-                    <Clock className="h-3.5 w-3.5" />
-                    <span>{dueLabel}</span>
-                  </div>
-                </div>
-                <div className="mt-1 text-xs text-muted-foreground">
-                  Assigned to{" "}
-                  <UserLink
-                    userId={assignedUserId}
-                    user={matchedUser}
-                    name={assignedUserName || "Unassigned"}
-                    stopPropagation
-                  />
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function formatFileSize(value?: number | null) {
-  const bytes = Number(value || 0);
-  if (!bytes) return "0 bytes";
-  if (bytes < 1024) return `${bytes} bytes`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function MatterDocumentList({ documents }: { documents: any[] }) {
-  if (documents.length === 0) {
-    return <div className="py-4 text-center text-sm text-muted-foreground">No documents found.</div>;
-  }
-
-  return (
-    <div className="divide-y pt-3">
-      {documents.map((document) => {
-        const documentType = String(document.document_type || "Document").replace(/_/g, " ");
-        const mimeType = document.mime_type || "file";
-
-        return (
-          <div key={document.id || document.file_name} className="block w-full py-3 text-left first:pt-0 last:pb-0">
-            <div className="flex items-start gap-3">
-              <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                <FileText className="h-4 w-4" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <div className="truncate font-medium text-[#2384CA]">{document.file_name || "Untitled document"}</div>
-                <div className="mt-0.5 flex items-center justify-between gap-4 text-xs text-muted-foreground">
-                  <div className="min-w-0 truncate capitalize">
-                    {[documentType, mimeType].filter(Boolean).join(" · ")}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-1 text-right">
-                    <span>{formatFileSize(document.size_bytes)}</span>
-                  </div>
-                </div>
-                <div className="mt-0.5 text-xs text-muted-foreground">{formatDateTime(document.created_at)}</div>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-    </div>
+                />
+              </PaginationItem>
+              {visiblePageItems.map((item, index) =>
+                item === "ellipsis" ? (
+                  <PaginationItem key={`tasks-ellipsis-${index}`} className="hidden px-1 text-muted-foreground sm:block">
+                    ...
+                  </PaginationItem>
+                ) : (
+                  <PaginationItem key={item} className="hidden sm:block">
+                    <PaginationLink
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setCurrentPage(item);
+                      }}
+                      isActive={effectiveCurrentPage === item}
+                      className="h-9 min-w-9 cursor-pointer rounded-full px-3"
+                    >
+                      {item}
+                    </PaginationLink>
+                  </PaginationItem>
+                ),
+              )}
+              <PaginationItem className="sm:hidden">
+                <span className="flex h-9 items-center rounded-full px-3 text-sm text-muted-foreground">
+                  Page {effectiveCurrentPage} of {safeTotalPages}
+                </span>
+              </PaginationItem>
+              <PaginationItem>
+                <PaginationNext
+                  href="#"
+                  onClick={(event) => {
+                    event.preventDefault();
+                    setCurrentPage(Math.min(safeTotalPages, effectiveCurrentPage + 1));
+                  }}
+                  className={cn(
+                    "h-9 rounded-full px-3",
+                    effectiveCurrentPage === safeTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer",
+                  )}
+                />
+              </PaginationItem>
+            </PaginationContent>
+          </Pagination>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -1765,34 +2905,1068 @@ function EventsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () =>
   );
 }
 
-function DocumentsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void }) {
+function DocumentsTab({
+  detail,
+  onChanged,
+  onDocumentView,
+}: {
+  detail: CaseDetail;
+  onChanged: () => void;
+  onDocumentView: (document: DocumentRecord) => void;
+}) {
   const { toast } = useToast();
-  const [file, setFile] = useState<File | null>(null);
-  const [documentType, setDocumentType] = useState("other");
+  const [capabilities, setCapabilities] = useState<DocumentCapabilities>({
+    canView: false,
+    canUpload: false,
+    canEdit: false,
+    canMove: false,
+    canDelete: false,
+    canManageFolders: false,
+  });
+  const [capabilitiesLoaded, setCapabilitiesLoaded] = useState(false);
+  const [matterOptions, setMatterOptions] = useState<Array<[string, string]>>([[detail.case.id, getCaseDisplayName(detail.case)]]);
+  const [accessibleDocuments, setAccessibleDocuments] = useState<DocumentRecord[]>([]);
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [documentToRename, setDocumentToRename] = useState<DocumentRecord | null>(null);
+  const [documentToMove, setDocumentToMove] = useState<DocumentRecord | null>(null);
+  const [documentToDelete, setDocumentToDelete] = useState<DocumentRecord | null>(null);
+  const [folderToEdit, setFolderToEdit] = useState<MatterDocumentFolderGroup | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [displayMode, setDisplayMode] = useState<MatterDocumentDisplayMode>("documents");
+  const [selectedFolderName, setSelectedFolderName] = useState<string | null>(null);
+  const [isSearchExpanded, setIsSearchExpanded] = useState(false);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [storageTypeFilter, setStorageTypeFilter] = useState(ALL_MATTER_DOCUMENT_STORAGE_TYPES);
+  const [folderFilter, setFolderFilter] = useState(ALL_MATTER_DOCUMENT_FOLDERS);
+  const [itemsPerPage, setItemsPerPage] = useState(25);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [sortColumn, setSortColumn] = useState<MatterDocumentSortColumn>("created_at");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [folderSortColumn, setFolderSortColumn] = useState<MatterDocumentFolderSortColumn>("folder");
+  const [folderSortDirection, setFolderSortDirection] = useState<"asc" | "desc">("asc");
+  const documents = (detail.documents || []) as DocumentRecord[];
+
+  const folderOptions = useMemo(() => {
+    const folders = new Set<string>();
+    documents.forEach((document) => folders.add(getDisplayFolderName(document)));
+    return [...folders].sort((a, b) => a.localeCompare(b));
+  }, [documents]);
+
+  const filteredDocuments = useMemo(() => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    return documents.filter((document) => {
+      const folderName = getDisplayFolderName(document);
+      const storageType = document.storage_type || "internal";
+      const matchesSearch =
+        !normalizedSearch ||
+        getDocumentName(document).toLowerCase().includes(normalizedSearch) ||
+        folderName.toLowerCase().includes(normalizedSearch);
+      const matchesStorage = storageTypeFilter === ALL_MATTER_DOCUMENT_STORAGE_TYPES || storageType === storageTypeFilter;
+      const matchesFolder = folderFilter === ALL_MATTER_DOCUMENT_FOLDERS || folderName === folderFilter;
+      return matchesSearch && matchesStorage && matchesFolder;
+    });
+  }, [documents, folderFilter, searchTerm, storageTypeFilter]);
+
+  const sortedDocuments = useMemo(() => {
+    return [...filteredDocuments].sort((a, b) => {
+      const getSortValue = (document: DocumentRecord) => {
+        switch (sortColumn) {
+          case "name":
+            return getDocumentName(document);
+          case "storage_type":
+            return getStorageTypeLabel(document.storage_type);
+          case "folder":
+            return getDisplayFolderName(document);
+          default:
+            return document.created_at || "";
+        }
+      };
+
+      const firstValue = String(getSortValue(a)).toLowerCase();
+      const secondValue = String(getSortValue(b)).toLowerCase();
+      const comparison = firstValue.localeCompare(secondValue);
+      return sortDirection === "asc" ? comparison : -comparison;
+    });
+  }, [filteredDocuments, sortColumn, sortDirection]);
+
+  const folderGroups = useMemo<MatterDocumentFolderGroup[]>(() => {
+    const groupMap = new Map<string, MatterDocumentFolderGroup>();
+    sortedDocuments.forEach((document) => {
+      const folderName = getDisplayFolderName(document);
+      const existingGroup = groupMap.get(folderName);
+      if (existingGroup) {
+        existingGroup.documents.push(document);
+      } else {
+        groupMap.set(folderName, { id: folderName, folderName, documents: [document] });
+      }
+    });
+    return [...groupMap.values()].sort((a, b) => {
+      const getLatestDocument = (folderGroup: MatterDocumentFolderGroup) => [...folderGroup.documents].sort((first, second) =>
+        String(second.created_at || "").localeCompare(String(first.created_at || "")),
+      )[0];
+      const getLastEditedDocument = (folderGroup: MatterDocumentFolderGroup) => [...folderGroup.documents].sort((first, second) =>
+        String(second.updated_at || second.created_at || "").localeCompare(String(first.updated_at || first.created_at || "")),
+      )[0];
+      const getSortValue = (folderGroup: MatterDocumentFolderGroup) => {
+        const latestDocument = getLatestDocument(folderGroup);
+        const lastEditedDocument = getLastEditedDocument(folderGroup);
+        switch (folderSortColumn) {
+          case "matter":
+            return getCaseDisplayName(detail.case);
+          case "documents":
+            return folderGroup.documents.length;
+          case "latest_uploaded":
+            return latestDocument?.created_at || "";
+          case "last_user_edit":
+            return getDocumentUserName(lastEditedDocument);
+          default:
+            return folderGroup.folderName;
+        }
+      };
+
+      const firstValue = getSortValue(a);
+      const secondValue = getSortValue(b);
+      const comparison = typeof firstValue === "number" && typeof secondValue === "number"
+        ? firstValue - secondValue
+        : String(firstValue).toLowerCase().localeCompare(String(secondValue).toLowerCase());
+      return folderSortDirection === "asc" ? comparison : -comparison;
+    });
+  }, [detail.case, folderSortColumn, folderSortDirection, sortedDocuments]);
+  const selectedFolderGroup = selectedFolderName
+    ? folderGroups.find((folderGroup) => folderGroup.folderName === selectedFolderName) || null
+    : null;
+  const documentsToDisplay = selectedFolderGroup ? selectedFolderGroup.documents : sortedDocuments;
+  const displayTotalCount = displayMode === "folders" && !selectedFolderGroup ? folderGroups.length : documentsToDisplay.length;
+  const displayTotalPages = Math.ceil(displayTotalCount / itemsPerPage);
+  const safeTotalPages = Math.max(1, displayTotalPages);
+  const effectiveCurrentPage = Math.min(currentPage, safeTotalPages);
+  const firstVisibleRow = displayTotalCount === 0 ? 0 : (effectiveCurrentPage - 1) * itemsPerPage + 1;
+  const lastVisibleRow = Math.min(effectiveCurrentPage * itemsPerPage, displayTotalCount);
+  const visiblePageItems = getVisiblePageItems(effectiveCurrentPage, safeTotalPages);
+  const paginatedFolderGroups = folderGroups.slice(
+    (effectiveCurrentPage - 1) * itemsPerPage,
+    effectiveCurrentPage * itemsPerPage,
+  );
+  const paginatedDocumentsToDisplay = documentsToDisplay.slice(
+    (effectiveCurrentPage - 1) * itemsPerPage,
+    effectiveCurrentPage * itemsPerPage,
+  );
+
+  const activeFilterCount = [storageTypeFilter, folderFilter].filter(
+    (value) => value !== ALL_MATTER_DOCUMENT_STORAGE_TYPES && value !== ALL_MATTER_DOCUMENT_FOLDERS,
+  ).length;
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [displayMode, folderFilter, searchTerm, selectedFolderName, storageTypeFilter]);
+
+  const handleSort = (column: MatterDocumentSortColumn) => {
+    if (sortColumn === column) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setSortColumn(column);
+    setSortDirection(column === "created_at" ? "desc" : "asc");
+  };
+
+  const renderSortIcon = (column: MatterDocumentSortColumn) => {
+    if (sortColumn !== column) return <ArrowUpDown className="ml-2 h-3.5 w-3.5 text-muted-foreground/50" />;
+    return <ArrowUpDown className={cn("ml-2 h-3.5 w-3.5 text-primary", sortDirection === "desc" && "rotate-180")} />;
+  };
+
+  const handleFolderSort = (column: MatterDocumentFolderSortColumn) => {
+    if (folderSortColumn === column) {
+      setFolderSortDirection((current) => current === "asc" ? "desc" : "asc");
+      return;
+    }
+    setFolderSortColumn(column);
+    setFolderSortDirection(column === "latest_uploaded" ? "desc" : "asc");
+  };
+
+  const renderFolderSortIcon = (column: MatterDocumentFolderSortColumn) => {
+    if (folderSortColumn !== column) return <ArrowUpDown className="ml-2 h-3.5 w-3.5 text-muted-foreground/50" />;
+    return <ArrowUpDown className={cn("ml-2 h-3.5 w-3.5 text-primary", folderSortDirection === "desc" && "rotate-180")} />;
+  };
+
+  useEffect(() => {
+    getDocumentCapabilities()
+      .then(setCapabilities)
+      .catch((error) => console.error("Failed to load document permissions", error))
+      .finally(() => setCapabilitiesLoaded(true));
+  }, []);
+
+  useEffect(() => {
+    Promise.all([listCases({ limit: 500 }), getAllDocuments()])
+      .then(([caseRows, documentRows]) => {
+        const map = new Map<string, string>();
+        map.set(detail.case.id, getCaseDisplayName(detail.case));
+        caseRows.forEach((caseRecord) => map.set(caseRecord.id, getCaseDisplayName(caseRecord)));
+        setMatterOptions([...map.entries()].sort((a, b) => a[1].localeCompare(b[1])));
+        setAccessibleDocuments(documentRows);
+      })
+      .catch((error) => {
+        console.error("Failed to load document move options", error);
+        setMatterOptions([[detail.case.id, getCaseDisplayName(detail.case)]]);
+        setAccessibleDocuments(documents);
+      });
+  }, [detail.case, documents]);
+
+  const handleViewDocument = async (document: DocumentRecord) => {
+    onDocumentView(document);
+  };
+
+  const handleDeleteDocument = async () => {
+    if (!documentToDelete) return;
+    setIsDeleting(true);
+    try {
+      await deleteDocument(documentToDelete.id);
+      setDocumentToDelete(null);
+      onChanged();
+      toast({ title: "Document Deleted", description: "The matter document has been deleted." });
+    } catch (error) {
+      toast({ title: "Document Not Deleted", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
+    } finally {
+      setIsDeleting(false);
+    }
+  };
+
+  const handleDocumentMoved = () => {
+    setDocumentToMove(null);
+    onChanged();
+  };
+
+  const handleDocumentRenamed = () => {
+    setDocumentToRename(null);
+    onChanged();
+  };
+
+  return (
+    <div className="space-y-4">
+      <UploadDocumentDialog
+        open={isUploadOpen}
+        onOpenChange={setIsUploadOpen}
+        matterId={detail.case.id}
+        documents={documents}
+        onSaved={onChanged}
+      />
+      <RenameMatterDocumentSheet
+        documentRecord={documentToRename}
+        open={Boolean(documentToRename)}
+        onOpenChange={(open) => {
+          if (!open) setDocumentToRename(null);
+        }}
+        onSaved={handleDocumentRenamed}
+      />
+      <MoveMatterDocumentSheet
+        documentRecord={documentToMove}
+        open={Boolean(documentToMove)}
+        onOpenChange={(open) => {
+          if (!open) setDocumentToMove(null);
+        }}
+        matterOptions={matterOptions}
+        documents={accessibleDocuments.length > 0 ? accessibleDocuments : documents}
+        onSaved={handleDocumentMoved}
+      />
+      <EditMatterDocumentFolderSheet
+        folderGroup={folderToEdit}
+        matterId={detail.case.id}
+        open={Boolean(folderToEdit)}
+        onOpenChange={(open) => {
+          if (!open) setFolderToEdit(null);
+        }}
+        onSaved={() => {
+          setFolderToEdit(null);
+          onChanged();
+        }}
+      />
+      <DeleteConfirmationDialog
+        open={Boolean(documentToDelete)}
+        onOpenChange={(open) => {
+          if (!open) setDocumentToDelete(null);
+        }}
+        title="Delete document?"
+        recordType="document"
+        recordName={documentToDelete ? getDocumentName(documentToDelete) : ""}
+        isDeleting={isDeleting}
+        onConfirm={handleDeleteDocument}
+      />
+
+      <div className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          {selectedFolderGroup ? (
+            <nav aria-label="Document folder breadcrumb" className="flex min-w-0 items-center gap-2 text-sm text-muted-foreground">
+              <button
+                type="button"
+                className="shrink-0 font-medium text-[#2384CA] hover:underline"
+                onClick={() => setSelectedFolderName(null)}
+              >
+                Folders
+              </button>
+              <span className="shrink-0">/</span>
+              <span className="truncate font-medium text-foreground">
+                {selectedFolderGroup.folderName}
+              </span>
+              <span className="shrink-0 text-xs">({formatDocumentCount(selectedFolderGroup.documents.length)})</span>
+            </nav>
+          ) : (
+            <div />
+          )}
+          <div className="ml-auto flex w-full shrink-0 items-center justify-end gap-3 lg:w-auto">
+            <div
+              className={`relative flex items-center transition-all duration-300 ${
+                isSearchExpanded || searchTerm ? "w-full sm:w-64" : "w-10"
+              }`}
+            >
+              <Button
+                type="button"
+                variant={isSearchExpanded || searchTerm ? "ghost" : "outline"}
+                size="icon"
+                className="absolute left-0 z-10 h-10 w-10 rounded-full"
+                aria-label="Search documents"
+                title="Search documents"
+                onClick={() => {
+                  if (!isSearchExpanded && !searchTerm) {
+                    setIsSearchExpanded(true);
+                    window.setTimeout(() => document.getElementById("matter-document-search")?.focus(), 100);
+                  }
+                }}
+              >
+                <Search className="h-4 w-4" />
+              </Button>
+              <Input
+                id="matter-document-search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search documents..."
+                className={`h-10 rounded-full bg-background pl-10 transition-all duration-300 ${
+                  isSearchExpanded || searchTerm ? "w-full opacity-100" : "w-0 border-0 p-0 opacity-0"
+                }`}
+                onBlur={() => {
+                  if (!searchTerm) setIsSearchExpanded(false);
+                }}
+              />
+            </div>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="icon"
+                  className={cn(
+                    "relative h-10 w-10 shrink-0 rounded-full",
+                    activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                  )}
+                  aria-label="Filter documents"
+                  title="Filter documents"
+                >
+                  <Filter className="h-4 w-4" />
+                  {activeFilterCount > 0 && (
+                    <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                      {activeFilterCount}
+                    </span>
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent className="right-0 top-full mt-2 w-80 p-4">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold">Filter Documents</div>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 px-2 text-xs text-muted-foreground"
+                      onClick={() => {
+                        setStorageTypeFilter(ALL_MATTER_DOCUMENT_STORAGE_TYPES);
+                        setFolderFilter(ALL_MATTER_DOCUMENT_FOLDERS);
+                      }}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Type</Label>
+                    <Select value={storageTypeFilter} onValueChange={setStorageTypeFilter}>
+                      <SelectTrigger>
+                        <span className={storageTypeFilter === ALL_MATTER_DOCUMENT_STORAGE_TYPES ? "text-muted-foreground" : undefined}>
+                          {storageTypeFilter === ALL_MATTER_DOCUMENT_STORAGE_TYPES ? "Any Type" : getStorageTypeLabel(storageTypeFilter)}
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent className="z-[150]">
+                        <SelectItem value={ALL_MATTER_DOCUMENT_STORAGE_TYPES}>Any Type</SelectItem>
+                        <SelectItem value="internal">Internal</SelectItem>
+                        <SelectItem value="gdrive">Google Drive</SelectItem>
+                        <SelectItem value="onedrive">OneDrive</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Folder</Label>
+                    <Select value={folderFilter} onValueChange={setFolderFilter}>
+                      <SelectTrigger>
+                        <span className={folderFilter === ALL_MATTER_DOCUMENT_FOLDERS ? "text-muted-foreground" : undefined}>
+                          {folderFilter === ALL_MATTER_DOCUMENT_FOLDERS ? "Any Folder" : folderFilter}
+                        </span>
+                      </SelectTrigger>
+                      <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                        <SelectItem value={ALL_MATTER_DOCUMENT_FOLDERS}>Any Folder</SelectItem>
+                        {folderOptions.map((folderName) => (
+                          <SelectItem key={folderName} value={folderName}>{folderName}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </PopoverContent>
+            </Popover>
+            <Tabs
+              value={displayMode}
+              onValueChange={(value) => {
+                setDisplayMode(value as MatterDocumentDisplayMode);
+                setSelectedFolderName(null);
+              }}
+            >
+              <TabsList className="h-10 rounded-full">
+                <TabsTrigger value="documents" className="rounded-full px-3">
+                  <FileText className="h-4 w-4" />
+                </TabsTrigger>
+                <TabsTrigger value="folders" className="rounded-full px-3">
+                  <FolderOpen className="h-4 w-4" />
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+            {!capabilitiesLoaded ? null : capabilities.canUpload ? (
+              <Button
+                type="button"
+                size="icon"
+                className="h-10 w-10 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-[#0484C8]"
+                aria-label="Upload document"
+                title="Upload document"
+                onClick={() => setIsUploadOpen(true)}
+              >
+                <Upload className="h-5 w-5" />
+              </Button>
+            ) : (
+              <p className="text-sm text-muted-foreground">You have view-only document access for this matter.</p>
+            )}
+          </div>
+        </div>
+
+        {documents.length === 0 ? (
+          <EmptyState icon={FileText} text="No documents yet." />
+        ) : sortedDocuments.length === 0 ? (
+          <div className="rounded-lg border-2 border-dashed border-muted-foreground/40 bg-card py-12 text-center">
+            <FileText className="mx-auto mb-4 h-12 w-12 text-muted-foreground/50" />
+            <h3 className="text-lg font-medium text-foreground">No documents found</h3>
+            <p className="mt-1 text-muted-foreground">Try adjusting your search or filters.</p>
+          </div>
+        ) : displayMode === "folders" && !selectedFolderGroup ? (
+          <div className="overflow-hidden">
+            <table className="w-full table-fixed text-left text-sm">
+              <colgroup>
+                <col className="w-[20%]" />
+                <col className="w-[27%]" />
+                <col className="w-[11%]" />
+                <col className="w-[16%]" />
+                <col className="w-[18%]" />
+                <col className="w-[8%]" />
+              </colgroup>
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <tr>
+                  {([
+                    ["folder", "Folder", "pl-4 pr-1"],
+                    ["matter", "Matter", "pl-1 pr-4"],
+                    ["documents", "Documents", "pl-3 pr-1"],
+                    ["latest_uploaded", "Latest Upload", "pl-1 pr-3"],
+                    ["last_user_edit", "Last User Edit", "pl-3 pr-1"],
+                  ] as Array<[MatterDocumentFolderSortColumn, string, string]>).map(([column, label, paddingClass]) => (
+                    <th
+                      key={column}
+                      className={cn("h-12 cursor-pointer py-4 font-medium transition-colors hover:bg-muted/80", paddingClass)}
+                      onClick={() => handleFolderSort(column)}
+                    >
+                      <div className="flex items-center">
+                        {label} {renderFolderSortIcon(column)}
+                      </div>
+                    </th>
+                  ))}
+                  <th className="h-12 py-4 pl-1 pr-3 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedFolderGroups.map((folderGroup) => {
+                  const latestDocument = [...folderGroup.documents].sort((a, b) =>
+                    String(b.created_at || "").localeCompare(String(a.created_at || "")),
+                  )[0];
+                  const lastEditedDocument = [...folderGroup.documents].sort((a, b) =>
+                    String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")),
+                  )[0];
+                  return (
+                    <tr
+                      key={folderGroup.id}
+                      role="button"
+                      tabIndex={0}
+                      className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
+                      onClick={() => setSelectedFolderName(folderGroup.folderName)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          setSelectedFolderName(folderGroup.folderName);
+                        }
+                      }}
+                    >
+                      <td className="max-w-xs py-2 pl-4 pr-1">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                            <FolderOpen className="h-4 w-4" />
+                          </span>
+                          <span className="truncate font-medium text-[#2384CA] hover:underline">{folderGroup.folderName}</span>
+                        </div>
+                      </td>
+                      <td className="min-w-0 py-2 pl-1 pr-4 text-foreground/70">
+                        <div className="min-w-0">
+                          <Link to={`/case/${detail.case.id}`} className="block truncate font-medium text-[#2384CA] hover:underline">
+                            {detail.case.case_name}
+                          </Link>
+                          <div className="truncate text-xs text-muted-foreground">{detail.case.case_number}</div>
+                        </div>
+                      </td>
+                      <td className="whitespace-nowrap py-2 pl-3 pr-1 text-foreground/70">{folderGroup.documents.length}</td>
+                      <td className="py-2 pl-1 pr-3 text-foreground/70">
+                        <div className="truncate">
+                          {latestDocument ? formatDateTime(latestDocument.created_at) : "Not set"}
+                        </div>
+                      </td>
+                      <td className="py-2 pl-3 pr-1 text-foreground/70">
+                        <div className="truncate" onClick={(event) => event.stopPropagation()}>
+                          <UserLink
+                            userId={getDocumentUserId(lastEditedDocument)}
+                            user={lastEditedDocument?.updated_user || lastEditedDocument?.uploaded_user}
+                            name={getDocumentUserName(lastEditedDocument)}
+                            stopPropagation
+                          />
+                        </div>
+                      </td>
+                      <td className="py-2 pl-1 pr-3 text-right" onClick={(event) => event.stopPropagation()}>
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                              aria-label="Folder actions"
+                            >
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setSelectedFolderName(folderGroup.folderName)}>
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              View
+                            </DropdownMenuItem>
+                            {capabilities.canManageFolders && (
+                              <DropdownMenuItem onClick={() => setFolderToEdit(folderGroup)}>
+                                <Pencil className="mr-2 h-4 w-4" />
+                                Edit
+                              </DropdownMenuItem>
+                            )}
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[760px] table-fixed text-left text-sm">
+              <colgroup>
+                <col className="w-[36%]" />
+                <col className="w-[18%]" />
+                <col className="w-[14%]" />
+                <col className="w-[22%]" />
+                <col className="w-[10%]" />
+              </colgroup>
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
+                <tr>
+                  {([
+                    ["name", "Name"],
+                    ["storage_type", "Type"],
+                    ["folder", "Folder"],
+                    ["created_at", "Uploaded"],
+                  ] as Array<[MatterDocumentSortColumn, string]>).map(([column, label]) => (
+                    <th
+                      key={column}
+                      className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
+                      onClick={() => handleSort(column)}
+                    >
+                      <div className="flex items-center">
+                        {label} {renderSortIcon(column)}
+                      </div>
+                    </th>
+                  ))}
+                  <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {paginatedDocumentsToDisplay.map((document) => (
+                  <tr key={document.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
+                    <td className="min-w-0 px-4 py-2">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
+                        onClick={() => handleViewDocument(document)}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <DocumentTypeIcon documentRecord={document} />
+                        </span>
+                        <span className="min-w-0 truncate">{getDocumentName(document)}</span>
+                      </button>
+                    </td>
+                    <td className="px-4 py-2">
+                      <Badge variant="outline" className="capitalize">{getStorageTypeLabel(document.storage_type)}</Badge>
+                    </td>
+                    <td className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center gap-2">
+                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="truncate">{getDisplayFolderName(document)}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{formatDateTime(document.created_at)}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-right">
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button type="button" variant="ghost" size="icon" className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground">
+                            <MoreVertical className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem onClick={() => handleViewDocument(document)}>
+                            {document.storage_type === "internal" ? (
+                              <Eye className="mr-2 h-4 w-4" />
+                            ) : (
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                            )}
+                            View
+                          </DropdownMenuItem>
+                          {capabilities.canEdit && (
+                            <DropdownMenuItem onClick={() => setDocumentToRename(document)}>
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Rename
+                            </DropdownMenuItem>
+                          )}
+                          {capabilities.canMove && (
+                            <DropdownMenuItem onClick={() => setDocumentToMove(document)}>
+                              <FolderOpen className="mr-2 h-4 w-4" />
+                              Move
+                            </DropdownMenuItem>
+                          )}
+                          {capabilities.canDelete && (
+                            <DropdownMenuItem onClick={() => setDocumentToDelete(document)}>
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          </>
+        )}
+        {displayTotalCount > 0 ? (
+          <div className="mt-4 flex flex-col gap-4 border-t bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="text-muted-foreground">
+              Showing <span className="font-medium text-foreground">{firstVisibleRow}</span>
+              {" - "}
+              <span className="font-medium text-foreground">{lastVisibleRow}</span>
+              {" of "}
+              <span className="font-medium text-foreground">{displayTotalCount}</span>{" "}
+              {displayMode === "folders" && !selectedFolderGroup ? "folders" : "documents"}
+            </div>
+
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+              <div className="flex items-center justify-between gap-2 text-muted-foreground sm:justify-start">
+                <span>Rows per page</span>
+                <Select
+                  value={itemsPerPage.toString()}
+                  onValueChange={(value) => {
+                    setItemsPerPage(Number(value));
+                    setCurrentPage(1);
+                  }}
+                >
+                  <SelectTrigger className="h-9 w-[78px] rounded-full">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="min-w-[78px]">
+                    <SelectItem value="25">25</SelectItem>
+                    <SelectItem value="75">75</SelectItem>
+                    <SelectItem value="100">100</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <Pagination className="mx-0 w-full justify-end sm:w-auto">
+                <PaginationContent className="justify-end">
+                  <PaginationItem>
+                    <PaginationPrevious
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setCurrentPage(Math.max(1, effectiveCurrentPage - 1));
+                      }}
+                      className={cn(
+                        "h-9 rounded-full px-3",
+                        effectiveCurrentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer",
+                      )}
+                    />
+                  </PaginationItem>
+                  {visiblePageItems.map((item, index) =>
+                    item === "ellipsis" ? (
+                      <PaginationItem key={`ellipsis-${index}`} className="hidden px-1 text-muted-foreground sm:block">
+                        ...
+                      </PaginationItem>
+                    ) : (
+                      <PaginationItem key={item} className="hidden sm:block">
+                        <PaginationLink
+                          href="#"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            setCurrentPage(item);
+                          }}
+                          isActive={effectiveCurrentPage === item}
+                          className="h-9 min-w-9 cursor-pointer rounded-full px-3"
+                        >
+                          {item}
+                        </PaginationLink>
+                      </PaginationItem>
+                    ),
+                  )}
+                  <PaginationItem className="sm:hidden">
+                    <span className="flex h-9 items-center rounded-full px-3 text-sm text-muted-foreground">
+                      Page {effectiveCurrentPage} of {safeTotalPages}
+                    </span>
+                  </PaginationItem>
+                  <PaginationItem>
+                    <PaginationNext
+                      href="#"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setCurrentPage(Math.min(safeTotalPages, effectiveCurrentPage + 1));
+                      }}
+                      className={cn(
+                        "h-9 rounded-full px-3",
+                        effectiveCurrentPage === safeTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer",
+                      )}
+                    />
+                  </PaginationItem>
+                </PaginationContent>
+              </Pagination>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function MoveMatterDocumentSheet({
+  documentRecord,
+  open,
+  onOpenChange,
+  matterOptions,
+  documents,
+  onSaved,
+}: {
+  documentRecord: DocumentRecord | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  matterOptions: Array<[string, string]>;
+  documents: DocumentRecord[];
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [matterId, setMatterId] = useState("");
+  const [folderName, setFolderName] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const fileToBase64 = (selectedFile: File) =>
-    new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = reject;
-      reader.readAsDataURL(selectedFile);
-    });
+  useEffect(() => {
+    if (open && documentRecord) {
+      setMatterId(documentRecord.case_id || documentRecord.matter_id || documentRecord.case?.id || "");
+      setFolderName(getDocumentFolderName(documentRecord));
+    }
+    if (!open) {
+      setMatterId("");
+      setFolderName("");
+    }
+  }, [documentRecord, open]);
 
-  const submit = async () => {
+  const folderOptions = useMemo(() => {
+    const folders = new Set<string>();
+    documents.forEach((document) => {
+      const documentMatterId = document.case_id || document.matter_id || document.case?.id;
+      const documentFolderName = getDocumentFolderName(document);
+      if (matterId && documentMatterId === matterId && documentFolderName) folders.add(documentFolderName);
+    });
+    return [...folders].sort((a, b) => a.localeCompare(b));
+  }, [documents, matterId]);
+
+  const handleSubmit = async () => {
+    if (!documentRecord || !matterId) return;
+    setSubmitting(true);
+    try {
+      await moveDocument(documentRecord.id, matterId, { folderName });
+      onSaved();
+      toast({ title: "Document Moved", description: "The document location has been updated." });
+    } catch (error) {
+      toast({ title: "Document Not Moved", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Move Document</SheetTitle>
+          <SheetDescription className="truncate">
+            {documentRecord ? getDocumentName(documentRecord) : "Update this document's matter and folder."}
+          </SheetDescription>
+        </SheetHeader>
+        <div className="space-y-5">
+          <div className="space-y-2">
+            <Label>Matter</Label>
+            <SearchableSelect
+              value={matterId}
+              onValueChange={setMatterId}
+              options={matterOptions.map(([id]) => id)}
+              placeholder={matterOptions.length === 0 ? "No accessible matters" : "Select or search for a matter"}
+              searchPlaceholder="Search matters..."
+              emptyMessage="No matters found."
+              getOptionLabel={(value) => matterOptions.find(([id]) => id === value)?.[1] || "Unknown Matter"}
+              disabled={matterOptions.length === 0}
+              contentClassName="z-[220]"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Folder</Label>
+            <Input
+              value={folderName}
+              onChange={(event) => setFolderName(event.target.value)}
+              placeholder="Folder name"
+            />
+            {folderOptions.length > 0 ? (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {folderOptions.slice(0, 6).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+                    onClick={() => setFolderName(option)}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!documentRecord || !matterId || submitting}>
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+            Move
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function RenameMatterDocumentSheet({
+  documentRecord,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  documentRecord: DocumentRecord | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open && documentRecord) setName(getDocumentName(documentRecord));
+    if (!open) setName("");
+  }, [documentRecord, open]);
+
+  const handleSubmit = async () => {
+    if (!documentRecord || !name.trim()) return;
+    setSubmitting(true);
+    try {
+      await renameDocument(documentRecord.id, name);
+      onSaved();
+      toast({ title: "Document Updated", description: "The document name has been updated." });
+    } catch (error) {
+      toast({ title: "Document Not Updated", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Rename Document</SheetTitle>
+        </SheetHeader>
+        <div className="space-y-2">
+          <Label>Document Name</Label>
+          <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Document name" />
+        </div>
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!documentRecord || !name.trim() || submitting}>
+            {submitting ? "Saving..." : "Save Changes"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function EditMatterDocumentFolderSheet({
+  folderGroup,
+  matterId,
+  open,
+  onOpenChange,
+  onSaved,
+}: {
+  folderGroup: MatterDocumentFolderGroup | null;
+  matterId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [folderName, setFolderName] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (open && folderGroup) setFolderName(folderGroup.folderName === UNFILED_FOLDER_NAME ? "" : folderGroup.folderName);
+    if (!open) setFolderName("");
+  }, [folderGroup, open]);
+
+  const handleSubmit = async () => {
+    if (!folderGroup) return;
+    setSubmitting(true);
+    try {
+      await renameDocumentFolder(folderGroup.documents.map((document) => document.id), matterId, folderName);
+      onSaved();
+      toast({ title: "Folder Updated", description: "The folder name has been updated." });
+    } catch (error) {
+      toast({ title: "Folder Not Updated", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Edit Folder</SheetTitle>
+        </SheetHeader>
+        <div className="space-y-2">
+          <Label>Folder</Label>
+          <Input
+            value={folderName}
+            onChange={(event) => setFolderName(event.target.value)}
+            placeholder="Folder name"
+          />
+          <p className="text-xs text-muted-foreground">
+            Leave blank to move these documents to Unfiled.
+          </p>
+        </div>
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!folderGroup || submitting}>
+            {submitting ? "Saving..." : "Save Changes"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function UploadDocumentDialog({
+  open,
+  onOpenChange,
+  matterId,
+  documents,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  matterId: string;
+  documents: DocumentRecord[];
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [folderName, setFolderName] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!open) {
+      setFolderName("");
+      setFile(null);
+      setIsDraggingFile(false);
+    }
+  }, [open]);
+
+  const folderOptions = useMemo(() => {
+    const folders = new Set<string>();
+    documents.forEach((document) => {
+      const documentMatterId = document.case_id || document.matter_id || document.case?.id;
+      const documentFolderName = getDocumentFolderName(document);
+      if (documentMatterId === matterId && documentFolderName) folders.add(documentFolderName);
+    });
+    return [...folders].sort((a, b) => a.localeCompare(b));
+  }, [documents, matterId]);
+
+  const handleSubmit = async () => {
     if (!file) return;
     setSubmitting(true);
     try {
-      await uploadCaseDocument({
-        caseId: detail.case.id,
-        fileName: file.name,
-        mimeType: file.type,
-        documentType,
-        contentBase64: await fileToBase64(file),
-      });
-      setFile(null);
-      setDocumentType("other");
-      onChanged();
+      await uploadDocument(file, matterId, undefined, { folderName });
+      onOpenChange(false);
+      onSaved();
+      toast({ title: "Document Uploaded", description: "The document has been added to this matter." });
     } catch (error) {
       toast({ title: "Document Not Uploaded", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
     } finally {
@@ -1800,16 +3974,196 @@ function DocumentsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: ()
     }
   };
 
+  const handleFileDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsDraggingFile(false);
+    const droppedFile = event.dataTransfer.files?.[0];
+    if (droppedFile) setFile(droppedFile);
+  };
+
   return (
-    <TwoColumnTab title="Upload Document" icon={Upload} action={<Button disabled={submitting || !file} onClick={submit}>{submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}Upload</Button>}>
-      <div className="space-y-3">
-        <Input type="file" onChange={(event) => setFile(event.target.files?.[0] || null)} />
-        <Input placeholder="Document type" value={documentType} onChange={(event) => setDocumentType(event.target.value)} />
-      </div>
-      <ListCard title="Documents" items={detail.documents} emptyIcon={FileText} emptyText="No documents yet." render={(document) => (
-        <Row title={document.file_name} meta={`${document.document_type} · ${document.mime_type || "file"} · ${document.size_bytes || 0} bytes`} />
-      )} />
-    </TwoColumnTab>
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto p-6 shadow-none sm:max-w-md">
+        <SheetHeader className="mb-6 space-y-1">
+          <SheetTitle className="text-lg font-semibold">Upload Document</SheetTitle>
+        </SheetHeader>
+        <div className="space-y-5">
+          <div className="space-y-2">
+            <Label>Folder</Label>
+            <Input
+              value={folderName}
+              onChange={(event) => setFolderName(event.target.value)}
+              placeholder="Folder name"
+            />
+            {folderOptions.length > 0 ? (
+              <div className="flex flex-wrap gap-2 pt-1">
+                {folderOptions.slice(0, 6).map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground transition-colors hover:border-primary/40 hover:bg-primary/10 hover:text-primary"
+                    onClick={() => setFolderName(option)}
+                  >
+                    {option}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label>File</Label>
+            <div
+              role="button"
+              tabIndex={0}
+              className={cn(
+                "flex min-h-40 cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/30 bg-muted/10 px-4 py-6 text-center transition-colors",
+                isDraggingFile && "border-primary bg-primary/10",
+                file && "border-primary/50 bg-primary/5",
+              )}
+              onClick={() => fileInputRef.current?.click()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  fileInputRef.current?.click();
+                }
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setIsDraggingFile(true);
+              }}
+              onDragLeave={() => setIsDraggingFile(false)}
+              onDrop={handleFileDrop}
+            >
+              <Upload className="mb-3 h-8 w-8 text-muted-foreground" />
+              <div className="max-w-full truncate px-2 text-sm font-medium text-foreground">
+                {file ? file.name : "Drag and drop a file here"}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {file ? "Click to choose a different file" : "or click to choose a file"}
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="mt-4 rounded-full"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  fileInputRef.current?.click();
+                }}
+              >
+                <Upload className="mr-2 h-4 w-4" />
+                Choose File
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                onChange={(event) => setFile(event.target.files?.[0] || null)}
+              />
+            </div>
+          </div>
+        </div>
+        <SheetFooter className="shadow-none">
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!file || submitting}>
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
+            Upload
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+function ExternalDocumentDialog({
+  open,
+  onOpenChange,
+  matterId,
+  onSaved,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  matterId: string;
+  onSaved: () => void;
+}) {
+  const { toast } = useToast();
+  const [name, setName] = useState("");
+  const [fileUrl, setFileUrl] = useState("");
+  const [storageType, setStorageType] = useState<Exclude<DocumentStorageType, "internal">>("gdrive");
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!open) {
+      setName("");
+      setFileUrl("");
+      setStorageType("gdrive");
+    }
+  }, [open]);
+
+  const handleSubmit = async () => {
+    if (!name.trim() || !fileUrl.trim()) return;
+    setSubmitting(true);
+    try {
+      await createExternalDocument(
+        {
+          name: name.trim(),
+          file_url: fileUrl.trim(),
+          storage_type: storageType,
+        },
+        matterId,
+      );
+      onOpenChange(false);
+      onSaved();
+      toast({ title: "External Document Added", description: "The link has been attached to this matter." });
+    } catch (error) {
+      toast({ title: "Document Not Added", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add External Document</DialogTitle>
+          <DialogDescription>Attach a Google Drive or OneDrive URL to this matter.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Name</Label>
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Engagement letter" />
+          </div>
+          <div className="space-y-2">
+            <Label>URL</Label>
+            <Input value={fileUrl} onChange={(event) => setFileUrl(event.target.value)} placeholder="https://..." />
+          </div>
+          <div className="space-y-2">
+            <Label>Type</Label>
+            <Select value={storageType} onValueChange={(value) => setStorageType(value as Exclude<DocumentStorageType, "internal">)}>
+              <SelectTrigger>
+                <span>{getStorageTypeLabel(storageType)}</span>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="gdrive">Google Drive</SelectItem>
+                <SelectItem value="onedrive">OneDrive</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
+            Cancel
+          </Button>
+          <Button type="button" onClick={handleSubmit} disabled={!name.trim() || !fileUrl.trim() || submitting}>
+            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Link2 className="mr-2 h-4 w-4" />}
+            Add Link
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

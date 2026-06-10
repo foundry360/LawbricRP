@@ -120,6 +120,7 @@ export function SearchableSelect({
       ? createPortal(
           <div
             ref={menuRef}
+            data-searchable-select-content="true"
             className={cn(
               "fixed z-[200] rounded-md border border-border bg-background p-0 shadow-lg",
               contentClassName,

@@ -5,6 +5,7 @@ import {
   getRequestContext,
   handleError,
   jsonResponse,
+  requireContextPermission,
   readJsonBody,
 } from "../_shared/case-utils.ts";
 
@@ -33,9 +34,12 @@ serve(async (req) => {
     if (!body.contentBase64) return jsonResponse({ error: "File content is required" }, 400);
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
-    const bucket = "case-documents";
+    await requireContextPermission(context, "documents.upload", "You do not have permission to upload matter documents.");
+
+    const documentId = crypto.randomUUID();
+    const bucket = "documents";
     const fileName = sanitizeFileName(body.fileName.trim());
-    const storagePath = `${context.location.id}/${caseRow.id}/${crypto.randomUUID()}-${fileName}`;
+    const storagePath = `matter/${caseRow.id}/${documentId}/${fileName}`;
     const bytes = decodeBase64(body.contentBase64);
     const mimeType = body.mimeType || "application/octet-stream";
 
@@ -49,22 +53,31 @@ serve(async (req) => {
     const { data, error } = await context.supabase
       .from("documents")
       .insert({
+        id: documentId,
         location_id: context.location.id,
         case_id: caseRow.id,
+        matter_id: caseRow.id,
+        name: body.fileName.trim(),
         file_name: body.fileName.trim(),
         document_type: body.documentType || "other",
+        storage_type: "internal",
         storage_bucket: bucket,
         storage_path: storagePath,
+        file_path: storagePath,
         mime_type: mimeType,
         size_bytes: bytes.length,
         description: body.description || null,
         metadata: body.metadata || {},
         uploaded_by: context.user.id,
+        updated_by: context.user.id,
       })
-      .select("*")
+      .select("*, case:cases!documents_case_id_fkey(id, case_number, case_name), uploaded_user:profiles!documents_uploaded_by_fkey(id, full_name, email), updated_user:profiles!documents_updated_by_fkey(id, full_name, email)")
       .single();
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      await context.supabase.storage.from(bucket).remove([storagePath]);
+      throw new Error(error.message);
+    }
     return jsonResponse({ ok: true, document: data }, 201);
   } catch (error) {
     return handleError(error);

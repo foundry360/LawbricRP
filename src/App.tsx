@@ -5,6 +5,8 @@ import { CaseDetailPage } from "@/pages/CaseDetailPage";
 import { CasesPage } from "@/pages/CasesPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
 import { ContactDetailPage } from "@/pages/ContactDetailPage";
+import { DocumentViewerPage } from "@/pages/DocumentViewerPage";
+import { DocumentsPage } from "@/pages/DocumentsPage";
 import { Layout } from "@/components/Layout";
 import { LeadsPage } from "@/pages/LeadsPage";
 import { RequireAuth } from "@/components/RequireAuth";
@@ -166,7 +168,22 @@ export function App() {
           <Route path="/tools/data" element={<PlaceholderPage title="Data" />} />
           <Route path="/tools/pipelines" element={<PipelinesPage />} />
           <Route path="/billing" element={<PlaceholderPage title="Billing" />} />
-          <Route path="/documents" element={<PlaceholderPage title="Documents" />} />
+          <Route
+            path="/documents"
+            element={(
+              <PermissionGate permissions={MATTER_VIEW_PERMISSIONS}>
+                <DocumentsPage />
+              </PermissionGate>
+            )}
+          />
+          <Route
+            path="/documents/:documentId"
+            element={(
+              <PermissionGate permissions={MATTER_VIEW_PERMISSIONS}>
+                <DocumentViewerPage />
+              </PermissionGate>
+            )}
+          />
           <Route path="/payments" element={<PlaceholderPage title="Payments" />} />
         </Route>
         <Route path="*" element={<NotFound />} />

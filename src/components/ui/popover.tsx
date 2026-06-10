@@ -47,6 +47,7 @@ export function Popover({
 
     const handlePointerDown = (event: globalThis.MouseEvent) => {
       if (containerRef.current?.contains(event.target as Node)) return;
+      if ((event.target as Element | null)?.closest?.("[data-searchable-select-content='true']")) return;
       setOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
