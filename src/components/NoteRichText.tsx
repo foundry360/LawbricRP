@@ -239,7 +239,7 @@ export function NoteRichTextBody({ value, className }: { value?: string | null; 
   return (
     <div
       className={cn(
-        "note-rich-text-body space-y-2 whitespace-pre-wrap [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_em]:italic [&_i]:italic [&_img]:max-w-full [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
+        "note-rich-text-body space-y-1 whitespace-pre-wrap leading-snug [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_div]:my-0 [&_em]:italic [&_i]:italic [&_img]:max-w-full [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
         className,
       )}
       dangerouslySetInnerHTML={{ __html: html }}
@@ -342,7 +342,7 @@ export function NoteRichTextEditor({ value, onChange, readOnly, placeholder = "A
         aria-label={placeholder}
         data-placeholder={placeholder}
         className={cn(
-          "note-rich-text-editor min-h-48 w-full rounded-md border border-border bg-background px-3 py-2 text-sm outline-none transition-colors empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)] focus:ring-2 focus:ring-primary/20 [&_a]:font-medium [&_a]:text-[#2384CA] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_em]:italic [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
+          "note-rich-text-editor min-h-48 w-full rounded-md border border-border bg-background px-3 py-2 text-sm leading-snug outline-none transition-colors empty:before:text-muted-foreground empty:before:content-[attr(data-placeholder)] focus:ring-2 focus:ring-primary/20 [&_a]:font-medium [&_a]:text-[#2384CA] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_div]:my-0 [&_em]:italic [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
           readOnly && "cursor-default opacity-80",
         )}
         onInput={syncEditorValue}
