@@ -2,6 +2,8 @@
 
 This Supabase project is configured for a multi-tenant SaaS running inside GHL AI Studio while using Supabase Auth and Row Level Security for data access control.
 
+Deployment reminder: frontend production deploys should track the GitHub `main` branch.
+
 ## Files
 
 - `config.toml` enables local Supabase Auth with email/password and email OTP magic-link support.
