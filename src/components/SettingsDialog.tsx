@@ -1,22 +1,32 @@
 import { useEffect, useState } from "react";
 import { AccountActivationSettings } from "@/components/settings/AccountActivationSettings";
+import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
 import { TagSettings } from "@/components/settings/TagSettings";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatFullName, formatPersonName } from "@/lib/names";
 import { supabase } from "@/lib/supabase";
-import { Key, Loader2, Tags, Upload, User } from "lucide-react";
+import { ImageIcon, Key, Loader2, PenLine, Tags, Upload, User } from "lucide-react";
 
 type SettingsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
 };
+
+const SIGNATURE_TEXT_SIZE_OPTIONS = [
+  { value: "small", label: "Small", className: "text-xs" },
+  { value: "normal", label: "Normal", className: "text-sm" },
+  { value: "large", label: "Large", className: "text-base" },
+  { value: "x-large", label: "Extra Large", className: "text-lg" },
+];
 
 function isProfileAvatarMirrorError(error: unknown) {
   if (!error || typeof error !== "object" || !("message" in error) || typeof error.message !== "string") return false;
@@ -34,6 +44,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [avatarUrl, setAvatarUrl] = useState("");
+  const [signatureEnabled, setSignatureEnabled] = useState(false);
+  const [signatureHtml, setSignatureHtml] = useState("");
+  const [signatureLogoUrl, setSignatureLogoUrl] = useState("");
+  const [signatureTextSize, setSignatureTextSize] = useState("normal");
   const [isDragging, setIsDragging] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [activeTab, setActiveTab] = useState("profile");
@@ -52,6 +66,16 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           setFirstName(user.user_metadata?.first_name || "");
           setLastName(user.user_metadata?.last_name || "");
           setAvatarUrl(user.user_metadata?.avatar_url || "");
+          const { data: profile } = await supabase
+            .from("profiles")
+            .select("avatar_url, email_signature_enabled, email_signature_html, email_signature_logo_url, email_signature_text_size")
+            .eq("id", user.id)
+            .maybeSingle();
+          setAvatarUrl(profile?.avatar_url || user.user_metadata?.avatar_url || "");
+          setSignatureEnabled(Boolean(profile?.email_signature_enabled));
+          setSignatureHtml(profile?.email_signature_html || "");
+          setSignatureLogoUrl(profile?.email_signature_logo_url || "");
+          setSignatureTextSize(profile?.email_signature_text_size || "normal");
         }
       };
 
@@ -166,11 +190,70 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     }
   };
 
+  const handleSignatureLogoFile = async (file: File) => {
+    if (!userId) return;
+    if (!file.type.startsWith("image/")) {
+      toast({ title: "Invalid file", description: "Please upload an image file.", variant: "destructive" });
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      const fileExt = file.name.split(".").pop() || "png";
+      const fileName = `${userId}/${crypto.randomUUID()}.${fileExt}`;
+      const { error: uploadError } = await supabase.storage.from("email-signatures").upload(fileName, file, {
+        upsert: true,
+      });
+      if (uploadError) throw uploadError;
+      const {
+        data: { publicUrl },
+      } = supabase.storage.from("email-signatures").getPublicUrl(fileName);
+      setSignatureLogoUrl(publicUrl);
+      toast({ title: "Logo Uploaded", description: "The signature logo has been uploaded." });
+    } catch (error) {
+      toast({
+        title: "Logo Not Uploaded",
+        description: getUserFriendlyErrorMessage(error, "The logo could not be uploaded. Please try again."),
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSaveSignature = async () => {
+    if (!userId) return;
+    setIsLoading(true);
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        email_signature_enabled: signatureEnabled,
+        email_signature_html: signatureHtml || null,
+        email_signature_logo_url: signatureLogoUrl || null,
+        email_signature_text_size: signatureTextSize,
+      })
+      .eq("id", userId);
+    setIsLoading(false);
+
+    if (error) {
+      toast({
+        title: "Signature Not Saved",
+        description: getUserFriendlyErrorMessage(error, "Could not save your email signature."),
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({ title: "Signature Saved", description: "Your email signature has been saved." });
+  };
+
   const userInitials = getAvatarInitials({
     firstName,
     lastName,
     email,
   });
+  const signaturePreviewTextSizeClass =
+    SIGNATURE_TEXT_SIZE_OPTIONS.find((option) => option.value === signatureTextSize)?.className || "text-sm";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -205,6 +288,20 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                   <span>Account Activation</span>
                 </div>
                 {activeTab === "integration" && <div className="h-2 w-2 rounded-full bg-green-500" />}
+              </Button>
+
+              <Button
+                variant="ghost"
+                className={`min-w-0 justify-between whitespace-nowrap hover:bg-transparent focus:ring-0 ${
+                  activeTab === "signature" ? "font-bold text-foreground" : "text-muted-foreground"
+                }`}
+                onClick={() => setActiveTab("signature")}
+              >
+                <div className="flex min-w-0 items-center">
+                  <PenLine className="mr-2 h-4 w-4 shrink-0" />
+                  <span>Email Signature</span>
+                </div>
+                {activeTab === "signature" && <div className="h-2 w-2 rounded-full bg-green-500" />}
               </Button>
 
               <Button
@@ -308,6 +405,105 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
                 </div>
                 <div className="max-w-2xl">
                   <AccountActivationSettings />
+                </div>
+              </div>
+            )}
+
+            {activeTab === "signature" && (
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-base font-medium">Email Signature</h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Add a signature that is automatically appended to emails sent from matters.
+                  </p>
+                </div>
+                <div className="max-w-2xl space-y-5">
+                  <div className="flex items-center gap-3 rounded-lg border p-3">
+                    <Checkbox checked={signatureEnabled} onCheckedChange={setSignatureEnabled} />
+                    <span>
+                      <span className="block text-sm font-medium">Enable automatic email signature</span>
+                      <span className="block text-xs text-muted-foreground">Append this signature to outbound matter emails.</span>
+                    </span>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Signature Logo</Label>
+                    <div className="flex items-center gap-4">
+                      <div className="flex h-16 w-28 items-center justify-center rounded-md border bg-muted/20">
+                        {signatureLogoUrl ? (
+                          <img src={signatureLogoUrl} alt="Email signature logo" className="max-h-14 max-w-24 object-contain" />
+                        ) : (
+                          <ImageIcon className="h-6 w-6 text-muted-foreground" />
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => document.getElementById("signature-logo-upload")?.click()}
+                          disabled={isLoading}
+                        >
+                          <Upload className="mr-2 h-4 w-4" />
+                          Upload Logo
+                        </Button>
+                        {signatureLogoUrl ? (
+                          <Button type="button" variant="ghost" onClick={() => setSignatureLogoUrl("")}>
+                            Remove Logo
+                          </Button>
+                        ) : null}
+                        <input
+                          id="signature-logo-upload"
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(event) => event.target.files?.[0] && handleSignatureLogoFile(event.target.files[0])}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-xs text-muted-foreground">Use a small PNG/JPG/SVG logo. Public HTTPS URLs render best in email clients.</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Signature Text</Label>
+                    <div className="max-w-xs space-y-2">
+                      <Label className="text-xs text-muted-foreground">Text Size</Label>
+                      <Select value={signatureTextSize} onValueChange={setSignatureTextSize}>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {SIGNATURE_TEXT_SIZE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <NoteRichTextEditor
+                      value={signatureHtml}
+                      onChange={setSignatureHtml}
+                      placeholder="Add your name, title, phone number, and disclaimer..."
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Preview</Label>
+                    <div className="rounded-lg border bg-muted/10 p-4">
+                      {signatureLogoUrl ? (
+                        <img src={signatureLogoUrl} alt="Email signature logo preview" className="mb-3 max-h-16 max-w-40 object-contain" />
+                      ) : null}
+                      {signatureHtml ? (
+                        <NoteRichTextBody value={signatureHtml} className={`${signaturePreviewTextSizeClass} text-foreground`} />
+                      ) : (
+                        <div className="text-sm text-muted-foreground">No signature text yet.</div>
+                      )}
+                    </div>
+                  </div>
+
+                  <Button onClick={handleSaveSignature} disabled={isLoading}>
+                    {isLoading ? "Saving..." : "Save Signature"}
+                  </Button>
                 </div>
               </div>
             )}

@@ -98,7 +98,7 @@ GHL_API_VERSION="2021-07-28"
 PASSWORD_RESET_REDIRECT_TO="https://lawbric-rp.vercel.app/reset-password"
 ```
 
-The saved subaccount Private Integration API Key should include the scopes needed for the GHL data your app reads or writes, such as contacts, calendars, opportunities, and conversations.
+The saved subaccount Private Integration API Key should include the scopes needed for the GHL data your app reads or writes, such as contacts, calendars, opportunities, and conversations. Sending email through the matter Communications tab requires `conversations/message.write` on the subaccount token.
 
 The frontend should call the function with the logged-in admin's Supabase access token.
 

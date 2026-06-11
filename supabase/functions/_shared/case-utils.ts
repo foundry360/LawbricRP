@@ -387,7 +387,7 @@ export function buildTimeline(payload: {
     ...(payload.communications ?? []).map((communication) => ({
       id: communication.id,
       type: "communication",
-      title: communication.title || "GHL communication",
+      title: communication.title || communication.subject || "Communication",
       body: communication.body || communication.message,
       occurred_at: communication.occurred_at || communication.created_at,
       raw: communication,

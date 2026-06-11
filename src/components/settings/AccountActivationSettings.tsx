@@ -253,6 +253,13 @@ export function AccountActivationSettings() {
               : "Enter Sub-Account API Key"
           }
         />
+        <p className="text-xs text-muted-foreground">
+          Email sending requires a sub-account Private Integration token with the
+          {" "}
+          <span className="font-medium text-foreground">conversations/message.write</span>
+          {" "}
+          scope. Gmail must also be connected inside GHL for the location.
+        </p>
       </div>
 
       <div className="space-y-2">

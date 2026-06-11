@@ -117,6 +117,12 @@ function getEndpointRecordId(endpoint: string, prefix: "contacts" | "businesses"
   return match?.[1] ? decodeURIComponent(match[1]) : "";
 }
 
+function getConversationMessageContactId(payload: unknown) {
+  if (!payload || typeof payload !== "object") return "";
+  const body = payload as Record<string, unknown>;
+  return typeof body.contactId === "string" ? body.contactId : "";
+}
+
 async function userHasPermission(
   supabase: ReturnType<typeof createClient>,
   userId: string,
@@ -407,6 +413,8 @@ serve(async (req) => {
   const isSingleContactRequest = method === "GET" && Boolean(contactId);
   const isContactWriteRequest = ["PUT", "PATCH", "DELETE"].includes(method) && Boolean(contactId);
   const isSingleBusinessRequest = method === "GET" && Boolean(businessId);
+  const isConversationMessageSendRequest = method === "POST" && /^\/conversations\/messages$/i.test(normalizedEndpoint);
+  const conversationMessageContactId = isConversationMessageSendRequest ? getConversationMessageContactId(body.payload.body) : "";
 
   if (isContactListRequest && !await userHasAnyPermission(supabase, user.id, [
     "contacts.view_all",
@@ -418,6 +426,15 @@ serve(async (req) => {
 
   if ((isSingleContactRequest || isContactWriteRequest) && !await userCanAccessContact(supabase, user.id, body.locationId, contactId)) {
     return jsonResponse({ error: "You do not have permission to access this contact." }, 403);
+  }
+
+  if (isConversationMessageSendRequest) {
+    if (!conversationMessageContactId) {
+      return jsonResponse({ error: "Conversation message contactId is required." }, 400);
+    }
+    if (!await userCanAccessContact(supabase, user.id, body.locationId, conversationMessageContactId)) {
+      return jsonResponse({ error: "You do not have permission to message this contact." }, 403);
+    }
   }
 
   if (isBusinessListRequest && !await userHasAnyPermission(supabase, user.id, [

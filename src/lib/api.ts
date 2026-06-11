@@ -681,6 +681,30 @@ export async function removeContactTags(contactId: string, tags: string[]) {
   });
 }
 
+export type SendGhlEmailPayload = {
+  contactId: string;
+  subject: string;
+  html: string;
+  message?: string;
+  emailFrom?: string;
+  emailTo?: string;
+  attachments?: string[];
+};
+
+export async function sendGhlEmail(payload: SendGhlEmailPayload) {
+  return apiClient<{ messageId?: string; message?: { id?: string }; conversationId?: string; data?: unknown }>(
+    "/conversations/messages",
+    {
+      method: "POST",
+      ghlVersion: "2021-04-15",
+      body: JSON.stringify({
+        type: "Email",
+        ...payload,
+      }),
+    },
+  );
+}
+
 export async function getCustomFields(locationId: string, options: { forceRefresh?: boolean } = {}) {
   return getCachedGhlReferenceData(
     "contact-custom-fields",

@@ -19,6 +19,15 @@ export function getUserFriendlyErrorMessage(error: unknown, fallback = "Somethin
   }
 
   if (
+    normalizedMessage.includes("not authorized for this scope") ||
+    normalizedMessage.includes("not authorised for this scope") ||
+    normalizedMessage.includes("insufficient scope") ||
+    normalizedMessage.includes("unauthorized for this scope")
+  ) {
+    return "The saved GHL Private Integration token is missing the required scope. For email sending, update the sub-account Private Integration key to include conversations/message.write, then save it again in Account Activation.";
+  }
+
+  if (
     normalizedMessage.includes("jwt expired") ||
     normalizedMessage.includes("invalid bearer token") ||
     normalizedMessage.includes("not authenticated") ||

@@ -21,7 +21,7 @@ serve(async (req) => {
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
     const canViewDocuments = await userHasPermission(context, "documents.view");
-    const [parties, assignments, tasks, events, documents, financials, notes, contactAssignment] = await Promise.all([
+    const [parties, assignments, tasks, events, documents, financials, notes, communications, contactAssignment] = await Promise.all([
       context.supabase.from("case_parties").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: true }),
       context.supabase
         .from("case_assignments")
@@ -39,6 +39,11 @@ serve(async (req) => {
       context.supabase.from("financials").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
       context.supabase.from("notes").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
       context.supabase
+        .from("case_communications")
+        .select("*, created_user:profiles!case_communications_created_by_fkey(id, full_name, email, avatar_url)")
+        .eq("case_id", caseRow.id)
+        .order("occurred_at", { ascending: false }),
+      context.supabase
         .from("contact_assignments")
         .select("*, assigned_user:profiles!contact_assignments_assigned_user_id_fkey(id, full_name, email)")
         .eq("location_id", context.location.id)
@@ -46,7 +51,7 @@ serve(async (req) => {
         .maybeSingle(),
     ]);
 
-    for (const result of [parties, assignments, tasks, events, documents, financials, notes, contactAssignment]) {
+    for (const result of [parties, assignments, tasks, events, documents, financials, notes, communications, contactAssignment]) {
       if (result.error) throw new Error(result.error.message);
     }
 
@@ -66,11 +71,13 @@ serve(async (req) => {
       documents: documents.data ?? [],
       financials: financials.data ?? [],
       notes: notes.data ?? [],
+      communications: communications.data ?? [],
       contactAssignment: contactAssignment.data ?? null,
       timeline: buildTimeline({
         notes: notes.data ?? [],
         tasks: visibleTasks,
         events: events.data ?? [],
+        communications: communications.data ?? [],
       }),
     });
   } catch (error) {

@@ -34,6 +34,7 @@ export type CaseDetail = {
   documents: any[];
   financials: any[];
   notes: any[];
+  communications: any[];
   contactAssignment?: any | null;
   timeline: any[];
 };
@@ -158,6 +159,12 @@ export async function createCaseNote(payload: Record<string, unknown>) {
   await requirePermission("matters.edit", "You do not have permission to add matter notes.");
   const data = await invokeCaseFunction<{ note: any }>("create_note", payload);
   return data.note;
+}
+
+export async function createCaseCommunication(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to save matter communications.");
+  const data = await invokeCaseFunction<{ communication: any }>("create_communication", payload);
+  return data.communication;
 }
 
 export async function updateCaseNote(payload: Record<string, unknown>) {

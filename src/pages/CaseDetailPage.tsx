@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -20,12 +20,15 @@ import {
   Link2,
   Loader2,
   Mail,
+  Maximize2,
   MoreVertical,
   NotebookPen,
+  Paperclip,
   Pencil,
   Phone,
   Plus,
   Search,
+  Send,
   Trash2,
   Upload,
   UserRound,
@@ -59,9 +62,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
+import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, sendGhlEmail, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
+  createCaseCommunication,
   createCaseEvent,
   createCaseNote,
   createCaseTask,
@@ -86,6 +90,7 @@ import {
   renameDocument,
   renameDocumentFolder,
   uploadDocument,
+  viewDocument,
   type DocumentCapabilities,
   type DocumentRecord,
   type DocumentStorageType,
@@ -95,6 +100,7 @@ import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
+import { supabase } from "@/lib/supabase";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
 
@@ -103,6 +109,7 @@ const CASE_DETAIL_TAB_TRIGGER_CLASS =
 const CASE_TYPE_OPTIONS = PRACTICE_AREAS;
 const CASE_STATUS_OPTIONS = ["open", "pending", "closed", "archived"];
 const MATTER_LIFECYCLE_TIMELINE_COLORS = ["bg-slate-600", "bg-sky-800", "bg-sky-500", "bg-sky-300", "bg-cyan-500", "bg-blue-700"];
+const EMAIL_SIGNATURE_MESSAGE_SPACE_HTML = "<p><br></p><p><br></p>";
 const NO_PIPELINE_VALUE = "none";
 const NO_STAGE_VALUE = "none";
 const UNASSIGNED_USER_VALUE = "__unassigned__";
@@ -147,6 +154,22 @@ const MATTER_CONTACT_ROLE_OPTIONS = [
   "Court Clerk",
   "Other",
 ];
+function escapeHtmlAttribute(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+function getEmailSignatureStyle(textSize: string) {
+  switch (textSize) {
+    case "small":
+      return "font-size: 12px; line-height: 1.45;";
+    case "large":
+      return "font-size: 16px; line-height: 1.55;";
+    case "x-large":
+      return "font-size: 18px; line-height: 1.6;";
+    default:
+      return "font-size: 14px; line-height: 1.5;";
+  }
+}
 type MatterTaskSortColumn = "title" | "assigned_to" | "priority" | "status" | "due_at";
 type MatterDocumentDisplayMode = "documents" | "folders";
 type MatterDocumentSortColumn = "name" | "storage_type" | "folder" | "created_at";
@@ -377,6 +400,10 @@ function formatContactAddress(rawContact: any) {
     .join("\n") || "Not set";
 }
 
+function getRawGhlContact(response: any) {
+  return response?.contact || response?.data?.contact || response?.data || response || null;
+}
+
 function normalizeMatterContactMatch(value?: string | null) {
   return String(value || "").trim().toLowerCase();
 }
@@ -396,6 +423,26 @@ function getMatterContactEmail(contact: any) {
 
 function getMatterContactPhone(contact: any) {
   return contact?.phone || contact?.primaryPhone || "";
+}
+
+function mergeLivePrimaryContact(caseRecord: CaseRecord, contact: any): CaseRecord {
+  if (!contact) return caseRecord;
+  return {
+    ...caseRecord,
+    primary_contact_name: getMatterContactName(contact) || null,
+    primary_contact_email: getMatterContactEmail(contact) || null,
+    primary_contact_phone: getMatterContactPhone(contact) || null,
+  };
+}
+
+function mergeLiveMatterParty(party: any, contact: any) {
+  if (!contact) return party;
+  return {
+    ...party,
+    name: getMatterContactName(contact) || party.name || null,
+    email: getMatterContactEmail(contact) || null,
+    phone: getMatterContactPhone(contact) || null,
+  };
 }
 
 function getMatterContactOptionLabel(contact?: any) {
@@ -539,6 +586,7 @@ export function CaseDetailPage() {
   const [selectedNote, setSelectedNote] = useState<any | null>(null);
   const [noteSheetMode, setNoteSheetMode] = useState<"view" | "edit" | "create">("create");
   const [activeDetailTab, setActiveDetailTab] = useState("dashboard");
+  const [communicationComposeRequested, setCommunicationComposeRequested] = useState(false);
   const [contactAddress, setContactAddress] = useState("Not set");
   const [users, setUsers] = useState<AssignableUser[]>([]);
 
@@ -547,17 +595,40 @@ export function CaseDetailPage() {
     setLoading(true);
     try {
       const caseDetail = await getCase(caseId);
-      setDetail(caseDetail);
       setContactAddress("Not set");
+      const contactIds = [
+        caseDetail.case.ghl_contact_id,
+        ...caseDetail.parties.map((party) => party.ghl_contact_id),
+      ]
+        .filter(Boolean)
+        .map((value) => String(value));
+      const uniqueContactIds = Array.from(new Set(contactIds));
+      const liveContactEntries = await Promise.all(
+        uniqueContactIds.map(async (contactId) => {
+          try {
+            const data = await apiClient(`/contacts/${encodeURIComponent(contactId)}`);
+            return [contactId, getRawGhlContact(data)] as const;
+          } catch (error) {
+            console.error("Failed to load live contact details", error);
+            return [contactId, null] as const;
+          }
+        }),
+      );
+      const liveContactsById = new Map(liveContactEntries);
+      const primaryContact = caseDetail.case.ghl_contact_id
+        ? liveContactsById.get(caseDetail.case.ghl_contact_id)
+        : null;
 
-      if (caseDetail.case.ghl_contact_id) {
-        try {
-          const data: any = await apiClient(`/contacts/${encodeURIComponent(caseDetail.case.ghl_contact_id)}`);
-          const rawContact = data.contact || data.data?.contact || data.data || data;
-          setContactAddress(formatContactAddress(rawContact));
-        } catch (error) {
-          console.error("Failed to load contact address", error);
-        }
+      setDetail({
+        ...caseDetail,
+        case: mergeLivePrimaryContact(caseDetail.case, primaryContact),
+        parties: caseDetail.parties.map((party) =>
+          mergeLiveMatterParty(party, party.ghl_contact_id ? liveContactsById.get(String(party.ghl_contact_id)) : null),
+        ),
+      });
+
+      if (primaryContact) {
+        setContactAddress(formatContactAddress(primaryContact));
       }
     } catch (error) {
       toast({
@@ -578,6 +649,11 @@ export function CaseDetailPage() {
     const requestedTab = (location.state as { activeDetailTab?: string } | null)?.activeDetailTab;
     if (requestedTab) setActiveDetailTab(requestedTab);
   }, [location.state]);
+
+  const openTaskSheet = (task: any) => {
+    setSelectedTask(task);
+    setIsCreateTaskOpen(true);
+  };
 
   useEffect(() => {
     getAssignableUsers()
@@ -675,7 +751,6 @@ export function CaseDetailPage() {
     );
   const sourceAttorneyLinkUserId = sourceAttorneyUserId || (sourceAttorneyUser ? getUserId(sourceAttorneyUser) : "");
   const sourceAttorneyName = sourceAttorneyUser ? getUserName(sourceAttorneyUser) : sourceAttorneyMetadataName || "Unassigned";
-  const contactEmail = detail.case.primary_contact_email || "";
   const contactPhone = detail.case.primary_contact_phone || "";
   const clientName = formatPersonName(detail.case.primary_contact_name) || detail.case.ghl_contact_id || "Unknown contact";
 
@@ -753,11 +828,11 @@ export function CaseDetailPage() {
             <Button
               size="icon"
               className="h-10 w-10 rounded-full p-0"
-              disabled={!contactEmail}
               title="Email"
               aria-label="Email"
               onClick={() => {
-                if (contactEmail) window.location.href = `mailto:${contactEmail}`;
+                setActiveDetailTab("communications");
+                setCommunicationComposeRequested(true);
               }}
             >
               <Mail className="h-4 w-4" />
@@ -873,7 +948,7 @@ export function CaseDetailPage() {
         <div className="h-full overflow-hidden lg:px-6">
           <Tabs value={activeDetailTab} onValueChange={setActiveDetailTab} className="flex h-full min-h-0 w-full flex-col">
             <div className="shrink-0 bg-background pb-4 pt-6">
-              <TabsList className="grid h-auto w-full grid-cols-4 rounded-none bg-transparent p-0 xl:grid-cols-8">
+              <TabsList className="grid h-auto w-full grid-cols-3 rounded-none bg-transparent p-0 md:grid-cols-5 xl:grid-cols-9">
                 <TabsTrigger value="dashboard" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
                   <Briefcase className="mr-2 h-4 w-4" />
                   Dashboard
@@ -889,6 +964,10 @@ export function CaseDetailPage() {
                 <TabsTrigger value="notes" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
                   <NotebookPen className="mr-2 h-4 w-4" />
                   Notes
+                </TabsTrigger>
+                <TabsTrigger value="communications" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
+                  <Mail className="mr-2 h-4 w-4 shrink-0" />
+                  Communications
                 </TabsTrigger>
                 <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
                   <Clock className="mr-2 h-4 w-4" />
@@ -911,16 +990,17 @@ export function CaseDetailPage() {
 
             <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
               <TabsContent value="dashboard" className="m-0">
-                <MatterDashboardTab detail={detail} onTabChange={setActiveDetailTab} />
+                <MatterDashboardTab
+                  detail={detail}
+                  onTabChange={setActiveDetailTab}
+                  onTaskClick={openTaskSheet}
+                />
               </TabsContent>
               <TabsContent value="tasks" className="m-0">
                 <TasksTab
                   detail={detail}
                   users={users}
-                  onTaskClick={(task) => {
-                    setSelectedTask(task);
-                    setIsCreateTaskOpen(true);
-                  }}
+                  onTaskClick={openTaskSheet}
                   onTaskCreate={() => {
                     setSelectedTask(null);
                     setIsCreateTaskOpen(true);
@@ -951,6 +1031,13 @@ export function CaseDetailPage() {
                     setIsNoteSheetOpen(true);
                   }}
                   onDeleteNote={handleDeleteMatterNote}
+                />
+              </TabsContent>
+              <TabsContent value="communications" className="m-0">
+                <CommunicationsTab
+                  detail={detail}
+                  composeRequested={communicationComposeRequested}
+                  onComposeHandled={() => setCommunicationComposeRequested(false)}
                 />
               </TabsContent>
               <TabsContent value="timeline" className="m-0">
@@ -1652,9 +1739,11 @@ function MatterNoteSheet({
 function MatterDashboardTab({
   detail,
   onTabChange,
+  onTaskClick,
 }: {
   detail: CaseDetail;
   onTabChange: (tab: string) => void;
+  onTaskClick: (task: any) => void;
 }) {
   const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
   const completedTasks = detail.tasks.filter(isCompletedTask);
@@ -1700,7 +1789,7 @@ function MatterDashboardTab({
   ];
 
   return (
-    <div className="space-y-4 pt-8">
+    <div className="space-y-4 pt-3">
       <div className="grid gap-3 md:grid-cols-3 xl:grid-cols-6">
         {stats.map(({ label, value, icon: Icon }) => (
           <Card key={label} className="min-h-[104px]">
@@ -1812,7 +1901,19 @@ function MatterDashboardTab({
                   </thead>
                   <tbody>
                     {dashboardTasks.map((task) => (
-                      <tr key={task.id} className="border-b last:border-0">
+                      <tr
+                        key={task.id}
+                        role="button"
+                        tabIndex={0}
+                        className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
+                        onClick={() => onTaskClick(task)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onTaskClick(task);
+                          }
+                        }}
+                      >
                         <td className="min-w-0 px-3 py-2">
                           <div className="flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]">
                             <span className="truncate">{task.title}</span>
@@ -2929,6 +3030,1214 @@ function NotesTab({
       <MatterNoteList notes={filteredNotes} users={users} onViewNote={onViewNote} onEditNote={onEditNote} onDeleteNote={onDeleteNote} />
       </CardContent>
     </Card>
+  );
+}
+
+function getMatterCommunicationRecipients(detail: CaseDetail) {
+  const recipients: Array<{ key: string; contactId: string; name: string; email: string; source: string }> = [];
+  const addRecipient = (contactId?: string | null, name?: string | null, email?: string | null, source = "Related Contact") => {
+    const normalizedEmail = String(email || "").trim();
+    const normalizedContactId = String(contactId || "").trim();
+    if (!normalizedEmail || !normalizedContactId) return;
+    const key = `${normalizedContactId}:${normalizedEmail.toLowerCase()}`;
+    if (recipients.some((recipient) => recipient.key === key)) return;
+    recipients.push({
+      key,
+      contactId: normalizedContactId,
+      name: formatPersonName(name) || normalizedEmail,
+      email: normalizedEmail,
+      source,
+    });
+  };
+
+  addRecipient(detail.case.ghl_contact_id, detail.case.primary_contact_name, detail.case.primary_contact_email, "Primary Contact");
+  detail.parties.forEach((party) => addRecipient(party.ghl_contact_id, party.name, party.email, String(party.relationship_type || party.role || party.type || "Related Contact")));
+
+  return recipients;
+}
+
+function formatAttachmentSize(size: number) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function CommunicationAttachmentList({
+  localAttachments,
+  matterDocuments,
+  onRemoveLocal,
+  onRemoveMatterDocument,
+}: {
+  localAttachments: File[];
+  matterDocuments: DocumentRecord[];
+  onRemoveLocal: (attachmentId: string) => void;
+  onRemoveMatterDocument: (documentId: string) => void;
+}) {
+  if (localAttachments.length === 0 && matterDocuments.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <div className="text-xs font-medium text-muted-foreground">Attachments</div>
+      <div className="space-y-2">
+        {localAttachments.map((attachment) => {
+          const attachmentId = `${attachment.name}-${attachment.lastModified}-${attachment.size}`;
+          return (
+            <div key={attachmentId} className="flex items-center justify-between gap-3 rounded-md border bg-muted/20 px-3 py-2">
+              <div className="flex min-w-0 items-center gap-2">
+                <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium text-foreground">{attachment.name}</div>
+                  <div className="text-xs text-muted-foreground">{formatAttachmentSize(attachment.size)}</div>
+                </div>
+              </div>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 shrink-0 rounded-full text-muted-foreground"
+                aria-label={`Remove ${attachment.name}`}
+                onClick={() => onRemoveLocal(attachmentId)}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          );
+        })}
+        {matterDocuments.map((document) => (
+          <div key={document.id} className="flex items-center justify-between gap-3 rounded-md border bg-blue-50/60 px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <FileText className="h-4 w-4 shrink-0 text-[#2384CA]" />
+              <div className="min-w-0">
+                <div className="truncate text-sm font-medium text-foreground">{getDocumentName(document)}</div>
+                <div className="text-xs text-muted-foreground">
+                  Matter document{document.size_bytes ? ` · ${formatAttachmentSize(Number(document.size_bytes))}` : ""}
+                </div>
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 shrink-0 rounded-full text-muted-foreground"
+              aria-label={`Remove ${getDocumentName(document)}`}
+              onClick={() => onRemoveMatterDocument(document.id)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function getCommunicationRecipientsLabel(communication: any) {
+  const recipients = Array.isArray(communication?.recipients) ? communication.recipients : [];
+  const names = recipients
+    .map((recipient: any) => String(recipient?.name || recipient?.email || "").trim())
+    .filter(Boolean);
+  return names.join(", ") || communication?.participant_name || communication?.participant || "Unknown recipient";
+}
+
+function normalizeMatterCommunication(communication: any) {
+  const occurredAt = communication?.occurred_at || communication?.occurredAt || communication?.created_at || new Date().toISOString();
+  const sender = Array.isArray(communication?.created_user)
+    ? communication.created_user[0] || {}
+    : communication?.created_user || communication?.sender || {};
+  const metadata = communication?.metadata && typeof communication.metadata === "object" ? communication.metadata : {};
+  const senderEmail = String(sender?.email || communication?.senderEmail || metadata.senderEmail || metadata.fromEmail || "");
+  const senderName = String(
+    sender?.full_name ||
+      sender?.name ||
+      communication?.senderName ||
+      metadata.senderName ||
+      senderEmail ||
+      "Lawbric User",
+  );
+  return {
+    id: String(communication?.id || crypto.randomUUID()),
+    type: String(communication?.channel || communication?.type || "email"),
+    subject: String(communication?.subject || "No subject"),
+    preview: String(communication?.preview || ""),
+    body: typeof communication?.body === "string" ? communication.body : undefined,
+    message: typeof communication?.message === "string" ? communication.message : undefined,
+    html: typeof communication?.html === "string" ? communication.html : undefined,
+    recipients: Array.isArray(communication?.recipients) ? communication.recipients : [],
+    attachments: Array.isArray(communication?.attachments) ? communication.attachments : [],
+    participant: getCommunicationRecipientsLabel(communication),
+    senderName,
+    senderEmail,
+    senderAvatarUrl: String(sender?.avatar_url || sender?.avatarUrl || ""),
+    status: String(communication?.status || "sent"),
+    occurredAt,
+    date: formatDateTime(occurredAt),
+  };
+}
+
+function CommunicationsTab({
+  detail,
+  composeRequested = false,
+  onComposeHandled,
+}: {
+  detail: CaseDetail;
+  composeRequested?: boolean;
+  onComposeHandled?: () => void;
+}) {
+  const { toast } = useToast();
+  const recipients = useMemo(() => getMatterCommunicationRecipients(detail), [detail]);
+  const attachmentInputRef = useRef<HTMLInputElement | null>(null);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isComposerOpen, setIsComposerOpen] = useState(false);
+  const [isComposerExpanded, setIsComposerExpanded] = useState(false);
+  const [isDocumentPickerOpen, setIsDocumentPickerOpen] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [isRecipientInputFocused, setIsRecipientInputFocused] = useState(false);
+  const [selectedCommunicationId, setSelectedCommunicationId] = useState<string>("");
+  const [emailSignature, setEmailSignature] = useState({
+    enabled: false,
+    html: "",
+    logoUrl: "",
+    textSize: "normal",
+  });
+  const [draft, setDraft] = useState({
+    toRecipientKeys: [] as string[],
+    customRecipientEmails: [] as string[],
+    fromEmail: "",
+    subject: "",
+    body: "",
+  });
+  const [customRecipientInput, setCustomRecipientInput] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
+  const [attachedDocumentIds, setAttachedDocumentIds] = useState<string[]>([]);
+  const selectedMatterRecipients = recipients.filter((recipient) => draft.toRecipientKeys.includes(recipient.key));
+  const knownRecipientOptions = useMemo(() => {
+    const optionMap = new Map<string, {
+      key: string;
+      contactId: string;
+      name: string;
+      email: string;
+      source: string;
+    }>();
+    recipients.forEach((recipient) => {
+      optionMap.set(recipient.email.trim().toLowerCase(), recipient);
+    });
+    (detail.communications || []).forEach((communication: any) => {
+      const communicationRecipients = Array.isArray(communication?.recipients) ? communication.recipients : [];
+      communicationRecipients.forEach((recipient: any) => {
+        const email = String(recipient?.email || "").trim();
+        if (!email) return;
+        const normalizedEmail = email.toLowerCase();
+        if (optionMap.has(normalizedEmail)) return;
+        optionMap.set(normalizedEmail, {
+          key: `history:${normalizedEmail}`,
+          contactId: String(recipient?.contactId || recipient?.contact_id || ""),
+          name: String(recipient?.name || "").trim(),
+          email,
+          source: "Previous Email",
+        });
+      });
+    });
+    return Array.from(optionMap.values()).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
+  }, [detail.communications, recipients]);
+  const customRecipients = draft.customRecipientEmails.map((email) => ({
+    key: `custom:${email}`,
+    contactId: knownRecipientOptions.find((recipient) => recipient.email.trim().toLowerCase() === email.trim().toLowerCase())?.contactId || "",
+    name: knownRecipientOptions.find((recipient) => recipient.email.trim().toLowerCase() === email.trim().toLowerCase())?.name || email,
+    email,
+    source: knownRecipientOptions.find((recipient) => recipient.email.trim().toLowerCase() === email.trim().toLowerCase())?.source || "Custom Email",
+    isCustom: true,
+  }));
+  const selectedRecipients = [...selectedMatterRecipients, ...customRecipients];
+  const recipientSuggestions = useMemo(() => {
+    const normalizedInput = customRecipientInput.trim().toLowerCase();
+    const selectedEmails = new Set(selectedRecipients.map((recipient) => recipient.email.trim().toLowerCase()));
+    return knownRecipientOptions
+      .filter((recipient) => !selectedEmails.has(recipient.email.trim().toLowerCase()))
+      .filter((recipient) => {
+        if (!normalizedInput) return true;
+        return `${recipient.name} ${recipient.email} ${recipient.source}`.toLowerCase().includes(normalizedInput);
+      })
+      .slice(0, 6);
+  }, [customRecipientInput, knownRecipientOptions, selectedRecipients]);
+  const matterDocuments = (detail.documents || []) as DocumentRecord[];
+  const attachedMatterDocuments = matterDocuments.filter((document) => attachedDocumentIds.includes(document.id));
+  const [sentCommunications, setSentCommunications] = useState<Array<{
+    id: string;
+    type: string;
+    subject: string;
+    preview: string;
+    body?: string;
+    message?: string;
+    html?: string;
+    recipients?: any[];
+    attachments?: any[];
+    participant: string;
+    senderName?: string;
+    senderEmail?: string;
+    senderAvatarUrl?: string;
+    status: string;
+    occurredAt: string;
+    date: string;
+  }>>(() => (detail.communications || []).map(normalizeMatterCommunication));
+  const communications: Array<{
+    id: string;
+    type: string;
+    subject: string;
+    preview: string;
+    body?: string;
+    message?: string;
+    html?: string;
+    recipients?: any[];
+    attachments?: any[];
+    participant: string;
+    senderName?: string;
+    senderEmail?: string;
+    senderAvatarUrl?: string;
+    status: string;
+    occurredAt: string;
+    date: string;
+  }> = sentCommunications;
+  const filteredCommunications = communications.filter((communication) => {
+    const normalizedSearch = searchTerm.trim().toLowerCase();
+    const matchesSearch = !normalizedSearch || [
+      communication.type,
+      communication.subject,
+      communication.preview,
+      communication.participant,
+      communication.status,
+      communication.date,
+    ].some((value) => value.toLowerCase().includes(normalizedSearch));
+    return matchesSearch;
+  });
+  const sortedCommunications = useMemo(() => {
+    return [...filteredCommunications].sort((a, b) => {
+      const firstValue = new Date(a.occurredAt || a.date || 0).getTime();
+      const secondValue = new Date(b.occurredAt || b.date || 0).getTime();
+      return secondValue - firstValue;
+    });
+  }, [filteredCommunications]);
+  const communicationGroups = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const yesterdayStart = new Date(todayStart);
+    yesterdayStart.setDate(todayStart.getDate() - 1);
+    const weekStart = new Date(todayStart);
+    weekStart.setDate(todayStart.getDate() - todayStart.getDay());
+    const lastWeekStart = new Date(weekStart);
+    lastWeekStart.setDate(weekStart.getDate() - 7);
+    const lastMonthStart = new Date(todayStart);
+    lastMonthStart.setDate(todayStart.getDate() - 30);
+    const groupDefinitions = [
+      { key: "today", label: "Today" },
+      { key: "yesterday", label: "Yesterday" },
+      { key: "this-week", label: "This Week" },
+      { key: "last-week", label: "Last Week" },
+      { key: "last-month", label: "Last Month" },
+      { key: "older", label: "Older" },
+    ];
+    const groups = new Map(groupDefinitions.map((group) => [group.key, [] as typeof sortedCommunications]));
+
+    sortedCommunications.forEach((communication) => {
+      const communicationDate = new Date(communication.occurredAt || communication.date || 0);
+      const time = communicationDate.getTime();
+      let key = "older";
+      if (!Number.isNaN(time)) {
+        if (communicationDate >= todayStart) key = "today";
+        else if (communicationDate >= yesterdayStart) key = "yesterday";
+        else if (communicationDate >= weekStart) key = "this-week";
+        else if (communicationDate >= lastWeekStart) key = "last-week";
+        else if (communicationDate >= lastMonthStart) key = "last-month";
+      }
+      groups.get(key)?.push(communication);
+    });
+
+    return groupDefinitions
+      .map((group) => ({ ...group, communications: groups.get(group.key) || [] }))
+      .filter((group) => group.communications.length > 0);
+  }, [sortedCommunications]);
+  const selectedCommunication = sortedCommunications.find((communication) => communication.id === selectedCommunicationId) || null;
+
+  useEffect(() => {
+    setDraft((current) => {
+      const availableKeys = new Set(recipients.map((recipient) => recipient.key));
+      const selectedKeys = current.toRecipientKeys.filter((key) => availableKeys.has(key));
+      return { ...current, toRecipientKeys: selectedKeys };
+    });
+  }, [recipients]);
+
+  useEffect(() => {
+    setSentCommunications((detail.communications || []).map(normalizeMatterCommunication));
+  }, [detail.communications]);
+
+  const loadEmailSignature = async (userId?: string) => {
+    const profileUserId = userId || (await supabase.auth.getUser()).data.user?.id;
+    if (!profileUserId) return;
+    const { data: profile } = await supabase
+      .from("profiles")
+      .select("email_signature_enabled, email_signature_html, email_signature_logo_url, email_signature_text_size")
+      .eq("id", profileUserId)
+      .maybeSingle();
+    setEmailSignature({
+      enabled: Boolean(profile?.email_signature_enabled),
+      html: profile?.email_signature_html || "",
+      logoUrl: profile?.email_signature_logo_url || "",
+      textSize: profile?.email_signature_text_size || "normal",
+    });
+  };
+
+  useEffect(() => {
+    if (!composeRequested) return;
+    setIsComposerExpanded(false);
+    setIsComposerOpen(true);
+    onComposeHandled?.();
+  }, [composeRequested, onComposeHandled]);
+
+  useEffect(() => {
+    if (sortedCommunications.length === 0) {
+      if (selectedCommunicationId) setSelectedCommunicationId("");
+      return;
+    }
+    if (!sortedCommunications.some((communication) => communication.id === selectedCommunicationId)) {
+      setSelectedCommunicationId(sortedCommunications[0].id);
+    }
+  }, [selectedCommunicationId, sortedCommunications]);
+
+  useEffect(() => {
+    supabase.auth.getUser().then(async ({ data }) => {
+      const email = data.user?.email || "";
+      if (email) setDraft((current) => current.fromEmail ? current : { ...current, fromEmail: email });
+      await loadEmailSignature(data.user?.id);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isComposerOpen && !isComposerExpanded) return;
+    loadEmailSignature();
+  }, [isComposerExpanded, isComposerOpen]);
+
+  const getAttachmentId = (attachment: File) => `${attachment.name}-${attachment.lastModified}-${attachment.size}`;
+  const handleAttachmentChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files || []);
+    if (files.length === 0) return;
+    setAttachments((current) => {
+      const existingIds = new Set(current.map(getAttachmentId));
+      const nextFiles = files.filter((file) => !existingIds.has(getAttachmentId(file)));
+      return [...current, ...nextFiles];
+    });
+    event.target.value = "";
+  };
+  const removeAttachment = (attachmentId: string) => {
+    setAttachments((current) => current.filter((attachment) => getAttachmentId(attachment) !== attachmentId));
+  };
+  const attachMatterDocument = (documentId: string) => {
+    setAttachedDocumentIds((current) => current.includes(documentId) ? current : [...current, documentId]);
+  };
+  const removeMatterDocumentAttachment = (documentId: string) => {
+    setAttachedDocumentIds((current) => current.filter((id) => id !== documentId));
+  };
+  const getCommunicationBodyText = (value = draft.body) =>
+    String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  const getCommunicationPreview = (communication: typeof communications[number]) =>
+    getCommunicationBodyText(communication.preview || communication.body || communication.message || communication.html || "");
+  const bodyContainsEmailSignature = (value: string) => /data-lawbric-email-signature=["']true["']/i.test(value);
+  const buildEmailSignatureHtml = () => {
+    if (!emailSignature.enabled) return "";
+    const signatureParts: string[] = [];
+    if (emailSignature.logoUrl) {
+      signatureParts.push(
+        `<p><img src="${escapeHtmlAttribute(emailSignature.logoUrl)}" alt="Email signature logo" width="160" /></p>`,
+      );
+    }
+    if (emailSignature.html) signatureParts.push(emailSignature.html);
+    if (signatureParts.length === 0) return "";
+    const textSize = escapeHtmlAttribute(emailSignature.textSize || "normal");
+    const style = escapeHtmlAttribute(getEmailSignatureStyle(emailSignature.textSize));
+    return `<div data-lawbric-email-signature="true" data-lawbric-email-signature-text-size="${textSize}" style="${style}">${signatureParts.join("")}</div>`;
+  };
+  const getEmailBodyWithSignature = () => {
+    const signatureHtml = buildEmailSignatureHtml();
+    if (!signatureHtml || bodyContainsEmailSignature(draft.body)) return draft.body;
+    return `${draft.body}${EMAIL_SIGNATURE_MESSAGE_SPACE_HTML}${signatureHtml}`;
+  };
+  useEffect(() => {
+    if (!isComposerOpen && !isComposerExpanded) return;
+    const signatureHtml = buildEmailSignatureHtml();
+    if (!signatureHtml) return;
+    setDraft((current) => {
+      if (bodyContainsEmailSignature(current.body)) return current;
+      return {
+        ...current,
+        body: `${current.body}${EMAIL_SIGNATURE_MESSAGE_SPACE_HTML}${signatureHtml}`,
+      };
+    });
+  }, [emailSignature, isComposerExpanded, isComposerOpen]);
+  function normalizeRecipientEmail(email: string) {
+    return email.trim().toLowerCase();
+  }
+  function isValidRecipientEmail(email: string) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+  const getRecipientDisplayName = (recipient: { name?: string; email: string }) => {
+    const name = String(recipient.name || "").trim();
+    return name && normalizeRecipientEmail(name) !== normalizeRecipientEmail(recipient.email) ? name : "";
+  };
+  const getRecipientInitial = (recipient: { name?: string; email: string }) => {
+    const displayName = getRecipientDisplayName(recipient);
+    return displayName ? displayName.charAt(0).toUpperCase() : "";
+  };
+  const toggleRecipient = (recipientKey: string) => {
+    setDraft((current) => {
+      const selected = current.toRecipientKeys.includes(recipientKey);
+      return {
+        ...current,
+        toRecipientKeys: selected
+          ? current.toRecipientKeys.filter((key) => key !== recipientKey)
+          : [...current.toRecipientKeys, recipientKey],
+      };
+    });
+  };
+  const addRecipientOption = (recipient: { key: string; email: string }) => {
+    const matterRecipient = recipients.find((candidate) => candidate.key === recipient.key);
+    if (matterRecipient) {
+      setDraft((current) => ({
+        ...current,
+        toRecipientKeys: current.toRecipientKeys.includes(matterRecipient.key)
+          ? current.toRecipientKeys
+          : [...current.toRecipientKeys, matterRecipient.key],
+        customRecipientEmails: current.customRecipientEmails.filter(
+          (value) => normalizeRecipientEmail(value) !== normalizeRecipientEmail(matterRecipient.email),
+        ),
+      }));
+    } else {
+      addCustomRecipientEmail(recipient.email, { showInvalidToast: false });
+    }
+    setCustomRecipientInput("");
+  };
+  const addCustomRecipientEmail = (
+    value = customRecipientInput,
+    options: { showInvalidToast?: boolean } = {},
+  ) => {
+    const email = normalizeRecipientEmail(value);
+    if (!email) return;
+    if (!isValidRecipientEmail(email)) {
+      if (options.showInvalidToast !== false) {
+        toast({ title: "Invalid Email", description: "Enter a valid email address.", variant: "destructive" });
+      }
+      return;
+    }
+    const matchingMatterRecipient = recipients.find((recipient) => normalizeRecipientEmail(recipient.email) === email);
+    if (matchingMatterRecipient) {
+      setDraft((current) => ({
+        ...current,
+        toRecipientKeys: current.toRecipientKeys.includes(matchingMatterRecipient.key)
+          ? current.toRecipientKeys
+          : [...current.toRecipientKeys, matchingMatterRecipient.key],
+        customRecipientEmails: current.customRecipientEmails.filter((value) => normalizeRecipientEmail(value) !== email),
+      }));
+      setCustomRecipientInput("");
+      return;
+    }
+    setDraft((current) => {
+      if (current.customRecipientEmails.some((value) => normalizeRecipientEmail(value) === email)) return current;
+      return { ...current, customRecipientEmails: [...current.customRecipientEmails, email] };
+    });
+    setCustomRecipientInput("");
+  };
+  const removeCustomRecipientEmail = (email: string) => {
+    setDraft((current) => ({
+      ...current,
+      customRecipientEmails: current.customRecipientEmails.filter((value) => normalizeRecipientEmail(value) !== normalizeRecipientEmail(email)),
+    }));
+  };
+  const createRecipientContact = async (email: string) => {
+    const knownRecipient = knownRecipientOptions.find((recipient) => normalizeRecipientEmail(recipient.email) === normalizeRecipientEmail(email));
+    if (knownRecipient?.contactId) {
+      return {
+        key: `custom:${email}`,
+        contactId: knownRecipient.contactId,
+        name: knownRecipient.name || email,
+        email,
+        source: knownRecipient.source,
+        isCustom: true,
+      };
+    }
+    const ghlLocationId = await getActiveGhlLocationId();
+    if (!ghlLocationId) throw new Error("GHL Location ID is not configured.");
+    const [localPart] = email.split("@");
+    const response: any = await createContact({
+      locationId: ghlLocationId,
+      firstName: localPart || "Email",
+      email,
+    });
+    const createdContact = response.contact || response.data?.contact || response.data || response;
+    const contactId = String(createdContact?.id || createdContact?._id || createdContact?.contactId || "");
+    if (!contactId) throw new Error(`Could not create a GHL contact for ${email}.`);
+    return {
+      key: `custom:${email}`,
+      contactId,
+      name: createdContact?.name || createdContact?.fullName || email,
+      email,
+      source: "Custom Email",
+      isCustom: true,
+    };
+  };
+  const resolveRecipientsForSend = async () => {
+    const resolvedCustomRecipients = await Promise.all(
+      customRecipients.map((recipient) => createRecipientContact(recipient.email)),
+    );
+    return [...selectedMatterRecipients, ...resolvedCustomRecipients];
+  };
+  const getSendableAttachmentUrls = async () => {
+    const urls = await Promise.all(
+      attachedMatterDocuments.map(async (document) => {
+        const externalUrl = String(document.file_url || "").trim();
+        if (externalUrl) return externalUrl;
+        const download = await viewDocument(document.id);
+        return download.url;
+      }),
+    );
+    return urls.filter(Boolean);
+  };
+  const handleSendCommunication = async () => {
+    const bodyText = getCommunicationBodyText();
+    if (selectedRecipients.length === 0) {
+      toast({ title: "Recipient Required", description: "Select one or more matter contacts before sending.", variant: "destructive" });
+      return;
+    }
+    if (!draft.subject.trim()) {
+      toast({ title: "Subject Required", description: "Add a subject before sending.", variant: "destructive" });
+      return;
+    }
+    if (!bodyText) {
+      toast({ title: "Message Required", description: "Add a message before sending.", variant: "destructive" });
+      return;
+    }
+    if (attachments.length > 0) {
+      toast({
+        title: "Attachments Not Ready",
+        description: "Local file uploads are not connected yet. Remove local files or attach existing matter documents before sending.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setSending(true);
+    let emailSent = false;
+    try {
+      const attachmentUrls = await getSendableAttachmentUrls();
+      const resolvedRecipients = await resolveRecipientsForSend();
+      const emailBodyHtml = getEmailBodyWithSignature();
+      const responses = await Promise.all(
+        resolvedRecipients.map((recipient) =>
+          sendGhlEmail({
+            contactId: recipient.contactId,
+            emailTo: recipient.email,
+            emailFrom: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : undefined,
+            subject: draft.subject.trim(),
+            html: emailBodyHtml,
+            message: bodyText,
+            attachments: attachmentUrls,
+          }),
+        ),
+      );
+      emailSent = true;
+      const sentAt = new Date().toISOString();
+      const participantNames = resolvedRecipients.map((recipient) => recipient.name).join(", ");
+      const ghlMessageIds = responses
+        .map((response) => response.messageId || response.message?.id)
+        .filter(Boolean)
+        .map(String);
+      const ghlConversationIds = responses
+        .map((response) => response.conversationId)
+        .filter(Boolean)
+        .map(String);
+      const savedCommunication = await createCaseCommunication({
+        caseId: detail.case.id,
+        channel: "email",
+        direction: "outbound",
+        subject: draft.subject.trim(),
+        body: emailBodyHtml,
+        preview: bodyText,
+        status: "sent",
+        participantName: participantNames,
+        recipients: resolvedRecipients.map((recipient) => ({
+          contactId: recipient.contactId,
+          name: recipient.name,
+          email: recipient.email,
+          source: recipient.source,
+        })),
+        attachments: attachmentUrls.map((url) => ({ url })),
+        ghlMessageIds,
+        ghlConversationIds,
+        occurredAt: sentAt,
+        metadata: {
+          fromEmail: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : null,
+          signatureApplied: emailSignature.enabled && Boolean(emailSignature.html || emailSignature.logoUrl),
+        },
+      });
+      setSentCommunications((current) => [
+        normalizeMatterCommunication(savedCommunication),
+        ...current,
+      ]);
+      setDraft((current) => ({ ...current, subject: "", body: "" }));
+      setAttachments([]);
+      setAttachedDocumentIds([]);
+      setIsComposerOpen(false);
+      setIsComposerExpanded(false);
+      toast({
+        title: "Email Sent",
+        description: resolvedRecipients.length === 1
+          ? `Message sent to ${resolvedRecipients[0].name}.`
+          : `Message sent to ${resolvedRecipients.length} recipients.`,
+      });
+    } catch (error) {
+      toast({
+        title: emailSent ? "Email Sent, Not Saved" : "Email Not Sent",
+        description: getUserFriendlyErrorMessage(
+          error,
+          emailSent
+            ? "The email was sent through GHL, but Lawbric could not save it to this matter."
+            : "Could not send this email through GHL. Please try again.",
+        ),
+        variant: "destructive",
+      });
+    } finally {
+      setSending(false);
+    }
+  };
+  const canSendCommunication = Boolean(selectedRecipients.length > 0 && draft.subject.trim() && getCommunicationBodyText() && !sending);
+  const renderRecipientBadge = (recipient: typeof selectedRecipients[number]) => {
+    const displayName = getRecipientDisplayName(recipient);
+    const initial = getRecipientInitial(recipient);
+    const removeRecipient = () => {
+      if ("isCustom" in recipient && recipient.isCustom) {
+        removeCustomRecipientEmail(recipient.email);
+        return;
+      }
+      toggleRecipient(recipient.key);
+    };
+
+    return (
+      <span
+        key={recipient.key}
+        className={cn(
+          "inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
+          "isCustom" in recipient && recipient.isCustom
+            ? "border border-blue-200 bg-blue-50 text-[#2384CA]"
+            : "border border-amber-200 bg-amber-50 text-amber-700",
+        )}
+      >
+        {initial ? (
+          <span className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white",
+            "isCustom" in recipient && recipient.isCustom ? "bg-[#2384CA]" : "bg-amber-500",
+          )}>
+            {initial}
+          </span>
+        ) : null}
+        {!("isCustom" in recipient && recipient.isCustom) ? (
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+            <UserRound className="h-3 w-3" />
+          </span>
+        ) : null}
+        <span className="min-w-0 truncate">
+          {displayName ? `${displayName} (${recipient.email})` : recipient.email}
+        </span>
+        <button
+          type="button"
+          className={cn(
+            "shrink-0 rounded-full",
+            "isCustom" in recipient && recipient.isCustom
+              ? "text-[#2384CA]/70 hover:text-[#2384CA]"
+              : "text-amber-700/70 hover:text-amber-700",
+          )}
+          aria-label={`Remove ${displayName || recipient.email}`}
+          onClick={removeRecipient}
+        >
+          x
+        </button>
+      </span>
+    );
+  };
+  const renderRecipientSelector = () => (
+    <div className="flex items-start gap-3">
+      <Label className="w-16 shrink-0 pt-2 text-sm text-muted-foreground">To</Label>
+      <div className="relative min-w-0 flex-1">
+        <div className="flex min-h-10 flex-wrap items-center gap-2 border-b border-border px-0 py-1 focus-within:border-[#2384CA]">
+          {selectedRecipients.map(renderRecipientBadge)}
+          <input
+            value={customRecipientInput}
+            onChange={(event) => setCustomRecipientInput(event.target.value)}
+            onFocus={() => setIsRecipientInputFocused(true)}
+            onBlur={() => {
+              window.setTimeout(() => setIsRecipientInputFocused(false), 150);
+              if (isValidRecipientEmail(customRecipientInput)) addCustomRecipientEmail(customRecipientInput, { showInvalidToast: false });
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                if (!isValidRecipientEmail(customRecipientInput) && recipientSuggestions.length === 1) {
+                  addRecipientOption(recipientSuggestions[0]);
+                } else {
+                  addCustomRecipientEmail(customRecipientInput);
+                }
+              }
+              if ([",", ";", "Tab"].includes(event.key)) {
+                if (customRecipientInput.trim()) {
+                  event.preventDefault();
+                  addCustomRecipientEmail(customRecipientInput);
+                }
+              }
+              if (event.key === "Backspace" && !customRecipientInput && selectedRecipients.length > 0) {
+                const lastRecipient = selectedRecipients[selectedRecipients.length - 1];
+                if ("isCustom" in lastRecipient && lastRecipient.isCustom) removeCustomRecipientEmail(lastRecipient.email);
+                else toggleRecipient(lastRecipient.key);
+              }
+            }}
+            placeholder={selectedRecipients.length === 0 ? "Type an email or contact name..." : ""}
+            className="min-w-[180px] flex-1 border-0 bg-transparent px-0 py-1 text-sm outline-none placeholder:text-muted-foreground"
+          />
+        </div>
+        {isRecipientInputFocused && recipientSuggestions.length > 0 ? (
+          <div className="absolute left-0 right-0 top-full z-[150] mt-1 max-h-64 overflow-y-auto rounded-md border bg-background p-1 shadow-xl">
+            {recipientSuggestions.map((recipient) => {
+              const displayName = getRecipientDisplayName(recipient);
+              return (
+                <button
+                  key={recipient.key}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded px-2 py-2 text-left text-sm hover:bg-muted"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    addRecipientOption(recipient);
+                  }}
+                >
+                  {getRecipientInitial(recipient) ? (
+                    <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-blue-50 text-xs font-semibold text-[#2384CA]">
+                      {getRecipientInitial(recipient)}
+                    </span>
+                  ) : (
+                    <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
+                  )}
+                  <span className="min-w-0">
+                    <span className="block truncate font-medium text-foreground">{displayName || recipient.email}</span>
+                    {displayName ? <span className="block truncate text-xs text-muted-foreground">{recipient.email}</span> : null}
+                  </span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">{recipient.source}</span>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+  const renderSubjectInput = () => (
+    <div className="flex items-center gap-3">
+      <Label className="w-16 shrink-0 text-sm text-muted-foreground">Subject</Label>
+      <Input
+        value={draft.subject}
+        onChange={(event) => setDraft((current) => ({ ...current, subject: event.target.value }))}
+        placeholder={`Re: ${detail.case.case_name}`}
+        className="h-10 flex-1 rounded-none border-0 border-b border-border bg-transparent px-0 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0 focus:border-[#2384CA]"
+      />
+    </div>
+  );
+  const renderCommunicationViewer = () => {
+    if (!selectedCommunication) {
+      return (
+        <div className="flex min-h-[calc(100vh-250px)] items-center justify-center bg-muted/10 p-8 text-center">
+          <div>
+            <Mail className="mx-auto h-9 w-9 text-muted-foreground/60" />
+            <div className="mt-3 text-sm font-medium text-foreground">Select a message</div>
+            <div className="mt-1 text-xs text-muted-foreground">Choose a communication from the list to view it here.</div>
+          </div>
+        </div>
+      );
+    }
+
+    const body = selectedCommunication.body || selectedCommunication.html || selectedCommunication.message || selectedCommunication.preview;
+    const selectedRecipients = Array.isArray(selectedCommunication.recipients) ? selectedCommunication.recipients : [];
+    const selectedAttachments = Array.isArray(selectedCommunication.attachments) ? selectedCommunication.attachments : [];
+    const getViewerRecipientBadgeClass = (recipient: any) => {
+      const source = String(recipient?.source || "").toLowerCase();
+      return source.includes("custom") || source.includes("previous")
+        ? "border-blue-200 bg-blue-50 text-[#2384CA]"
+        : "border-amber-200 bg-amber-50 text-amber-700";
+    };
+
+    return (
+      <div className="min-h-[calc(100vh-250px)] bg-background">
+        <div className="space-y-4 px-5 py-4">
+          <div className="flex flex-col gap-3 border-b pb-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <h3 className="truncate text-base font-semibold text-foreground">{selectedCommunication.subject}</h3>
+                <div className="mt-2 flex min-w-0 items-center gap-2">
+                  <Avatar className="h-7 w-7 shrink-0">
+                    {selectedCommunication.senderAvatarUrl ? (
+                      <AvatarImage src={selectedCommunication.senderAvatarUrl} alt={`${selectedCommunication.senderName || "Sender"} avatar`} />
+                    ) : null}
+                    <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
+                      {getAvatarInitials(
+                        { fullName: selectedCommunication.senderName || "Unknown sender", email: selectedCommunication.senderEmail },
+                        "U",
+                      )}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-foreground">{selectedCommunication.senderName || "Unknown sender"}</div>
+                    {selectedCommunication.senderEmail ? (
+                      <div className="truncate text-xs text-muted-foreground">{selectedCommunication.senderEmail}</div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <span className="text-xs text-muted-foreground">{selectedCommunication.date}</span>
+                <Badge variant="outline" className="capitalize">{selectedCommunication.status}</Badge>
+              </div>
+            </div>
+            <div className="grid gap-2 text-sm">
+              <div className="flex gap-2">
+                <span className="w-12 shrink-0 text-muted-foreground">To</span>
+                <span className="flex min-w-0 flex-wrap gap-1.5 text-foreground">
+                  {selectedRecipients.length > 0 ? (
+                    selectedRecipients.map((recipient: any, index: number) => {
+                      const label = String(recipient?.name || recipient?.email || "").trim();
+                      if (!label) return null;
+                      return (
+                        <Badge
+                          key={`${label}-${index}`}
+                          variant="outline"
+                          className={cn("inline-flex max-w-full items-center gap-1 truncate", getViewerRecipientBadgeClass(recipient))}
+                        >
+                          {!String(recipient?.source || "").toLowerCase().includes("custom") &&
+                            !String(recipient?.source || "").toLowerCase().includes("previous") ? (
+                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+                              <UserRound className="h-3 w-3" />
+                            </span>
+                          ) : null}
+                          {label}
+                        </Badge>
+                      );
+                    })
+                  ) : (
+                    <Badge variant="outline" className="max-w-full truncate border-transparent bg-blue-50 text-[#2384CA]">{selectedCommunication.participant}</Badge>
+                  )}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="min-h-[180px] rounded-md bg-muted/10 p-3">
+            {body ? (
+              <NoteRichTextBody value={body} className="text-sm text-foreground" />
+            ) : (
+              <div className="text-sm text-muted-foreground">No message body saved.</div>
+            )}
+          </div>
+
+          {selectedAttachments.length > 0 ? (
+            <div className="space-y-2 border-t pt-3">
+              <div className="text-xs font-medium uppercase text-muted-foreground">Attachments</div>
+              <div className="space-y-2">
+                {selectedAttachments.map((attachment: any, index: number) => {
+                  const url = String(attachment?.url || "");
+                  return (
+                    <a
+                      key={`${url || "attachment"}-${index}`}
+                      href={url || undefined}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-[#2384CA] hover:bg-muted/40"
+                    >
+                      <Paperclip className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{String(attachment?.name || url || `Attachment ${index + 1}`)}</span>
+                    </a>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    );
+  };
+  const renderAttachmentControls = () => (
+    <div className="space-y-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="rounded-full"
+          onClick={() => attachmentInputRef.current?.click()}
+        >
+          <Paperclip className="mr-2 h-4 w-4" />
+          Attach files
+        </Button>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="rounded-full"
+          onClick={() => setIsDocumentPickerOpen(true)}
+        >
+          <FileText className="mr-2 h-4 w-4" />
+          Attach matter document
+        </Button>
+      </div>
+      <CommunicationAttachmentList
+        localAttachments={attachments}
+        matterDocuments={attachedMatterDocuments}
+        onRemoveLocal={removeAttachment}
+        onRemoveMatterDocument={removeMatterDocumentAttachment}
+      />
+    </div>
+  );
+  const renderCommunicationListItem = (communication: typeof sortedCommunications[number]) => {
+    const preview = getCommunicationPreview(communication);
+    const selected = communication.id === selectedCommunicationId;
+    return (
+      <button
+        key={communication.id}
+        type="button"
+        className={cn(
+          "flex w-full gap-3 border-b px-4 py-3 text-left transition-colors last:border-0 hover:bg-muted/40",
+          selected && "bg-blue-50/70 hover:bg-blue-50/70",
+        )}
+        onClick={() => setSelectedCommunicationId(communication.id)}
+      >
+        <span
+          className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[#2384CA]"
+          aria-label={communication.type}
+          title={communication.type}
+        >
+          <Mail className="h-4 w-4" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-2">
+            <span className="truncate text-sm font-medium text-[#2384CA]">{communication.subject}</span>
+            <span className="shrink-0 text-xs text-muted-foreground">{communication.date}</span>
+          </span>
+          {preview ? (
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{preview}</span>
+          ) : null}
+        </span>
+      </button>
+    );
+  };
+
+  return (
+    <div className="space-y-4 pt-0">
+      <input
+        ref={attachmentInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleAttachmentChange}
+      />
+      <div>
+        <div className="p-0">
+          <div className="overflow-hidden rounded-xl bg-background">
+          <div className="flex items-center justify-between gap-4 border-b bg-muted/20 px-4 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <div className="truncate text-sm font-medium text-foreground">Messages</div>
+            </div>
+            <div className="relative ml-auto w-full max-w-sm">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="matter-communication-search"
+                value={searchTerm}
+                onChange={(event) => setSearchTerm(event.target.value)}
+                placeholder="Search communications..."
+                className="h-9 rounded-full bg-background pl-9"
+              />
+            </div>
+          </div>
+          <div className="grid min-h-[calc(100vh-250px)] gap-0 xl:grid-cols-[minmax(0,0.72fr)_minmax(0,1.48fr)]">
+            <div className="h-full overflow-hidden xl:border-r">
+              <div className="max-h-[540px] overflow-y-auto">
+                {sortedCommunications.length === 0 ? (
+                  <div className="px-4 py-10 text-center">
+                    <Mail className="mx-auto h-8 w-8 text-muted-foreground/60" />
+                    <div className="mt-3 text-sm font-medium text-foreground">No Communications</div>
+                  </div>
+                ) : (
+                  <Accordion
+                    type="multiple"
+                    defaultValue={["today", "yesterday", "this-week", "last-week", "last-month", "older"]}
+                    className="w-full"
+                  >
+                    {communicationGroups.map((group) => (
+                      <AccordionItem key={group.key} value={group.key} className="last:border-0">
+                        <AccordionTrigger className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground">
+                          <span className="flex w-full items-center justify-between pr-3">
+                            <span>{group.label}</span>
+                            <span className="text-[11px] font-medium normal-case text-muted-foreground">
+                              {group.communications.length}
+                            </span>
+                          </span>
+                        </AccordionTrigger>
+                        <AccordionContent className="pb-0">
+                          {group.communications.map(renderCommunicationListItem)}
+                        </AccordionContent>
+                      </AccordionItem>
+                    ))}
+                  </Accordion>
+                )}
+              </div>
+            </div>
+            {renderCommunicationViewer()}
+          </div>
+          </div>
+        </div>
+      </div>
+
+      {isComposerOpen ? (
+        <div className="fixed bottom-4 right-4 z-[115] w-[calc(100vw-2rem)] max-w-xl overflow-hidden rounded-lg border bg-background shadow-2xl">
+          <div className="flex items-center justify-between gap-3 bg-[#0F1729] px-4 py-3 text-white">
+            <div className="flex min-w-0 items-center gap-2">
+              <Mail className="h-4 w-4 shrink-0" />
+              <div className="truncate text-sm font-semibold">New Communication</div>
+            </div>
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8 text-white hover:bg-white/10 hover:text-white"
+                aria-label="Expand communication composer"
+                title="Expand"
+                onClick={() => {
+                  setIsComposerExpanded(true);
+                  setIsComposerOpen(false);
+                }}
+              >
+                <Maximize2 className="h-4 w-4" />
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-8 px-2 text-xs text-white hover:bg-white/10 hover:text-white"
+                onClick={() => {
+                  setIsComposerOpen(false);
+                  setIsComposerExpanded(false);
+                }}
+              >
+                Close
+              </Button>
+            </div>
+          </div>
+          <div className="max-h-[calc(100vh-7rem)] space-y-4 overflow-y-auto p-4">
+            {renderRecipientSelector()}
+
+            {renderSubjectInput()}
+
+            <div>
+              <NoteRichTextEditor
+                value={draft.body}
+                onChange={(body) => setDraft((current) => ({ ...current, body }))}
+                placeholder="Write your message..."
+              />
+            </div>
+
+            {renderAttachmentControls()}
+
+            <div className="flex justify-end border-t pt-4">
+              <Button type="button" disabled={!canSendCommunication} className="shrink-0" onClick={handleSendCommunication}>
+                <Send className="mr-2 h-4 w-4" />
+                {sending ? "Sending..." : "Send"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+      <Dialog open={isComposerExpanded} onOpenChange={setIsComposerExpanded}>
+        <DialogContent className="max-w-4xl overflow-hidden !p-0">
+          <div className="bg-[#0F1729] px-6 py-4 pr-14 text-white">
+            <div className="flex items-center gap-2">
+              <Mail className="h-4 w-4" />
+              <DialogTitle className="text-base">New Communication</DialogTitle>
+            </div>
+          </div>
+          <div className="max-h-[calc(100vh-9rem)] space-y-4 overflow-y-auto p-6">
+            {renderRecipientSelector()}
+
+            {renderSubjectInput()}
+
+            <div>
+              <NoteRichTextEditor
+                value={draft.body}
+                onChange={(body) => setDraft((current) => ({ ...current, body }))}
+                placeholder="Write your message..."
+              />
+            </div>
+
+            {renderAttachmentControls()}
+
+            <DialogFooter className="border-t pt-4">
+              <Button type="button" disabled={!canSendCommunication} onClick={handleSendCommunication}>
+                <Send className="mr-2 h-4 w-4" />
+                {sending ? "Sending..." : "Send"}
+              </Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={isDocumentPickerOpen} onOpenChange={setIsDocumentPickerOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Attach Matter Document</DialogTitle>
+          </DialogHeader>
+          {matterDocuments.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-8 text-center">
+              <FileText className="mx-auto h-8 w-8 text-muted-foreground/60" />
+              <div className="mt-3 text-sm font-medium text-foreground">No matter documents available.</div>
+            </div>
+          ) : (
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+              {matterDocuments.map((document) => {
+                const attached = attachedDocumentIds.includes(document.id);
+                return (
+                  <button
+                    key={document.id}
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center justify-between gap-3 rounded-lg border px-3 py-3 text-left transition-colors hover:bg-muted/50",
+                      attached && "border-primary/40 bg-primary/10 text-primary",
+                    )}
+                    onClick={() => attachMatterDocument(document.id)}
+                  >
+                    <span className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                        <DocumentTypeIcon documentRecord={document} />
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block truncate text-sm font-medium">{getDocumentName(document)}</span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {getDisplayFolderName(document)}
+                          {document.size_bytes ? ` · ${formatAttachmentSize(Number(document.size_bytes))}` : ""}
+                        </span>
+                      </span>
+                    </span>
+                    {attached ? <Check className="h-4 w-4 shrink-0" /> : null}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" onClick={() => setIsDocumentPickerOpen(false)}>
+              Done
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
   );
 }
 

@@ -20,6 +20,23 @@ function isSafeHref(href: string) {
   return /^(https?:\/\/|mailto:|tel:)/i.test(href.trim());
 }
 
+function isSafeImageSrc(src: string) {
+  return /^https:\/\//i.test(src.trim());
+}
+
+function getSafeSignatureStyle(textSize: string) {
+  switch (textSize) {
+    case "small":
+      return "font-size: 12px; line-height: 1.45;";
+    case "large":
+      return "font-size: 16px; line-height: 1.55;";
+    case "x-large":
+      return "font-size: 18px; line-height: 1.6;";
+    default:
+      return "font-size: 14px; line-height: 1.5;";
+  }
+}
+
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
@@ -149,7 +166,7 @@ export function sanitizeNoteHtml(value?: string | null) {
 
   if (typeof window === "undefined" || typeof DOMParser === "undefined") return escapeHtml(rawValue);
 
-  const allowedTags = new Set(["A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "I", "LI", "OL", "P", "STRONG", "U", "UL"]);
+  const allowedTags = new Set(["A", "B", "BLOCKQUOTE", "BR", "DIV", "EM", "I", "IMG", "LI", "OL", "P", "STRONG", "U", "UL"]);
   const parser = new DOMParser();
   const doc = parser.parseFromString(html, "text/html");
 
@@ -169,6 +186,12 @@ export function sanitizeNoteHtml(value?: string | null) {
         }
 
         const href = element.getAttribute("href") || "";
+        const signatureMarker = element.getAttribute("data-lawbric-email-signature") || "";
+        const signatureTextSize = element.getAttribute("data-lawbric-email-signature-text-size") || "normal";
+        const src = element.getAttribute("src") || "";
+        const alt = element.getAttribute("alt") || "";
+        const width = element.getAttribute("width") || "";
+        const height = element.getAttribute("height") || "";
         Array.from(element.attributes).forEach((attribute) => element.removeAttribute(attribute.name));
         if (element.tagName === "A") {
           if (isSafeHref(href)) {
@@ -180,6 +203,22 @@ export function sanitizeNoteHtml(value?: string | null) {
           } else {
             element.removeAttribute("href");
           }
+        }
+        if (element.tagName === "IMG") {
+          if (isSafeImageSrc(src)) {
+            element.setAttribute("src", src);
+            if (alt) element.setAttribute("alt", alt);
+            if (/^\d{1,4}$/.test(width)) element.setAttribute("width", width);
+            if (/^\d{1,4}$/.test(height)) element.setAttribute("height", height);
+          } else {
+            element.remove();
+            return;
+          }
+        }
+        if (element.tagName === "DIV" && signatureMarker === "true") {
+          element.setAttribute("data-lawbric-email-signature", "true");
+          element.setAttribute("data-lawbric-email-signature-text-size", signatureTextSize);
+          element.setAttribute("style", getSafeSignatureStyle(signatureTextSize));
         }
 
         cleanNode(element);
@@ -200,7 +239,7 @@ export function NoteRichTextBody({ value, className }: { value?: string | null; 
   return (
     <div
       className={cn(
-        "note-rich-text-body space-y-2 whitespace-pre-wrap [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_em]:italic [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
+        "note-rich-text-body space-y-2 whitespace-pre-wrap [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_em]:italic [&_i]:italic [&_img]:max-w-full [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
         className,
       )}
       dangerouslySetInnerHTML={{ __html: html }}
