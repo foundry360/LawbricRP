@@ -96,6 +96,9 @@ verify_jwt = true
 [functions.create_communication]
 verify_jwt = true
 
+[functions.ingest_inbound_communication]
+verify_jwt = false
+
 [functions.update_note]
 verify_jwt = true
 

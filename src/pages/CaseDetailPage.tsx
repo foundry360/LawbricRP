@@ -29,6 +29,7 @@ import {
   Pencil,
   Phone,
   Plus,
+  Reply,
   Search,
   Send,
   Trash2,
@@ -3389,6 +3390,16 @@ function getCommunicationRecipientsLabel(communication: any) {
   return names.join(", ") || communication?.participant_name || communication?.participant || "Unknown recipient";
 }
 
+function getCommunicationIdList(...values: unknown[]) {
+  return Array.from(
+    new Set(
+      values.flatMap((value) => Array.isArray(value) ? value : [value])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
 function normalizeMatterCommunication(communication: any) {
   const occurredAt = communication?.occurred_at || communication?.occurredAt || communication?.created_at || new Date().toISOString();
   const sender = Array.isArray(communication?.created_user)
@@ -3407,6 +3418,7 @@ function normalizeMatterCommunication(communication: any) {
   return {
     id: String(communication?.id || crypto.randomUUID()),
     type: String(communication?.channel || communication?.type || "email"),
+    direction: String(communication?.direction || metadata.direction || ""),
     subject: String(communication?.subject || "No subject"),
     preview: String(communication?.preview || ""),
     body: typeof communication?.body === "string" ? communication.body : undefined,
@@ -3417,7 +3429,9 @@ function normalizeMatterCommunication(communication: any) {
     participant: getCommunicationRecipientsLabel(communication),
     senderName,
     senderEmail,
-    senderAvatarUrl: String(sender?.avatar_url || sender?.avatarUrl || ""),
+    senderAvatarUrl: String(sender?.avatar_url || sender?.avatarUrl || metadata.senderAvatarUrl || ""),
+    ghlMessageIds: getCommunicationIdList(communication?.ghl_message_ids, communication?.ghlMessageIds),
+    ghlConversationIds: getCommunicationIdList(communication?.ghl_conversation_ids, communication?.ghlConversationIds),
     status: String(communication?.status || "sent"),
     occurredAt,
     date: formatDateTime(occurredAt),
@@ -3445,6 +3459,14 @@ function CommunicationsTab({
   const [sending, setSending] = useState(false);
   const [isRecipientInputFocused, setIsRecipientInputFocused] = useState(false);
   const [selectedCommunicationId, setSelectedCommunicationId] = useState<string>("");
+  const [replyContext, setReplyContext] = useState<{
+    communicationId: string;
+    senderName: string;
+    senderEmail: string;
+    subject: string;
+    ghlMessageIds: string[];
+    ghlConversationIds: string[];
+  } | null>(null);
   const [emailSignature, setEmailSignature] = useState({
     enabled: false,
     html: "",
@@ -3516,6 +3538,7 @@ function CommunicationsTab({
   const [sentCommunications, setSentCommunications] = useState<Array<{
     id: string;
     type: string;
+    direction?: string;
     subject: string;
     preview: string;
     body?: string;
@@ -3527,6 +3550,8 @@ function CommunicationsTab({
     senderName?: string;
     senderEmail?: string;
     senderAvatarUrl?: string;
+    ghlMessageIds?: string[];
+    ghlConversationIds?: string[];
     status: string;
     occurredAt: string;
     date: string;
@@ -3534,6 +3559,7 @@ function CommunicationsTab({
   const communications: Array<{
     id: string;
     type: string;
+    direction?: string;
     subject: string;
     preview: string;
     body?: string;
@@ -3545,6 +3571,8 @@ function CommunicationsTab({
     senderName?: string;
     senderEmail?: string;
     senderAvatarUrl?: string;
+    ghlMessageIds?: string[];
+    ghlConversationIds?: string[];
     status: string;
     occurredAt: string;
     date: string;
@@ -3651,6 +3679,7 @@ function CommunicationsTab({
   useEffect(() => {
     if (!composeRequested) return;
     setIsComposerExpanded(false);
+    setReplyContext(null);
     setCustomRecipientInput("");
     setDraft((current) => ({
       ...current,
@@ -3907,6 +3936,7 @@ function CommunicationsTab({
             subject: draft.subject.trim(),
             html: emailBodyHtml,
             message: bodyText,
+            conversationId: replyContext?.ghlConversationIds[0],
             attachments: attachmentUrls,
           }),
         ),
@@ -3918,10 +3948,10 @@ function CommunicationsTab({
         .map((response) => response.messageId || response.message?.id)
         .filter(Boolean)
         .map(String);
-      const ghlConversationIds = responses
-        .map((response) => response.conversationId)
-        .filter(Boolean)
-        .map(String);
+      const ghlConversationIds = getCommunicationIdList(
+        replyContext?.ghlConversationIds,
+        responses.map((response) => response.conversationId),
+      );
       const savedCommunication = await createCaseCommunication({
         caseId: detail.case.id,
         channel: "email",
@@ -3944,6 +3974,9 @@ function CommunicationsTab({
         metadata: {
           fromEmail: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : null,
           signatureApplied: emailSignature.enabled && Boolean(emailSignature.html || emailSignature.logoUrl),
+          replyToCommunicationId: replyContext?.communicationId || null,
+          replyToGhlMessageIds: replyContext?.ghlMessageIds || [],
+          replyToSubject: replyContext?.subject || null,
         },
       });
       setSentCommunications((current) => [
@@ -3960,6 +3993,7 @@ function CommunicationsTab({
       setCustomRecipientInput("");
       setAttachments([]);
       setAttachedDocumentIds([]);
+      setReplyContext(null);
       setIsComposerOpen(false);
       setIsComposerExpanded(false);
       toast({
@@ -4121,6 +4155,39 @@ function CommunicationsTab({
       />
     </div>
   );
+  const startReplyToCommunication = (communication: typeof communications[number]) => {
+    const senderEmail = normalizeRecipientEmail(communication.senderEmail || "");
+    if (!senderEmail) {
+      toast({ title: "Reply Not Available", description: "This message does not include a sender email address.", variant: "destructive" });
+      return;
+    }
+
+    const matterRecipient = recipients.find((recipient) => normalizeRecipientEmail(recipient.email) === senderEmail);
+    const replySubject = /^re:/i.test(communication.subject)
+      ? communication.subject
+      : `Re: ${communication.subject || detail.case.case_name}`;
+
+    setReplyContext({
+      communicationId: communication.id,
+      senderName: communication.senderName || senderEmail,
+      senderEmail,
+      subject: communication.subject,
+      ghlMessageIds: communication.ghlMessageIds || [],
+      ghlConversationIds: communication.ghlConversationIds || [],
+    });
+    setCustomRecipientInput("");
+    setAttachments([]);
+    setAttachedDocumentIds([]);
+    setDraft((current) => ({
+      ...current,
+      toRecipientKeys: matterRecipient ? [matterRecipient.key] : [],
+      customRecipientEmails: matterRecipient ? [] : [senderEmail],
+      subject: replySubject,
+      body: "",
+    }));
+    setIsComposerExpanded(false);
+    setIsComposerOpen(true);
+  };
   const renderCommunicationViewer = () => {
     if (!selectedCommunication) {
       return (
@@ -4143,6 +4210,8 @@ function CommunicationsTab({
         ? "border-blue-200 bg-blue-50 text-[#2384CA]"
         : "border-blue-200 bg-blue-50 text-[#2384CA]";
     };
+    const canReplyToSelectedCommunication = Boolean(selectedCommunication.senderEmail) &&
+      (selectedCommunication.direction === "inbound" || selectedCommunication.status === "received");
 
     return (
       <div className="flex h-full min-h-0 flex-col bg-background">
@@ -4172,6 +4241,18 @@ function CommunicationsTab({
                 </div>
               </div>
               <div className="flex shrink-0 items-center gap-2">
+                {canReplyToSelectedCommunication ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-8 rounded-full px-3 text-xs"
+                    onClick={() => startReplyToCommunication(selectedCommunication)}
+                  >
+                    <Reply className="mr-1.5 h-3.5 w-3.5" />
+                    Reply
+                  </Button>
+                ) : null}
                 <span className="text-xs text-muted-foreground">{selectedCommunication.date}</span>
                 <Badge variant="outline" className="capitalize">{selectedCommunication.status}</Badge>
               </div>
@@ -4327,14 +4408,21 @@ function CommunicationsTab({
         style={{ borderLeftColor: selected ? "#2384CA" : "transparent" }}
         onClick={() => setSelectedCommunicationId(communication.id)}
       >
-        <span
-          className="mt-0.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-[#2384CA]"
-          aria-label={communication.type}
-          title={communication.type}
-        >
-          <Mail className="h-4 w-4" />
-        </span>
+        <Avatar className="mt-0.5 h-8 w-8 shrink-0">
+          {communication.senderAvatarUrl ? (
+            <AvatarImage src={communication.senderAvatarUrl} alt={`${communication.senderName || "Sender"} avatar`} />
+          ) : null}
+          <AvatarFallback className="bg-blue-50 text-[11px] font-medium text-[#2384CA]">
+            {getAvatarInitials(
+              { fullName: communication.senderName || "Unknown sender", email: communication.senderEmail },
+              "U",
+            )}
+          </AvatarFallback>
+        </Avatar>
         <span className="min-w-0 flex-1">
+          <span className="mb-0.5 block truncate text-xs font-medium text-black">
+            {communication.senderName || "Unknown sender"}
+          </span>
           <span className="flex items-center justify-between gap-2">
             <span className="truncate text-sm font-medium text-[#2384CA]">{communication.subject}</span>
             <span className="shrink-0 text-xs text-muted-foreground">{communication.date}</span>
@@ -4347,6 +4435,7 @@ function CommunicationsTab({
     );
   };
   const openCommunicationComposer = () => {
+    setReplyContext(null);
     setCustomRecipientInput("");
     setDraft((current) => ({
       ...current,
@@ -4369,7 +4458,7 @@ function CommunicationsTab({
       <div className="min-h-0 flex-1">
         <div className="h-full p-0">
           <div className="flex h-full min-h-0 flex-col overflow-visible rounded-xl bg-background">
-          <div className="shrink-0 flex items-center justify-between gap-4 border-b bg-muted/20 px-4 py-3">
+          <div className="shrink-0 flex items-center justify-between gap-4 border-b bg-[#F0F6FF] px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
               <Button
                 type="button"
@@ -4458,13 +4547,13 @@ function CommunicationsTab({
                 </PopoverContent>
               </Popover>
             </div>
-            <div className="relative ml-auto w-full max-w-sm">
+            <div className="relative ml-auto w-full max-w-[220px]">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="matter-communication-search"
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Search communications..."
+                placeholder="Search..."
                 className="h-9 !rounded-full bg-background pl-9"
               />
             </div>
@@ -4498,7 +4587,7 @@ function CommunicationsTab({
                   >
                     {communicationGroups.map((group) => (
                       <AccordionItem key={group.key} value={group.key} className="last:border-0">
-                        <AccordionTrigger className="border-b border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-200 hover:text-slate-800">
+                        <AccordionTrigger className="border-b border-slate-200 bg-[#fdfdfd] px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 hover:bg-[#f5f5f5] hover:text-slate-800">
                           <span>{group.label}</span>
                         </AccordionTrigger>
                         <AccordionContent className="pb-0">
@@ -4521,7 +4610,9 @@ function CommunicationsTab({
           <div className="flex items-center justify-between gap-3 bg-[#0F1729] px-4 py-3 text-white">
             <div className="flex min-w-0 items-center gap-2">
               <Mail className="h-4 w-4 shrink-0" />
-              <div className="truncate text-sm font-semibold">New Communication</div>
+              <div className="truncate text-sm font-semibold">
+                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Communication"}
+              </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               <Button
@@ -4546,6 +4637,7 @@ function CommunicationsTab({
                 onClick={() => {
                   setIsComposerOpen(false);
                   setIsComposerExpanded(false);
+                  setReplyContext(null);
                 }}
               >
                 Close
@@ -4576,12 +4668,20 @@ function CommunicationsTab({
           </div>
         </div>
       ) : null}
-      <Dialog open={isComposerExpanded} onOpenChange={setIsComposerExpanded}>
+      <Dialog
+        open={isComposerExpanded}
+        onOpenChange={(open) => {
+          setIsComposerExpanded(open);
+          if (!open) setReplyContext(null);
+        }}
+      >
         <DialogContent className="max-w-4xl overflow-hidden !p-0">
           <div className="bg-[#0F1729] px-6 py-4 pr-14 text-white">
             <div className="flex items-center gap-2">
               <Mail className="h-4 w-4" />
-              <DialogTitle className="text-base">New Communication</DialogTitle>
+              <DialogTitle className="text-base">
+                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Communication"}
+              </DialogTitle>
             </div>
           </div>
           <div className="max-h-[calc(100vh-9rem)] space-y-4 overflow-y-auto p-6">

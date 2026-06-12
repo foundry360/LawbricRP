@@ -688,6 +688,7 @@ export type SendGhlEmailPayload = {
   message?: string;
   emailFrom?: string;
   emailTo?: string;
+  conversationId?: string;
   attachments?: string[];
 };
 
