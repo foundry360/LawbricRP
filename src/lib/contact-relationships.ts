@@ -24,6 +24,9 @@ export type ContactRelationship = {
   related_ghl_contact_id: string;
   relationship_type: string;
   notes?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -49,6 +52,7 @@ export async function listContactRelationships(locationId: string, contactId: st
     .from("contact_relationships")
     .select("*")
     .eq("location_id", locationId)
+    .is("deleted_at", null)
     .or(`source_ghl_contact_id.eq.${contactId},related_ghl_contact_id.eq.${contactId}`)
     .order("relationship_type", { ascending: true });
 
@@ -65,9 +69,14 @@ export async function saveContactRelationships(
 
   const existingRelationships = await listContactRelationships(locationId, contactId);
   if (existingRelationships.length > 0) {
+    const { data: { user } } = await supabase.auth.getUser();
     const { error } = await supabase
       .from("contact_relationships")
-      .delete()
+      .update({
+        deleted_at: new Date().toISOString(),
+        deleted_by: user?.id || null,
+        delete_reason: null,
+      })
       .in("id", existingRelationships.map((relationship) => relationship.id));
 
     if (error) throw new Error(error.message);
@@ -88,14 +97,18 @@ export async function saveContactRelationships(
 
   const { data, error } = await supabase
     .from("contact_relationships")
-    .insert(
+    .upsert(
       uniqueRelationships.map((relationship) => ({
         location_id: locationId,
         source_ghl_contact_id: contactId,
         related_ghl_contact_id: relationship.relatedContactId,
         relationship_type: relationship.relationshipType,
         notes: relationship.notes,
+        deleted_at: null,
+        deleted_by: null,
+        delete_reason: null,
       })),
+      { onConflict: "location_id,source_ghl_contact_id,related_ghl_contact_id" },
     )
     .select("*");
 

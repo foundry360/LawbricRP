@@ -203,6 +203,25 @@ function getPipelineSelection(
   };
 }
 
+function getNextPipelineStageName(caseRecord: CaseRecord, pipelines: GhlPipeline[]) {
+  const pipeline = pipelines.find((item) => item.id === caseRecord.ghl_pipeline_id) ||
+    pipelines.find((item) => (item.stages || []).some((stage) => stage.id === caseRecord.ghl_pipeline_stage_id));
+
+  if (!pipeline?.stages?.length) return "Not set";
+
+  const orderedStages = [...pipeline.stages].sort((first, second) => {
+    const firstPosition = typeof first.position === "number" ? first.position : Number.POSITIVE_INFINITY;
+    const secondPosition = typeof second.position === "number" ? second.position : Number.POSITIVE_INFINITY;
+    return firstPosition - secondPosition;
+  });
+  const currentStageIndex = orderedStages.findIndex((stage) => stage.id === caseRecord.ghl_pipeline_stage_id) !== -1
+    ? orderedStages.findIndex((stage) => stage.id === caseRecord.ghl_pipeline_stage_id)
+    : orderedStages.findIndex((stage) => stage.name.toLowerCase() === String(caseRecord.stage || "").toLowerCase());
+
+  if (currentStageIndex === -1) return "Not set";
+  return orderedStages[currentStageIndex + 1]?.name || "No next stage";
+}
+
 async function loadMatterPipelines() {
   const context = await getAppLocationContext();
   const ghlLocationId = context.location?.ghlLocationId || "";
@@ -710,7 +729,7 @@ export function CaseDetailPage() {
       await deleteTask({ locationId: detail.case.location_id, taskId: taskToDelete.id });
       setTaskToDelete(null);
       await loadCase();
-      toast({ title: "Task Deleted", description: `${taskToDelete.title} was permanently deleted.` });
+      toast({ title: "Task Deleted", description: `${taskToDelete.title} was removed from normal views.` });
     } catch (error) {
       toast({
         title: "Task Not Deleted",
@@ -808,7 +827,7 @@ export function CaseDetailPage() {
         onOpenChange={(open) => {
           if (!open) setTaskToDelete(null);
         }}
-        title="Permanently delete task?"
+        title="Delete task?"
         recordType="task"
         recordName={taskToDelete?.title}
         isDeleting={isDeletingTask}
@@ -1816,6 +1835,7 @@ function MatterDashboardTab({
   onTabChange: (tab: string) => void;
   onTaskClick: (task: any) => void;
 }) {
+  const [matterPipelines, setMatterPipelines] = useState<GhlPipeline[]>([]);
   const activeTasks = detail.tasks.filter((task) => !isCompletedTask(task));
   const completedTasks = detail.tasks.filter(isCompletedTask);
   const overdueTasks = activeTasks.filter((task) => {
@@ -1850,6 +1870,7 @@ function MatterDashboardTab({
   const currentLifecycleSegment = visibleLifecycleSegments[visibleLifecycleSegments.length - 1];
   const currentLifecycleSegmentKey = currentLifecycleSegment?.key;
   const openedDateLabel = formatMatterTimelineDate(detail.case.opened_at || detail.case.created_at);
+  const nextStageLabel = getNextPipelineStageName(detail.case, matterPipelines);
   const stats = [
     { label: "Open Tasks", value: activeTasks.length, icon: CheckSquare },
     { label: "Overdue", value: overdueTasks.length, icon: Clock },
@@ -1889,6 +1910,23 @@ function MatterDashboardTab({
     orderedColumns: orderedDashboardDocumentColumns,
     getColumnDragProps: getDashboardDocumentColumnDragProps,
   } = useColumnOrder("lawbric.tableColumns.matterDashboardDocuments", dashboardDocumentColumns);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    loadMatterPipelines()
+      .then((pipelines) => {
+        if (!cancelled) setMatterPipelines(pipelines);
+      })
+      .catch((error) => {
+        console.warn("Could not load matter timeline pipeline stages", error);
+        if (!cancelled) setMatterPipelines([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [detail.case.ghl_pipeline_id, detail.case.ghl_pipeline_stage_id]);
 
   return (
     <div className="space-y-4 pt-3">
@@ -1960,6 +1998,10 @@ function MatterDashboardTab({
                   {currentLifecycleSegment?.label || getMatterTimelineStageLabel(detail.case.stage)}
                 </span>
                 <span>{currentLifecycleSegment?.durationLabel || "< 1 Day"}</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <span>Next Stage:</span>
+                <span className="font-medium text-foreground">{nextStageLabel}</span>
               </div>
             </div>
           </CardContent>
@@ -4279,9 +4321,10 @@ function CommunicationsTab({
         key={communication.id}
         type="button"
         className={cn(
-          "flex w-full gap-3 border-b py-3 pl-4 pr-6 text-left transition-colors last:border-0 hover:bg-muted/40",
+          "flex w-full gap-3 border-b border-l-4 border-l-transparent py-3 pl-4 pr-6 text-left transition-colors last:border-b-0 hover:bg-muted/40",
           selected && "bg-blue-50/70 hover:bg-blue-50/70",
         )}
+        style={{ borderLeftColor: selected ? "#2384CA" : "transparent" }}
         onClick={() => setSelectedCommunicationId(communication.id)}
       >
         <span
@@ -5774,7 +5817,7 @@ function DocumentsTab({
       await deleteDocument(documentToDelete.id);
       setDocumentToDelete(null);
       onChanged();
-      toast({ title: "Document Deleted", description: "The matter document has been deleted." });
+      toast({ title: "Document Deleted", description: "The matter document was removed from normal views." });
     } catch (error) {
       toast({ title: "Document Not Deleted", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
     } finally {

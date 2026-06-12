@@ -22,26 +22,29 @@ serve(async (req) => {
     const caseRow = await getCaseOrThrow(context, body.caseId);
     const canViewDocuments = await userHasPermission(context, "documents.view");
     const [parties, assignments, tasks, events, documents, financials, notes, communications, contactAssignment] = await Promise.all([
-      context.supabase.from("case_parties").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: true }),
+      context.supabase.from("case_parties").select("*").eq("case_id", caseRow.id).is("deleted_at", null).order("created_at", { ascending: true }),
       context.supabase
         .from("case_assignments")
         .select("*, assigned_user:profiles!case_assignments_assigned_user_id_fkey(id, full_name, email)")
-        .eq("case_id", caseRow.id),
-      context.supabase.from("tasks").select("*").eq("case_id", caseRow.id).order("due_at", { ascending: true, nullsFirst: false }),
-      context.supabase.from("case_events").select("*").eq("case_id", caseRow.id).order("start_at", { ascending: false }),
+        .eq("case_id", caseRow.id)
+        .is("deleted_at", null),
+      context.supabase.from("tasks").select("*").eq("case_id", caseRow.id).is("deleted_at", null).order("due_at", { ascending: true, nullsFirst: false }),
+      context.supabase.from("case_events").select("*").eq("case_id", caseRow.id).is("deleted_at", null).order("start_at", { ascending: false }),
       canViewDocuments
         ? context.supabase
           .from("documents")
           .select("*, uploaded_user:profiles!documents_uploaded_by_fkey(id, full_name, email), updated_user:profiles!documents_updated_by_fkey(id, full_name, email)")
           .eq("case_id", caseRow.id)
+          .is("deleted_at", null)
           .order("created_at", { ascending: false })
         : Promise.resolve({ data: [], error: null }),
-      context.supabase.from("financials").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
-      context.supabase.from("notes").select("*").eq("case_id", caseRow.id).order("created_at", { ascending: false }),
+      context.supabase.from("financials").select("*").eq("case_id", caseRow.id).is("deleted_at", null).order("created_at", { ascending: false }),
+      context.supabase.from("notes").select("*").eq("case_id", caseRow.id).is("deleted_at", null).order("created_at", { ascending: false }),
       context.supabase
         .from("case_communications")
         .select("*, created_user:profiles!case_communications_created_by_fkey(id, full_name, email, avatar_url)")
         .eq("case_id", caseRow.id)
+        .is("deleted_at", null)
         .order("occurred_at", { ascending: false }),
       context.supabase
         .from("contact_assignments")

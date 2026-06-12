@@ -32,6 +32,9 @@ export type LeadRecord = {
   converted_case_id?: string | null;
   converted_at?: string | null;
   metadata?: Record<string, unknown>;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -140,14 +143,34 @@ async function syncLeadOpportunity(input: LeadInput, existingOpportunityId?: str
 export async function listLeads(locationId: string) {
   if (!locationId) return [];
 
-  const { data, error } = await supabase
-    .from("lead_opportunities")
-    .select("*")
-    .eq("location_id", locationId)
-    .order("updated_at", { ascending: false });
+  const buildQuery = (includeSoftDeleteFilter: boolean) => {
+    let query = supabase
+      .from("lead_opportunities")
+      .select("*")
+      .eq("location_id", locationId);
+
+    if (includeSoftDeleteFilter) query = query.is("deleted_at", null);
+    return query.order("updated_at", { ascending: false });
+  };
+
+  let { data, error } = await buildQuery(true);
+  if (error && isSoftDeleteColumnUnavailable(error)) {
+    ({ data, error } = await buildQuery(false));
+  }
 
   if (error) throw new Error(error.message);
   return (data || []) as LeadRecord[];
+}
+
+function isSoftDeleteColumnUnavailable(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : error && typeof error === "object" && "message" in error
+      ? String(error.message)
+      : String(error || "");
+  const normalizedMessage = message.toLowerCase();
+  return normalizedMessage.includes("deleted_at") &&
+    (normalizedMessage.includes("schema cache") || normalizedMessage.includes("column") && normalizedMessage.includes("does not exist"));
 }
 
 function getContactId(contact: any) {
@@ -380,6 +403,7 @@ export async function updateLead(leadId: string, input: Partial<LeadInput>) {
     .from("lead_opportunities")
     .select("*")
     .eq("id", leadId)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (existingError) throw new Error(existingError.message);
@@ -433,7 +457,16 @@ export async function updateLead(leadId: string, input: Partial<LeadInput>) {
 
 export async function deleteLead(leadId: string) {
   await requirePermission("leads.delete", "You do not have permission to delete leads.");
-  const { error } = await supabase.from("lead_opportunities").delete().eq("id", leadId);
+  const { data: { user } } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from("lead_opportunities")
+    .update({
+      deleted_at: new Date().toISOString(),
+      deleted_by: user?.id || null,
+      delete_reason: null,
+    })
+    .eq("id", leadId)
+    .is("deleted_at", null);
   if (error) throw new Error(error.message);
 }
 

@@ -858,7 +858,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
     try {
       await deleteCase({ locationId, caseId: caseToDelete.id });
       setCases((current) => current.filter((caseRecord) => caseRecord.id !== caseToDelete.id));
-      toast({ title: "Matter Deleted", description: `${caseToDelete.case_name} was permanently deleted.` });
+      toast({ title: "Matter Deleted", description: `${caseToDelete.case_name} was removed from normal views.` });
       setCaseToDelete(null);
     } catch (error) {
       toast({
@@ -957,7 +957,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
       <DeleteConfirmationDialog
         open={Boolean(caseToDelete)}
         onOpenChange={(open) => !open && setCaseToDelete(null)}
-        title="Permanently delete matter?"
+        title="Delete matter?"
         recordType="matter"
         recordName={caseToDelete?.case_name}
         isDeleting={isDeletingCase}

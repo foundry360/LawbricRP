@@ -23,6 +23,7 @@ serve(async (req) => {
       .select("*")
       .eq("id", body.documentId)
       .eq("location_id", context.location.id)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (error) throw new Error(error.message);
@@ -31,22 +32,22 @@ serve(async (req) => {
     await getCaseOrThrow(context, document.case_id || document.matter_id);
     await requireContextPermission(context, "documents.delete", "You do not have permission to delete matter documents.");
 
-    if (!document.storage_type || document.storage_type === "internal") {
-      const bucket = document.storage_bucket || "documents";
-      const path = document.file_path || document.storage_path;
-      if (path) {
-        const { error: removeError } = await context.supabase.storage.from(bucket).remove([path]);
-        if (removeError) throw new Error(removeError.message);
-      }
-    }
+    const deletedAt = new Date().toISOString();
+    const deleteReason = typeof body.deleteReason === "string" ? body.deleteReason.trim() || null : null;
 
     const { error: deleteError } = await context.supabase
       .from("documents")
-      .delete()
-      .eq("id", document.id);
+      .update({
+        deleted_at: deletedAt,
+        deleted_by: context.user.id,
+        delete_reason: deleteReason,
+      })
+      .eq("id", document.id)
+      .eq("location_id", context.location.id)
+      .is("deleted_at", null);
 
     if (deleteError) throw new Error(deleteError.message);
-    return jsonResponse({ ok: true, documentId: document.id });
+    return jsonResponse({ ok: true, documentId: document.id, softDeleted: true });
   } catch (error) {
     return handleError(error);
   }

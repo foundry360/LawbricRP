@@ -24,6 +24,7 @@ serve(async (req) => {
       .select("*, case:cases!documents_case_id_fkey(id, case_number, case_name), uploaded_user:profiles!documents_uploaded_by_fkey(id, full_name, email), updated_user:profiles!documents_updated_by_fkey(id, full_name, email)")
       .eq("id", body.documentId)
       .eq("location_id", context.location.id)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (error) throw new Error(error.message);

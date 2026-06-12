@@ -90,6 +90,9 @@ type ContactNote = {
   created_at: string;
   updated_at?: string | null;
   created_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
 };
 
 function getNoteAuthorName(note: { created_by?: string | null }, users: any[]) {
@@ -1223,6 +1226,7 @@ function ContactNoteSheet({
               updated_at: new Date().toISOString(),
             })
             .eq("id", selectedNote.id)
+            .is("deleted_at", null)
             .select("*")
             .single()
         : supabase
@@ -1373,15 +1377,26 @@ export function ContactDetailPage() {
   };
 
   const handleDeleteContactNote = async (note: ContactNote) => {
-    if (!window.confirm("Delete this note? This cannot be undone.")) return;
+    if (!window.confirm("Delete this note? It will be removed from normal views.")) return;
 
     try {
       await requirePermission("contacts.edit", "You do not have permission to delete contact notes.");
-      const { error } = await supabase.from("contact_notes").delete().eq("id", note.id);
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      const { error } = await supabase
+        .from("contact_notes")
+        .update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user?.id || null,
+          delete_reason: null,
+        })
+        .eq("id", note.id)
+        .is("deleted_at", null);
       if (error) throw new Error(error.message);
 
       handleNoteDeleted(note.id);
-      toast({ title: "Note Deleted", description: "The contact note has been deleted." });
+      toast({ title: "Note Deleted", description: "The contact note was removed from normal views." });
     } catch (error) {
       toast({
         title: "Note Not Deleted",
@@ -1439,11 +1454,19 @@ export function ContactDetailPage() {
     if (!locationRecordId || !ghlContactId) return;
 
     if (!assignedUserId || assignedUserId === "Unassigned") {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       const { error } = await supabase
         .from("contact_assignments")
-        .delete()
+        .update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user?.id || null,
+          delete_reason: null,
+        })
         .eq("location_id", locationRecordId)
-        .eq("ghl_contact_id", ghlContactId);
+        .eq("ghl_contact_id", ghlContactId)
+        .is("deleted_at", null);
 
       if (error) throw new Error(error.message);
       return;
@@ -1454,6 +1477,9 @@ export function ContactDetailPage() {
         location_id: locationRecordId,
         ghl_contact_id: ghlContactId,
         assigned_user_id: assignedUserId,
+        deleted_at: null,
+        deleted_by: null,
+        delete_reason: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "location_id,ghl_contact_id" },
@@ -1855,7 +1881,8 @@ export function ContactDetailPage() {
               const { data: parties, error: partiesError } = await supabase
                 .from("case_parties")
                 .select("case_id, ghl_contact_id, email, name")
-                .eq("location_id", locRecordId);
+                .eq("location_id", locRecordId)
+                .is("deleted_at", null);
 
               if (partiesError) throw new Error(partiesError.message);
 
@@ -1903,6 +1930,7 @@ export function ContactDetailPage() {
                 .select("*")
                 .eq("location_id", locRecordId)
                 .eq("ghl_contact_id", rawContact.id)
+                .is("deleted_at", null)
                 .order("created_at", { ascending: false });
 
               if (error) throw new Error(error.message);
@@ -1924,6 +1952,7 @@ export function ContactDetailPage() {
             .select("assigned_user_id")
             .eq("location_id", locRecordId)
             .eq("ghl_contact_id", rawContact.id)
+            .is("deleted_at", null)
             .maybeSingle();
 
           if (assignmentError) {

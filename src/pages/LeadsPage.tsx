@@ -604,7 +604,7 @@ export function LeadsPage() {
       await deleteLead(leadToDelete.id);
       setLeads((current) => current.filter((lead) => lead.id !== leadToDelete.id));
       setLeadToDelete(null);
-      toast({ title: "Lead Deleted", description: "The lead has been removed from Lawbric." });
+      toast({ title: "Lead Deleted", description: "The lead was removed from normal views." });
     } catch (error) {
       toast({
         title: "Lead Not Deleted",

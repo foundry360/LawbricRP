@@ -13,6 +13,7 @@ type DeleteConfirmationDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title?: string;
+  description?: string;
   recordName?: string;
   recordType?: string;
   isDeleting?: boolean;
@@ -22,8 +23,8 @@ type DeleteConfirmationDialogProps = {
 export function DeleteConfirmationDialog({
   open,
   onOpenChange,
-  title = "Permanently delete record?",
-  recordName,
+  title = "Delete record?",
+  description,
   recordType = "record",
   isDeleting,
   onConfirm,
@@ -42,13 +43,8 @@ export function DeleteConfirmationDialog({
         <SheetHeader className="mb-6 space-y-1">
           <SheetTitle className="text-lg font-semibold">{title}</SheetTitle>
           <SheetDescription>
-            This {recordType} will be permanently deleted. This action cannot be undone.
-            {recordName ? (
-              <>
-                {" "}
-                Record: <strong className="text-foreground">{recordName}</strong>.
-              </>
-            ) : null}
+            {description ||
+              `Deleting this ${recordType} will hide it from everyday lists, dashboards, and search results. Lawbric will retain it for audit history and recovery, and an administrator may be required to restore it.`}
           </SheetDescription>
         </SheetHeader>
 

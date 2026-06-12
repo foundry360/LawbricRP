@@ -1,7 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
   corsHeaders,
-  deleteTaskFromGhl,
   getRequestContext,
   handleError,
   jsonResponse,
@@ -22,6 +21,7 @@ serve(async (req) => {
       .select("id, ghl_contact_id, metadata, created_by")
       .eq("id", body.taskId)
       .eq("location_id", context.location.id)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (existingError) throw new Error(existingError.message);
@@ -32,17 +32,23 @@ serve(async (req) => {
       return jsonResponse({ error: "Task not found" }, 404);
     }
 
-    const ghlDelete = await deleteTaskFromGhl(context, existing);
+    const deletedAt = new Date().toISOString();
+    const deleteReason = typeof body.deleteReason === "string" ? body.deleteReason.trim() || null : null;
 
     const { error } = await context.supabase
       .from("tasks")
-      .delete()
+      .update({
+        deleted_at: deletedAt,
+        deleted_by: context.user.id,
+        delete_reason: deleteReason,
+      })
       .eq("id", existing.id)
-      .eq("location_id", context.location.id);
+      .eq("location_id", context.location.id)
+      .is("deleted_at", null);
 
     if (error) throw new Error(error.message);
 
-    return jsonResponse({ ok: true, taskId: existing.id, ghlDelete });
+    return jsonResponse({ ok: true, taskId: existing.id, softDeleted: true });
   } catch (error) {
     return handleError(error);
   }

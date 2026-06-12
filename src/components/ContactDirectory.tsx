@@ -569,11 +569,19 @@ export function ContactDirectory() {
     if (!locationRecordId || !ghlContactId) return;
 
     if (!assignedUserId || assignedUserId === "Unassigned") {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       const { error } = await supabase
         .from("contact_assignments")
-        .delete()
+        .update({
+          deleted_at: new Date().toISOString(),
+          deleted_by: user?.id || null,
+          delete_reason: null,
+        })
         .eq("location_id", locationRecordId)
-        .eq("ghl_contact_id", ghlContactId);
+        .eq("ghl_contact_id", ghlContactId)
+        .is("deleted_at", null);
 
       if (error) throw new Error(error.message);
       return;
@@ -584,6 +592,9 @@ export function ContactDirectory() {
         location_id: locationRecordId,
         ghl_contact_id: ghlContactId,
         assigned_user_id: assignedUserId,
+        deleted_at: null,
+        deleted_by: null,
+        delete_reason: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: "location_id,ghl_contact_id" },
@@ -673,7 +684,8 @@ export function ContactDirectory() {
           const { data: assignments, error: assignmentsError } = await supabase
             .from("contact_assignments")
             .select("ghl_contact_id, assigned_user_id")
-            .eq("location_id", locRecordId);
+            .eq("location_id", locRecordId)
+            .is("deleted_at", null);
 
           if (assignmentsError) {
             console.error("Failed to fetch contact assignments", assignmentsError);
@@ -825,7 +837,8 @@ export function ContactDirectory() {
           const { data: assignments, error: assignmentsError } = await supabase
             .from("contact_assignments")
             .select("ghl_contact_id, assigned_user_id")
-            .eq("location_id", locationRecordId);
+            .eq("location_id", locationRecordId)
+            .is("deleted_at", null);
 
           if (assignmentsError) {
             console.error("Failed to fetch company assignments", assignmentsError);

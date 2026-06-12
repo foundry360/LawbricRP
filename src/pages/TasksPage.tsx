@@ -385,6 +385,7 @@ export function TasksPage() {
           `)
           .eq("location_id", locationId)
           .eq("id", routeTaskId)
+          .is("deleted_at", null)
           .maybeSingle();
 
         if (cancelled) return;
@@ -642,7 +643,7 @@ export function TasksPage() {
     try {
       await deleteTask({ locationId, taskId: taskToDelete.id });
       setTasks((current) => current.filter((task) => task.id !== taskToDelete.id));
-      toast({ title: "Task Deleted", description: `${taskToDelete.title} was permanently deleted.` });
+      toast({ title: "Task Deleted", description: `${taskToDelete.title} was removed from normal views.` });
       setTaskToDelete(null);
     } catch (error) {
       toast({
@@ -675,7 +676,7 @@ export function TasksPage() {
       <DeleteConfirmationDialog
         open={Boolean(taskToDelete)}
         onOpenChange={(open) => !open && setTaskToDelete(null)}
-        title="Permanently delete task?"
+        title="Delete task?"
         recordType="task"
         recordName={taskToDelete?.title}
         isDeleting={isDeletingTask}

@@ -22,6 +22,9 @@ export type CaseRecord = {
   opened_at?: string | null;
   statute_of_limitations_at?: string | null;
   closed_at?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -85,26 +88,43 @@ async function invokeCaseFunction<T>(name: string, body: Record<string, unknown>
   return data as T;
 }
 
+function isSoftDeleteColumnUnavailable(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : error && typeof error === "object" && "message" in error
+      ? String(error.message)
+      : String(error || "");
+  const normalizedMessage = message.toLowerCase();
+  return normalizedMessage.includes("deleted_at") &&
+    (normalizedMessage.includes("schema cache") || normalizedMessage.includes("column") && normalizedMessage.includes("does not exist"));
+}
+
 export async function listCases(params: Record<string, unknown> = {}) {
   const locationId = String(params.locationId || await getLocationId());
   const limit = Math.min(Number(params.limit) || 100, 200);
-  let query = supabase
-    .from("cases")
-    .select("*")
-    .eq("location_id", locationId)
-    .order("updated_at", { ascending: false })
-    .limit(limit);
-
   const status = String(params.status || "");
-  if (status && status !== "all") query = query.eq("status", status);
-
   const caseType = String(params.caseType || "");
-  if (caseType && caseType !== "all") query = query.eq("case_type", caseType);
-
   const search = String(params.search || "").replace(/%/g, "").trim();
-  if (search) query = query.or(`case_name.ilike.%${search}%,case_number.ilike.%${search}%,primary_contact_name.ilike.%${search}%`);
 
-  const { data, error } = await query;
+  const buildQuery = (includeSoftDeleteFilter: boolean) => {
+    let query = supabase
+      .from("cases")
+      .select("*")
+      .eq("location_id", locationId);
+
+    if (includeSoftDeleteFilter) query = query.is("deleted_at", null);
+    query = query.order("updated_at", { ascending: false }).limit(limit);
+    if (status && status !== "all") query = query.eq("status", status);
+    if (caseType && caseType !== "all") query = query.eq("case_type", caseType);
+    if (search) query = query.or(`case_name.ilike.%${search}%,case_number.ilike.%${search}%,primary_contact_name.ilike.%${search}%`);
+    return query;
+  };
+
+  let { data, error } = await buildQuery(true);
+  if (error && isSoftDeleteColumnUnavailable(error)) {
+    ({ data, error } = await buildQuery(false));
+  }
+
   if (error) throw new Error(error.message);
   return (data || []) as CaseRecord[];
 }

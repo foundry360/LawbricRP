@@ -592,7 +592,7 @@ export function DocumentsPage() {
       await deleteDocument(documentToDelete.id);
       setDocuments((current) => current.filter((document) => document.id !== documentToDelete.id));
       setDocumentToDelete(null);
-      toast({ title: "Document Deleted", description: "The document has been removed." });
+      toast({ title: "Document Deleted", description: "The document was removed from normal views." });
     } catch (error) {
       toast({ title: "Document Not Deleted", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
     } finally {

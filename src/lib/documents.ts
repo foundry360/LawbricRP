@@ -24,6 +24,9 @@ export type DocumentRecord = {
   metadata?: Record<string, unknown>;
   uploaded_by?: string | null;
   updated_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
   created_at: string;
   updated_at: string;
   case?: Pick<CaseRecord, "id" | "case_number" | "case_name"> | null;
@@ -122,6 +125,7 @@ async function listDocumentsDirect(caseId?: string) {
       updated_user:profiles!documents_updated_by_fkey(id, full_name, email)
     `)
     .eq("location_id", locationId)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (caseId) query = query.eq("case_id", caseId);
@@ -133,6 +137,7 @@ async function listDocumentsDirect(caseId?: string) {
     .from("documents")
     .select("*")
     .eq("location_id", locationId)
+    .is("deleted_at", null)
     .order("created_at", { ascending: false });
 
   if (caseId) fallbackQuery = fallbackQuery.eq("case_id", caseId);
@@ -152,6 +157,7 @@ async function getDocumentDirect(documentId: string) {
       updated_user:profiles!documents_updated_by_fkey(id, full_name, email)
     `)
     .eq("id", documentId)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (!error && data) return data as DocumentRecord;
@@ -160,6 +166,7 @@ async function getDocumentDirect(documentId: string) {
     .from("documents")
     .select("*")
     .eq("id", documentId)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (fallback.error) throw new Error(fallback.error.message);
@@ -306,6 +313,7 @@ export async function viewDocument(document_id: string, _user?: unknown): Promis
         updated_user:profiles!documents_updated_by_fkey(id, full_name, email)
       `)
       .eq("id", document_id)
+      .is("deleted_at", null)
       .maybeSingle();
 
     if (documentError) throw new Error(documentError.message);

@@ -21,6 +21,9 @@ export type TaskRecord = {
   ghl_opportunity_name?: string | null;
   metadata?: Record<string, unknown>;
   created_by?: string | null;
+  deleted_at?: string | null;
+  deleted_by?: string | null;
+  delete_reason?: string | null;
   created_at: string;
   updated_at: string;
   case?: Pick<CaseRecord, "id" | "case_number" | "case_name" | "primary_contact_name"> | null;
@@ -95,38 +98,53 @@ async function invokeTaskFunction<T>(name: string, body: Record<string, unknown>
   return data as T;
 }
 
+function isSoftDeleteColumnUnavailable(error: unknown) {
+  const message = error instanceof Error
+    ? error.message
+    : error && typeof error === "object" && "message" in error
+      ? String(error.message)
+      : String(error || "");
+  const normalizedMessage = message.toLowerCase();
+  return normalizedMessage.includes("deleted_at") &&
+    (normalizedMessage.includes("schema cache") || normalizedMessage.includes("column") && normalizedMessage.includes("does not exist"));
+}
+
 export async function listTasks(params: Record<string, unknown> = {}) {
   const locationId = String(params.locationId || await getLocationId());
   const limit = Math.min(Number(params.limit) || 200, 500);
-  let query = supabase
-    .from("tasks")
-    .select(`
-      *,
-      case:cases(id, case_number, case_name, primary_contact_name),
-      assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
-    `)
-    .eq("location_id", locationId)
-    .order("due_at", { ascending: true, nullsFirst: false })
-    .order("updated_at", { ascending: false })
-    .limit(limit);
-
   const status = String(params.status || "");
-  if (status && status !== "all") query = query.eq("status", status);
-
   const relatedType = String(params.relatedType || "");
-  if (relatedType && relatedType !== "all") query = query.eq("related_type", relatedType);
-
   const assignedUserId = String(params.assignedUserId || "");
-  if (assignedUserId && assignedUserId !== "all") query = query.eq("assigned_user_id", assignedUserId);
-
   const search = String(params.search || "").replace(/%/g, "").trim();
-  if (search) {
-    query = query.or(
-      `title.ilike.%${search}%,description.ilike.%${search}%,ghl_contact_name.ilike.%${search}%,ghl_opportunity_name.ilike.%${search}%`,
-    );
+
+  const buildQuery = (includeSoftDeleteFilter: boolean) => {
+    let query = supabase
+      .from("tasks")
+      .select(`
+        *,
+        case:cases(id, case_number, case_name, primary_contact_name),
+        assigned_user:profiles!tasks_assigned_user_id_fkey(id, full_name, email, avatar_url)
+      `)
+      .eq("location_id", locationId);
+
+    if (includeSoftDeleteFilter) query = query.is("deleted_at", null);
+    query = query.order("due_at", { ascending: true, nullsFirst: false }).order("updated_at", { ascending: false }).limit(limit);
+    if (status && status !== "all") query = query.eq("status", status);
+    if (relatedType && relatedType !== "all") query = query.eq("related_type", relatedType);
+    if (assignedUserId && assignedUserId !== "all") query = query.eq("assigned_user_id", assignedUserId);
+    if (search) {
+      query = query.or(
+        `title.ilike.%${search}%,description.ilike.%${search}%,ghl_contact_name.ilike.%${search}%,ghl_opportunity_name.ilike.%${search}%`,
+      );
+    }
+    return query;
+  };
+
+  let { data, error } = await buildQuery(true);
+  if (error && isSoftDeleteColumnUnavailable(error)) {
+    ({ data, error } = await buildQuery(false));
   }
 
-  const { data, error } = await query;
   if (error) throw new Error(error.message);
   return (data || []) as TaskRecord[];
 }

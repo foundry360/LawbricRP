@@ -1378,6 +1378,7 @@ export function CompanyDetailPage() {
             .select("assigned_user_id")
             .eq("location_id", locationRecordId)
             .eq("ghl_contact_id", companyId)
+            .is("deleted_at", null)
             .maybeSingle();
 
           if (!error && data?.assigned_user_id) {

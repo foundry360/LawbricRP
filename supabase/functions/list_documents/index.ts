@@ -37,6 +37,7 @@ serve(async (req) => {
       .from("documents")
       .select(DOCUMENT_SELECT)
       .eq("location_id", context.location.id)
+      .is("deleted_at", null)
       .order("created_at", { ascending: false })
       .limit(limit);
 

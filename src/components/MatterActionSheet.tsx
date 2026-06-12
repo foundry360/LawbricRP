@@ -545,7 +545,7 @@ export function MatterActionSheet({
       await deleteCase({ locationId, caseId: matter.id });
       onDeleted(matter.id);
       closeSheet();
-      toast({ title: "Matter Deleted", description: `${matter.case_name || "Matter"} was permanently deleted.` });
+      toast({ title: "Matter Deleted", description: `${matter.case_name || "Matter"} was removed from normal views.` });
     } catch (error) {
       toast({
         title: "Matter Not Deleted",

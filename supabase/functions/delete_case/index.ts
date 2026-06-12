@@ -1,8 +1,6 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import {
   corsHeaders,
-  deleteCaseFromGhl,
-  deleteTaskFromGhl,
   getCaseOrThrow,
   getRequestContext,
   handleError,
@@ -22,30 +20,46 @@ serve(async (req) => {
     await requireContextPermission(context, "matters.delete", "You do not have permission to delete matters.");
 
     const caseRow = await getCaseOrThrow(context, body.caseId);
-    const { data: caseTasks, error: tasksError } = await context.supabase
-      .from("tasks")
-      .select("id, ghl_contact_id, metadata")
-      .eq("case_id", caseRow.id)
-      .eq("location_id", context.location.id);
+    const deletedAt = new Date().toISOString();
+    const deleteReason = typeof body.deleteReason === "string" ? body.deleteReason.trim() || null : null;
+    const deleteMetadata = {
+      deleted_at: deletedAt,
+      deleted_by: context.user.id,
+      delete_reason: deleteReason,
+    };
 
-    if (tasksError) throw new Error(tasksError.message);
+    const childTables = [
+      "case_parties",
+      "case_assignments",
+      "case_events",
+      "tasks",
+      "documents",
+      "financials",
+      "notes",
+      "case_communications",
+    ];
 
-    const ghlTaskDeletes = [];
-    for (const task of caseTasks ?? []) {
-      ghlTaskDeletes.push({ taskId: task.id, ...(await deleteTaskFromGhl(context, task)) });
+    for (const table of childTables) {
+      const { error: childError } = await context.supabase
+        .from(table)
+        .update(deleteMetadata)
+        .eq("case_id", caseRow.id)
+        .eq("location_id", context.location.id)
+        .is("deleted_at", null);
+
+      if (childError) throw new Error(childError.message);
     }
-
-    const ghlCaseDelete = await deleteCaseFromGhl(context, caseRow);
 
     const { error } = await context.supabase
       .from("cases")
-      .delete()
+      .update(deleteMetadata)
       .eq("id", caseRow.id)
-      .eq("location_id", context.location.id);
+      .eq("location_id", context.location.id)
+      .is("deleted_at", null);
 
     if (error) throw new Error(error.message);
 
-    return jsonResponse({ ok: true, caseId: caseRow.id, ghlCaseDelete, ghlTaskDeletes });
+    return jsonResponse({ ok: true, caseId: caseRow.id, softDeleted: true });
   } catch (error) {
     return handleError(error);
   }

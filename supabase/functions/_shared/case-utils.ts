@@ -311,6 +311,7 @@ export async function getDocumentCapabilities(context: RequestContext) {
 
 export async function canViewMatter(context: RequestContext, caseRow: any) {
   if (!caseRow) return false;
+  if (caseRow.deleted_at) return false;
   if (!caseRow.location_id || caseRow.location_id !== context.location.id) return false;
 
   if (await userHasPermission(context, "matters.view_all")) return true;
@@ -328,6 +329,7 @@ export async function canViewMatter(context: RequestContext, caseRow: any) {
     .eq("case_id", caseRow.id)
     .eq("assigned_user_id", context.user.id)
     .is("ended_at", null)
+    .is("deleted_at", null)
     .limit(1);
 
   if (error) return false;
@@ -340,6 +342,7 @@ export async function getCaseOrThrow(context: RequestContext, caseId: string) {
     .select("*")
     .eq("id", caseId)
     .eq("location_id", context.location.id)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (error) throw new Error("Could not load case");
