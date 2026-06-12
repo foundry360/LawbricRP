@@ -39,6 +39,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getCachedContactsIfAvailable, getContacts, getPipelines, hasPermission, type GhlPipeline } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
@@ -52,7 +53,7 @@ import {
   type LeadRecord,
 } from "@/lib/leads";
 import { formatPersonName } from "@/lib/names";
-import { listPipelineConfigs, type PipelineConfig } from "@/lib/pipeline-configs";
+import { listPipelineConfigs, normalizePipelineColor, type PipelineConfig } from "@/lib/pipeline-configs";
 import { supabase } from "@/lib/supabase";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
 import { cn } from "@/lib/utils";
@@ -949,6 +950,7 @@ export function LeadsPage() {
             <LeadKanbanBoard
               leads={sortedLeads}
               pipelines={activePipeline ? [activePipeline] : []}
+              pipelineConfigMap={pipelineConfigMap}
               dragOverStageId={dragOverStageId}
               updatingLeadStageId={updatingLeadStageId}
               onDragOverStage={setDragOverStageId}
@@ -1087,27 +1089,32 @@ function LeadTable({
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
 }) {
-  const columns: Array<[LeadSortColumn, string]> = [
-    ["lead_name", "Lead"],
-    ["contact_name", "Contact"],
-    ["status", "Status"],
-    ["stage", "Stage"],
-    ["updated_at", "Last Updated"],
+  const columns: Array<ReorderableColumn<LeadSortColumn>> = [
+    { key: "lead_name", label: "Lead" },
+    { key: "contact_name", label: "Contact" },
+    { key: "status", label: "Status" },
+    { key: "stage", label: "Stage" },
+    { key: "updated_at", label: "Last Updated" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.leads", columns);
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1115,44 +1122,67 @@ function LeadTable({
           </tr>
         </thead>
         <tbody>
-          {leads.map((lead) => (
+          {leads.map((lead) => {
+            const renderCell = (column: LeadSortColumn) => {
+              switch (column) {
+                case "lead_name":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <div className="flex items-center space-x-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <UserRound className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <div className="font-medium capitalize text-[#2384CA]">{lead.lead_name}</div>
+                          <div className="text-xs text-muted-foreground">{getLeadEmailDisplay(lead)}</div>
+                        </div>
+                      </div>
+                    </td>
+                  );
+                case "contact_name":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center gap-3">
+                        <LeadContactAvatar lead={lead} />
+                        <div className="min-w-0">
+                          <div className="truncate">{lead.contact_name || lead.ghl_contact_id}</div>
+                        </div>
+                      </div>
+                    </td>
+                  );
+                case "status":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <Badge variant="outline" className={cn("border-transparent capitalize", getLeadStatusClass(lead.status))}>
+                        {lead.status}
+                      </Badge>
+                    </td>
+                  );
+                case "stage":
+                  return <td key={column} className="px-4 py-2 capitalize text-foreground/80">{lead.stage || "No stage"}</td>;
+                case "updated_at":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{formatDate(lead.updated_at)}</span>
+                      </div>
+                    </td>
+                  );
+                default:
+                  return null;
+              }
+            };
+
+            return (
               <tr key={lead.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
-                <td className="px-4 py-2">
-                  <div className="flex items-center space-x-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
-                      <UserRound className="h-4 w-4" />
-                    </div>
-                    <div>
-                      <div className="font-medium capitalize text-[#2384CA]">{lead.lead_name}</div>
-                      <div className="text-xs text-muted-foreground">{getLeadEmailDisplay(lead)}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-2 text-foreground/70">
-                  <div className="flex items-center gap-3">
-                    <LeadContactAvatar lead={lead} />
-                    <div className="min-w-0">
-                      <div className="truncate">{lead.contact_name || lead.ghl_contact_id}</div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-2">
-                  <Badge variant="outline" className={cn("border-transparent capitalize", getLeadStatusClass(lead.status))}>
-                    {lead.status}
-                  </Badge>
-                </td>
-                <td className="px-4 py-2 capitalize text-foreground/80">{lead.stage || "No stage"}</td>
-                <td className="px-4 py-2 text-foreground/70">
-                  <div className="flex items-center">
-                    <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
-                    <span>{formatDate(lead.updated_at)}</span>
-                  </div>
-                </td>
+                {orderedColumns.map((column) => renderCell(column.key))}
                 <td className="px-4 py-2 text-right">
                   <LeadActions lead={lead} onEdit={onEdit} canEdit={canEdit} canConvert={canConvert} canDelete={canDelete} onDelete={onDelete} onConvert={onConvert} />
                 </td>
               </tr>
-            ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1429,6 +1459,7 @@ function LeadActions({
 function LeadKanbanBoard({
   leads,
   pipelines,
+  pipelineConfigMap,
   dragOverStageId,
   updatingLeadStageId,
   onDragOverStage,
@@ -1442,6 +1473,7 @@ function LeadKanbanBoard({
 }: {
   leads: LeadRecord[];
   pipelines: GhlPipeline[];
+  pipelineConfigMap: Map<string, PipelineConfig>;
   dragOverStageId: string;
   updatingLeadStageId: string | null;
   onDragOverStage: (stageId: string) => void;
@@ -1467,6 +1499,7 @@ function LeadKanbanBoard({
     <div className="space-y-6">
       {pipelines.map((pipeline) => {
         const stages = pipeline.stages || [];
+        const pipelineColor = normalizePipelineColor(pipelineConfigMap.get(pipeline.id)?.color_hex);
         const stageIds = new Set(stages.map((stage) => stage.id));
         const pipelineLeads = leads.filter(
           (lead) => lead.ghl_pipeline_id === pipeline.id || stageIds.has(lead.ghl_pipeline_stage_id || ""),
@@ -1522,10 +1555,11 @@ function LeadKanbanBoard({
                     >
                       <div
                         className={cn(
-                          "relative z-10 flex h-10 items-center justify-between bg-[#0384C8] py-2 pl-3 pr-1 text-white",
+                          "relative z-10 flex h-10 items-center justify-between border-b-4 bg-[#0384C8] py-2 pl-3 pr-1 text-white",
                           isFirstStage && "rounded-tl-md",
                           isLastStage && "rounded-tr-md",
                         )}
+                        style={{ borderBottomColor: pipelineColor }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           <div className="truncate text-xs font-semibold uppercase tracking-wide text-white">
@@ -1550,6 +1584,7 @@ function LeadKanbanBoard({
                             canDelete={canDelete}
                             onDelete={onDelete}
                             onConvert={onConvert}
+                            pipelineColor={pipelineColor}
                           />
                         ))}
                       </div>
@@ -1574,6 +1609,7 @@ function LeadKanbanCard({
   canDelete,
   onDelete,
   onConvert,
+  pipelineColor,
 }: {
   lead: LeadRecord;
   isUpdating: boolean;
@@ -1583,6 +1619,7 @@ function LeadKanbanCard({
   canDelete: boolean;
   onDelete: (lead: LeadRecord) => void;
   onConvert: (lead: LeadRecord) => void;
+  pipelineColor: string;
 }) {
   const handleDragStart = (event: DragEvent<HTMLDivElement>) => {
     event.dataTransfer.setData("text/plain", lead.id);
@@ -1594,9 +1631,10 @@ function LeadKanbanCard({
       draggable={!isUpdating && canEdit}
       onDragStart={handleDragStart}
       className={cn(
-        "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
+        "cursor-grab overflow-hidden border-l-4 bg-background shadow-sm transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
         isUpdating && "cursor-wait opacity-60",
       )}
+      style={{ borderLeftColor: pipelineColor }}
     >
       <CardHeader className="space-y-1.5 bg-muted/30 p-2.5">
         <div className="flex items-center justify-between gap-3">

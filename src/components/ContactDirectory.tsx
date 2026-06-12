@@ -53,6 +53,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import {
   apiClient,
@@ -2082,29 +2083,34 @@ function ContactTable({
   onEdit: (contact: Contact) => void;
   onDelete: (contact: Contact) => void;
 }) {
-  const columns: Array<[keyof Contact, string]> = [
-    ["name", "Contact"],
-    ["email", "Email"],
-    ["phone", "Phone"],
-    ["status", "Status"],
-    ["type", "Account Type"],
-    ["caseType", "Practice Area"],
-    ["attorneyAssigned", "Assigned Attorney"],
+  const columns: Array<ReorderableColumn<keyof Contact & string>> = [
+    { key: "name", label: "Contact" },
+    { key: "email", label: "Email" },
+    { key: "phone", label: "Phone" },
+    { key: "status", label: "Status" },
+    { key: "type", label: "Account Type" },
+    { key: "caseType", label: "Practice Area" },
+    { key: "attorneyAssigned", label: "Assigned Attorney" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.contacts", columns);
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -2123,6 +2129,86 @@ function ContactTable({
               "";
             const assignedInitials = getAvatarInitials({ fullName: assignedName }, "U");
             const isCompany = contact.recordKind === "company";
+            const renderCell = (column: keyof Contact & string) => {
+              switch (column) {
+                case "name":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <div className="flex items-center space-x-3">
+                        <Avatar className="h-8 w-8">
+                          <AvatarFallback className="bg-blue-50 text-primary">
+                            {isCompany ? <Building2 className="h-4 w-4" /> : <IdCard className="h-4 w-4" />}
+                          </AvatarFallback>
+                        </Avatar>
+                        {contact.recordKind === "company" ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onView(contact);
+                            }}
+                            className="text-[#2384CA] hover:underline"
+                          >
+                            {contact.name}
+                          </button>
+                        ) : (
+                          <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="text-[#2384CA] hover:underline">
+                            {contact.name}
+                          </Link>
+                        )}
+                      </div>
+                    </td>
+                  );
+                case "email":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <Mail className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{contact.email}</span>
+                      </div>
+                    </td>
+                  );
+                case "phone":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <Phone className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{contact.phone}</span>
+                      </div>
+                    </td>
+                  );
+                case "status":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <Badge variant="outline" className={cn("border-transparent", getStatusColor(contact.status))}>
+                        {contact.status}
+                      </Badge>
+                    </td>
+                  );
+                case "type":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{contact.type}</td>;
+                case "caseType":
+                  return <td key={column} className="px-4 py-2 text-foreground/80">{contact.caseType}</td>;
+                case "attorneyAssigned":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/80">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="h-8 w-8">
+                          {assignedAvatarUrl ? (
+                            <AvatarImage src={assignedAvatarUrl} alt={`${assignedInitials} avatar`} />
+                          ) : null}
+                          <AvatarFallback className="bg-primary/10 text-xs font-medium text-primary">
+                            {assignedInitials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span>{assignedName}</span>
+                      </div>
+                    </td>
+                  );
+                default:
+                  return null;
+              }
+            };
 
             return (
             <tr
@@ -2130,63 +2216,7 @@ function ContactTable({
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
               onClick={() => onView(contact)}
             >
-              <td className="px-4 py-2">
-                <div className="flex items-center space-x-3">
-                  <Avatar className="h-8 w-8">
-                    <AvatarFallback className="bg-blue-50 text-primary">
-                      {isCompany ? <Building2 className="h-4 w-4" /> : <IdCard className="h-4 w-4" />}
-                    </AvatarFallback>
-                  </Avatar>
-                  {contact.recordKind === "company" ? (
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onView(contact);
-                      }}
-                      className="text-[#2384CA] hover:underline"
-                    >
-                      {contact.name}
-                    </button>
-                  ) : (
-                    <Link to={`/contact/${contact.id}`} onClick={(event) => event.stopPropagation()} className="text-[#2384CA] hover:underline">
-                      {contact.name}
-                    </Link>
-                  )}
-                </div>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">
-                <div className="flex items-center">
-                  <Mail className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span>{contact.email}</span>
-                </div>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">
-                <div className="flex items-center">
-                  <Phone className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span>{contact.phone}</span>
-                </div>
-              </td>
-              <td className="px-4 py-2">
-                <Badge variant="outline" className={cn("border-transparent", getStatusColor(contact.status))}>
-                  {contact.status}
-                </Badge>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">{contact.type}</td>
-              <td className="px-4 py-2 text-foreground/80">{contact.caseType}</td>
-              <td className="px-4 py-2 text-foreground/80">
-                <div className="flex items-center gap-2">
-                  <Avatar className="h-8 w-8">
-                    {assignedAvatarUrl ? (
-                      <AvatarImage src={assignedAvatarUrl} alt={`${assignedInitials} avatar`} />
-                    ) : null}
-                    <AvatarFallback className="bg-primary/10 text-xs font-medium text-primary">
-                      {assignedInitials}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span>{assignedName}</span>
-                </div>
-              </td>
+              {orderedColumns.map((column) => renderCell(column.key))}
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <ContactActions
                   onView={() => onView(contact)}

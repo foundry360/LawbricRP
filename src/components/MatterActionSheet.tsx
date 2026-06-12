@@ -2,6 +2,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/DatePicker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
@@ -60,6 +61,21 @@ function formatMatterStatus(status?: string | null) {
   return String(status || "-").replace(/_/g, " ");
 }
 
+function formatDateOnly(value?: string | null) {
+  if (!value) return "Not set";
+  const [datePart] = value.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const date = year && month && day ? new Date(year, month - 1, day) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+  return date.toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" });
+}
+
+function formatDateInput(value?: string | null) {
+  if (!value) return "";
+  const [datePart] = value.split("T");
+  return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : "";
+}
+
 function getPipelineSelection(
   pipelines: GhlPipeline[],
   pipelineId?: string | null,
@@ -109,6 +125,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
     stage: "intake",
     pipelineId: "",
     pipelineStageId: "",
+    statuteOfLimitationsAt: "",
     assignedUserId: "",
     sourceAttorneyUserId: "",
     notes: "",
@@ -124,6 +141,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
       stage: "intake",
       pipelineId: "",
       pipelineStageId: "",
+      statuteOfLimitationsAt: "",
       assignedUserId: contact?.assignedUserId || "",
       sourceAttorneyUserId: "",
       notes: "",
@@ -194,6 +212,7 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
         contactName: contact.name,
         contactEmail: contact.email || "",
         contactPhone: formatPhoneNumber(contact.phone, ""),
+        statuteOfLimitationsAt: form.statuteOfLimitationsAt || null,
         ...(canAssignMatter ? { assignedUserId: form.assignedUserId || null } : {}),
         ...(canAssignMatter ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         ghlPipelineId: form.pipelineId || null,
@@ -254,6 +273,15 @@ export function MatterCreateSheet({ open, onOpenChange, locationId, contact, rel
               placeholder="Select practice area"
               searchPlaceholder="Search practice areas..."
               emptyMessage="No practice areas found."
+            />
+          </div>
+          <div className="space-y-2">
+            <Label>Filing Deadline</Label>
+            <DatePicker
+              value={form.statuteOfLimitationsAt}
+              onValueChange={(statuteOfLimitationsAt) => setForm({ ...form, statuteOfLimitationsAt })}
+              placeholder="Select filing deadline"
+              displayMonth="long"
             />
           </div>
           <div className="space-y-2">
@@ -403,6 +431,7 @@ export function MatterActionSheet({
     stage: "",
     pipelineId: "",
     pipelineStageId: "",
+    statuteOfLimitationsAt: "",
     assignedUserId: "",
     sourceAttorneyUserId: "",
   });
@@ -420,6 +449,7 @@ export function MatterActionSheet({
       stage: matter.stage || "",
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
+      statuteOfLimitationsAt: formatDateInput(matter.statute_of_limitations_at),
       assignedUserId: matter.assigned_user_id || "",
       sourceAttorneyUserId: matter.source_attorney_user_id || "",
     });
@@ -482,6 +512,7 @@ export function MatterActionSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        statuteOfLimitationsAt: form.statuteOfLimitationsAt || null,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         ...(canAssignMatter ? { assignedUserId: form.assignedUserId || null } : {}),
@@ -567,6 +598,15 @@ export function MatterActionSheet({
                 placeholder="Select practice area"
                 searchPlaceholder="Search practice areas..."
                 emptyMessage="No practice areas found."
+              />
+            </div>
+            <div className="space-y-2">
+              <Label>Filing Deadline</Label>
+              <DatePicker
+                value={form.statuteOfLimitationsAt}
+                onValueChange={(statuteOfLimitationsAt) => setForm({ ...form, statuteOfLimitationsAt })}
+                placeholder="Select filing deadline"
+                displayMonth="long"
               />
             </div>
             <div className="space-y-2">
@@ -725,6 +765,7 @@ export function MatterActionSheet({
             <DetailRow label="Status" value={formatMatterStatus(matter.status)} />
             <DetailRow label="Practice Area" value={matter.case_type} />
             <DetailRow label="Stage" value={formatMatterStatus(matter.stage)} />
+            <DetailRow label="Filing Deadline" value={formatDateOnly(matter.statute_of_limitations_at)} />
             <DetailRow
               label="Lead Attorney"
               value={<UserLink userId={matter.assigned_user_id} user={matterLeadAttorney} />}

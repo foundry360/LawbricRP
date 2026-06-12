@@ -51,6 +51,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getCachedContactsIfAvailable, getContacts } from "@/lib/api";
 import { type CaseRecord, listCases } from "@/lib/cases";
@@ -1438,28 +1439,33 @@ function TaskTable({
   onEdit: (task: TaskRecord) => void;
   onDelete: (task: TaskRecord) => void;
 }) {
-  const columns: Array<[keyof TaskRecord, string]> = [
-    ["title", "Task"],
-    ["related_type", "Related To"],
-    ["assigned_user_id", "Assigned To"],
-    ["priority", "Priority"],
-    ["status", "Status"],
-    ["due_at", "Due"],
+  const columns: Array<ReorderableColumn<keyof TaskRecord & string>> = [
+    { key: "title", label: "Task" },
+    { key: "related_type", label: "Related To" },
+    { key: "assigned_user_id", label: "Assigned To" },
+    { key: "priority", label: "Priority" },
+    { key: "status", label: "Status" },
+    { key: "due_at", label: "Due" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.tasks", columns);
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1469,57 +1475,83 @@ function TaskTable({
         <tbody>
           {tasks.map((task) => {
             const relatedPath = getRelatedPath(task);
+            const renderCell = (column: keyof TaskRecord & string) => {
+              switch (column) {
+                case "title":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <div className="flex items-center space-x-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <CheckSquare className="h-4 w-4" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-1.5 text-[#2384CA] hover:underline">
+                            <span className="truncate">{task.title}</span>
+                            {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+                          </div>
+                          {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
+                        </div>
+                      </div>
+                    </td>
+                  );
+                case "related_type":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/80">
+                      {relatedPath ? (
+                        <Link to={relatedPath} onClick={(event) => event.stopPropagation()} className="text-[#2384CA] hover:underline">
+                          {getRelatedLabel(task)}
+                        </Link>
+                      ) : (
+                        getRelatedLabel(task)
+                      )}
+                    </td>
+                  );
+                case "assigned_user_id":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <User className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{getAssignedName(task, users)}</span>
+                      </div>
+                    </td>
+                  );
+                case "priority":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <Badge variant="outline" className={cn("border-transparent capitalize", getTaskPriorityClass(task.priority))}>
+                        {task.priority}
+                      </Badge>
+                    </td>
+                  );
+                case "status":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <Badge variant="outline" className={cn("border-transparent capitalize", getTaskStatusClass(task.status))}>
+                        {formatTaskStatusLabel(task.status)}
+                      </Badge>
+                    </td>
+                  );
+                case "due_at":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className={cn("flex items-center", isTaskOverdue(task) && "font-medium text-red-600")}>
+                        <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{formatDate(task.due_at)}</span>
+                      </div>
+                    </td>
+                  );
+                default:
+                  return null;
+              }
+            };
+
             return (
               <tr
                 key={task.id}
                 className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
                 onClick={() => onEdit(task)}
               >
-                <td className="px-4 py-2">
-                  <div className="flex items-center space-x-3">
-                    <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
-                      <CheckSquare className="h-4 w-4" />
-                    </div>
-                    <div className="min-w-0">
-                      <div className="flex min-w-0 items-center gap-1.5 text-[#2384CA] hover:underline">
-                        <span className="truncate">{task.title}</span>
-                        {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
-                      </div>
-                      {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
-                    </div>
-                  </div>
-                </td>
-                <td className="px-4 py-2 text-foreground/80">
-                  {relatedPath ? (
-                    <Link to={relatedPath} onClick={(event) => event.stopPropagation()} className="text-[#2384CA] hover:underline">
-                      {getRelatedLabel(task)}
-                    </Link>
-                  ) : (
-                    getRelatedLabel(task)
-                  )}
-                </td>
-                <td className="px-4 py-2 text-foreground/70">
-                  <div className="flex items-center">
-                    <User className="mr-2 h-3.5 w-3.5 shrink-0" />
-                    <span>{getAssignedName(task, users)}</span>
-                  </div>
-                </td>
-                <td className="px-4 py-2">
-                  <Badge variant="outline" className={cn("border-transparent capitalize", getTaskPriorityClass(task.priority))}>
-                    {task.priority}
-                  </Badge>
-                </td>
-                <td className="px-4 py-2">
-                  <Badge variant="outline" className={cn("border-transparent capitalize", getTaskStatusClass(task.status))}>
-                    {formatTaskStatusLabel(task.status)}
-                  </Badge>
-                </td>
-                <td className="px-4 py-2 text-foreground/70">
-                  <div className={cn("flex items-center", isTaskOverdue(task) && "font-medium text-red-600")}>
-                    <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
-                    <span>{formatDate(task.due_at)}</span>
-                  </div>
-                </td>
+                {orderedColumns.map((column) => renderCell(column.key))}
                 <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                   <TaskActions
                     onView={() => onEdit(task)}

@@ -1,6 +1,7 @@
 import { supabase } from "@/lib/supabase";
 
 export type PipelineClassification = "unclassified" | "prospecting" | "matter";
+export const DEFAULT_PIPELINE_COLOR = "#2384CA";
 
 export type PipelineConfig = {
   id: string;
@@ -13,6 +14,7 @@ export type PipelineConfig = {
   exclude_tags: string[];
   is_active: boolean;
   display_order: number;
+  color_hex: string;
   notes?: string | null;
   created_at: string;
   updated_at: string;
@@ -28,6 +30,7 @@ export type PipelineConfigInput = {
   excludeTags?: string[];
   isActive?: boolean;
   displayOrder?: number | null;
+  colorHex?: string | null;
   notes?: string | null;
 };
 
@@ -50,10 +53,16 @@ export function isMissingPipelineDisplayOrderError(error: unknown) {
   );
 }
 
+export function normalizePipelineColor(value?: string | null) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_PIPELINE_COLOR;
+}
+
 function normalizePipelineConfig(row: Partial<PipelineConfig>): PipelineConfig {
   return {
     ...row,
     display_order: row.display_order ?? 0,
+    color_hex: normalizePipelineColor(row.color_hex),
   } as PipelineConfig;
 }
 
@@ -105,6 +114,7 @@ export async function savePipelineConfig(input: PipelineConfigInput) {
     exclude_tags: input.excludeTags || [],
     is_active: input.isActive ?? true,
     ...(input.displayOrder !== undefined ? { display_order: input.displayOrder ?? 0 } : {}),
+    color_hex: normalizePipelineColor(input.colorHex),
     notes: input.notes || null,
   };
 

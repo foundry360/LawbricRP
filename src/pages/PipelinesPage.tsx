@@ -7,11 +7,13 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { getAppLocationContext, getPipelines, type GhlPipeline } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import {
   formatTagRule,
+  normalizePipelineColor,
   isMissingPipelineDisplayOrderError,
   listPipelineConfigsWithMetadata,
   parseTagRule,
@@ -48,6 +50,7 @@ type PipelineRow = {
 };
 
 type PipelineSortColumn = "order" | "name" | "classification" | "stages" | "status" | "updated";
+type PipelineTableColumn = PipelineSortColumn | "rules";
 type PipelineStatusFilter = "all" | "active" | "inactive";
 type PipelineDisplaySection = "leads" | "matters";
 
@@ -234,6 +237,17 @@ export function PipelinesPage() {
     if (sortColumn !== column) return <ArrowUpDown className="ml-1 h-3 w-3 text-muted-foreground/50" />;
     return sortDirection === "asc" ? <ChevronUp className="ml-1 h-3 w-3" /> : <ChevronDown className="ml-1 h-3 w-3" />;
   };
+  const columns: Array<ReorderableColumn<PipelineTableColumn>> = [
+    { key: "order", label: "Order" },
+    { key: "name", label: "Pipeline" },
+    { key: "classification", label: "Section" },
+    { key: "stages", label: "Stages" },
+    { key: "rules", label: "Rules" },
+    { key: "status", label: "Status" },
+    { key: "updated", label: "Updated" },
+  ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.pipelines", columns);
+  const isSortablePipelineColumn = (column: PipelineTableColumn): column is PipelineSortColumn => column !== "rules";
 
   const mergeSavedConfigs = (savedConfigs: PipelineConfig[]) => {
     setConfigs((current) => {
@@ -253,6 +267,7 @@ export function PipelinesPage() {
     excludeTags: row.config?.exclude_tags || [],
     isActive: row.config?.is_active ?? true,
     displayOrder,
+    colorHex: row.config?.color_hex,
     notes: row.config?.notes || null,
   });
 
@@ -398,25 +413,24 @@ export function PipelinesPage() {
           <table className="w-full text-left text-sm">
             <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
               <tr>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("order")}>
-                  <div className="flex items-center">Order {renderSortIcon("order")}</div>
-                </th>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("name")}>
-                  <div className="flex items-center">Pipeline {renderSortIcon("name")}</div>
-                </th>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("classification")}>
-                  <div className="flex items-center">Section {renderSortIcon("classification")}</div>
-                </th>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("stages")}>
-                  <div className="flex items-center">Stages {renderSortIcon("stages")}</div>
-                </th>
-                <th className="h-12 px-4 py-4 font-medium">Rules</th>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("status")}>
-                  <div className="flex items-center">Status {renderSortIcon("status")}</div>
-                </th>
-                <th className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80" onClick={() => handleSort("updated")}>
-                  <div className="flex items-center">Updated {renderSortIcon("updated")}</div>
-                </th>
+                {orderedColumns.map((column) => (
+                  <th
+                    key={column.key}
+                    className={cn(
+                      "h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing",
+                      isSortablePipelineColumn(column.key) && "cursor-grab",
+                    )}
+                    {...getColumnDragProps(column.key)}
+                    onClick={() => {
+                      if (shouldSuppressColumnClick() || !isSortablePipelineColumn(column.key)) return;
+                      handleSort(column.key);
+                    }}
+                  >
+                    <div className="flex items-center">
+                      {column.label} {isSortablePipelineColumn(column.key) ? renderSortIcon(column.key) : null}
+                    </div>
+                  </th>
+                ))}
                 <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -430,77 +444,110 @@ export function PipelinesPage() {
                 const isOrderDisabled = Boolean(savingOrderPipelineId) || !isPipelineOrderingAvailable;
                 const canMoveUp = orderIndex > 0 && !isOrderDisabled;
                 const canMoveDown = orderIndex >= 0 && orderIndex < sectionRows.length - 1 && !isOrderDisabled;
+                const renderCell = (column: PipelineTableColumn) => {
+                  switch (column) {
+                    case "order":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <div className="flex items-center gap-2">
+                            <span className="w-5 text-center text-xs font-medium text-muted-foreground">
+                              {orderIndex >= 0 ? orderIndex + 1 : "-"}
+                            </span>
+                            <div className="flex items-center rounded-full border bg-background">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 rounded-r-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                                onClick={() => handleMovePipeline(pipeline.id, "up")}
+                                disabled={!canMoveUp}
+                                aria-label={`Move ${pipeline.name} up`}
+                                tooltip={`Move ${pipeline.name} up`}
+                              >
+                                <ArrowUp className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 rounded-l-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
+                                onClick={() => handleMovePipeline(pipeline.id, "down")}
+                                disabled={!canMoveDown}
+                                aria-label={`Move ${pipeline.name} down`}
+                                tooltip={`Move ${pipeline.name} down`}
+                              >
+                                {isSavingOrder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowDown className="h-3.5 w-3.5" />}
+                              </Button>
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    case "name":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                              <GitBranch className="h-4 w-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="flex min-w-0 items-center gap-2">
+                                <span
+                                  className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                  style={{ backgroundColor: normalizePipelineColor(config?.color_hex) }}
+                                  aria-hidden="true"
+                                />
+                                <div className="truncate text-[#2384CA]">{pipeline.name}</div>
+                              </div>
+                              <div className="text-xs text-muted-foreground">{getPipelineDisplaySectionLabel(config)} order</div>
+                            </div>
+                          </div>
+                        </td>
+                      );
+                    case "classification":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <Badge
+                            variant="outline"
+                            className={cn("border-transparent", getClassificationClass(config?.classification))}
+                          >
+                            {getClassificationLabel(config?.classification)}
+                          </Badge>
+                        </td>
+                      );
+                    case "stages":
+                      return <td key={column} className="px-4 py-2 text-foreground/80">{pipeline.stages?.length || 0}</td>;
+                    case "rules":
+                      return (
+                        <td key={column} className="max-w-sm px-4 py-2 text-xs text-muted-foreground">
+                          <div className="space-y-1">
+                            <div>Account Type: {config?.account_type_rule || "Any"}</div>
+                            <div>Include Tags: {config?.include_tags?.length ? config.include_tags.join(", ") : "-"}</div>
+                            <div>Exclude Tags: {config?.exclude_tags?.length ? config.exclude_tags.join(", ") : "-"}</div>
+                          </div>
+                        </td>
+                      );
+                    case "status":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <Badge variant="outline" className={cn("border-transparent", config?.is_active === false ? "bg-slate-100 text-slate-700" : "bg-green-100 text-green-800")}>
+                            {config?.is_active === false ? "Inactive" : "Active"}
+                          </Badge>
+                        </td>
+                      );
+                    case "updated":
+                      return (
+                        <td key={column} className="px-4 py-2 text-foreground/70">
+                          {config?.updated_at ? new Date(config.updated_at).toLocaleDateString() : "-"}
+                        </td>
+                      );
+                    default:
+                      return null;
+                  }
+                };
 
                 return (
                   <tr key={pipeline.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 text-center text-xs font-medium text-muted-foreground">
-                          {orderIndex >= 0 ? orderIndex + 1 : "-"}
-                        </span>
-                        <div className="flex items-center rounded-full border bg-background">
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 rounded-r-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
-                            onClick={() => handleMovePipeline(pipeline.id, "up")}
-                            disabled={!canMoveUp}
-                            aria-label={`Move ${pipeline.name} up`}
-                            tooltip={`Move ${pipeline.name} up`}
-                          >
-                            <ArrowUp className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 rounded-l-none text-muted-foreground hover:bg-[#0484C8] hover:text-white"
-                            onClick={() => handleMovePipeline(pipeline.id, "down")}
-                            disabled={!canMoveDown}
-                            aria-label={`Move ${pipeline.name} down`}
-                            tooltip={`Move ${pipeline.name} down`}
-                          >
-                            {isSavingOrder ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowDown className="h-3.5 w-3.5" />}
-                          </Button>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                          <GitBranch className="h-4 w-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-[#2384CA]">{pipeline.name}</div>
-                          <div className="text-xs text-muted-foreground">{getPipelineDisplaySectionLabel(config)} order</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <Badge
-                        variant="outline"
-                        className={cn("border-transparent", getClassificationClass(config?.classification))}
-                      >
-                        {getClassificationLabel(config?.classification)}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-2 text-foreground/80">{pipeline.stages?.length || 0}</td>
-                    <td className="max-w-sm px-4 py-2 text-xs text-muted-foreground">
-                      <div className="space-y-1">
-                        <div>Account Type: {config?.account_type_rule || "Any"}</div>
-                        <div>Include Tags: {config?.include_tags?.length ? config.include_tags.join(", ") : "-"}</div>
-                        <div>Exclude Tags: {config?.exclude_tags?.length ? config.exclude_tags.join(", ") : "-"}</div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2">
-                      <Badge variant="outline" className={cn("border-transparent", config?.is_active === false ? "bg-slate-100 text-slate-700" : "bg-green-100 text-green-800")}>
-                        {config?.is_active === false ? "Inactive" : "Active"}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-2 text-foreground/70">
-                      {config?.updated_at ? new Date(config.updated_at).toLocaleDateString() : "-"}
-                    </td>
+                    {orderedColumns.map((column) => renderCell(column.key))}
                     <td className="px-4 py-2 text-right">
                       <Button
                         type="button"
@@ -547,6 +594,7 @@ function PipelineConfigSheet({
   const [includeTags, setIncludeTags] = useState("");
   const [excludeTags, setExcludeTags] = useState("");
   const [isActive, setIsActive] = useState(true);
+  const [colorHex, setColorHex] = useState("#2384CA");
   const [notes, setNotes] = useState("");
 
   useEffect(() => {
@@ -556,6 +604,7 @@ function PipelineConfigSheet({
     setIncludeTags(formatTagRule(config?.include_tags));
     setExcludeTags(formatTagRule(config?.exclude_tags));
     setIsActive(config?.is_active ?? true);
+    setColorHex(normalizePipelineColor(config?.color_hex));
     setNotes(config?.notes || "");
   }, [config, open]);
 
@@ -573,6 +622,7 @@ function PipelineConfigSheet({
         includeTags: parseTagRule(includeTags),
         excludeTags: parseTagRule(excludeTags),
         isActive,
+        colorHex,
         notes: notes.trim() || null,
       });
 
@@ -669,6 +719,28 @@ function PipelineConfigSheet({
                 <SelectItem value="inactive">Inactive</SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Pipeline Color</Label>
+            <div className="flex items-center gap-3">
+              <Input
+                type="color"
+                value={normalizePipelineColor(colorHex)}
+                onChange={(event) => setColorHex(normalizePipelineColor(event.target.value))}
+                className="h-10 w-14 cursor-pointer rounded-md p-1"
+                aria-label="Pipeline color"
+              />
+              <Input
+                value={colorHex}
+                onChange={(event) => setColorHex(event.target.value)}
+                placeholder="#2384CA"
+                className="font-mono"
+              />
+            </div>
+            <p className="text-xs text-muted-foreground">
+              This color appears on pipeline stages and cards in the Kanban views.
+            </p>
           </div>
 
           <div className="space-y-2">

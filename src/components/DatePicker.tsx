@@ -10,6 +10,7 @@ type DatePickerProps = {
   onValueChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  displayMonth?: "short" | "long";
   minDate?: Date;
   maxDate?: Date;
   clearable?: boolean;
@@ -58,17 +59,17 @@ function getTimeParts(value?: string) {
   };
 }
 
-function formatDisplayDate(value?: string) {
+function formatDisplayDate(value?: string, displayMonth: "short" | "long" = "short") {
   const date = parseDateValue(value);
   if (!date) return "";
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString(undefined, { month: displayMonth, day: "numeric", year: "numeric" });
 }
 
-function formatDisplayDateTime(value?: string) {
+function formatDisplayDateTime(value?: string, displayMonth: "short" | "long" = "short") {
   const date = parseDateValue(value);
   if (!date) return "";
   const { hour, minute, period } = getTimeParts(value);
-  return `${formatDisplayDate(value)} at ${hour}:${minute} ${period}`;
+  return `${formatDisplayDate(value, displayMonth)} at ${hour}:${minute} ${period}`;
 }
 
 function DatePickerBase({
@@ -76,6 +77,7 @@ function DatePickerBase({
   onValueChange,
   placeholder = "Select date",
   disabled,
+  displayMonth = "short",
   minDate,
   maxDate,
   clearable = true,
@@ -150,7 +152,7 @@ function DatePickerBase({
     };
   }, [open, updateMenuPosition]);
 
-  const displayValue = mode === "datetime" ? formatDisplayDateTime(value) : formatDisplayDate(value);
+  const displayValue = mode === "datetime" ? formatDisplayDateTime(value, displayMonth) : formatDisplayDate(value, displayMonth);
   const selectedTimeValue = useMemo(
     () => formatDateTimeValue(selectedDate || new Date(), time.hour, time.minute, time.period),
     [selectedDate, time],

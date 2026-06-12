@@ -40,6 +40,7 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { getActiveGhlLocationId } from "@/lib/api";
 import { getAvatarInitials } from "@/lib/avatar";
@@ -304,6 +305,14 @@ export function UserDirectory() {
   const visiblePageItems = getVisiblePageItems(effectiveCurrentPage, safeTotalPages);
   const startIndex = (effectiveCurrentPage - 1) * itemsPerPage;
   const paginatedUsers = filteredUsers.slice(startIndex, startIndex + itemsPerPage);
+  type UserDirectoryColumn = "user" | "email" | "phone" | "role";
+  const columns: Array<ReorderableColumn<UserDirectoryColumn>> = [
+    { key: "user", label: "User" },
+    { key: "email", label: "Email" },
+    { key: "phone", label: "Phone" },
+    { key: "role", label: "Role" },
+  ];
+  const { orderedColumns, getColumnDragProps } = useColumnOrder("lawbric.tableColumns.users", columns);
 
   return (
     <div className="space-y-6 p-6">
@@ -336,10 +345,15 @@ export function UserDirectory() {
         <table className="w-full text-left text-sm">
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="h-12 px-4 py-4 font-medium">User</th>
-              <th className="h-12 px-4 py-4 font-medium">Email</th>
-              <th className="h-12 px-4 py-4 font-medium">Phone</th>
-              <th className="h-12 px-4 py-4 font-medium">Role</th>
+              {orderedColumns.map((column) => (
+                <th
+                  key={column.key}
+                  className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                  {...getColumnDragProps(column.key)}
+                >
+                  {column.label}
+                </th>
+              ))}
               <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
             </tr>
           </thead>
@@ -358,43 +372,64 @@ export function UserDirectory() {
                 </td>
               </tr>
             ) : (
-              paginatedUsers.map((user) => (
+              paginatedUsers.map((user) => {
+                const renderCell = (column: UserDirectoryColumn) => {
+                  switch (column) {
+                    case "user":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <div className="flex items-center space-x-3">
+                            <Avatar className="h-10 w-10">
+                              {(user.avatar_url || user.profilePhoto) && (
+                                <AvatarImage src={user.avatar_url || user.profilePhoto} alt={`${getUserInitials(user)} avatar`} />
+                              )}
+                              <AvatarFallback className="bg-primary/10 text-sm text-primary">
+                                {getUserInitials(user)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <UserLink userId={user.id} name={getDisplayName(user)} stopPropagation />
+                          </div>
+                        </td>
+                      );
+                    case "email":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <div className="flex items-center text-sm text-foreground/70">
+                            <Mail className="mr-2 h-3.5 w-3.5" />
+                            <span className="max-w-[150px] truncate">{user.email || "N/A"}</span>
+                          </div>
+                        </td>
+                      );
+                    case "phone":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <div className="flex items-center text-sm text-foreground/70">
+                            <Phone className="mr-2 h-3.5 w-3.5" />
+                            <span>{formatPhoneNumber(user.phone)}</span>
+                          </div>
+                        </td>
+                      );
+                    case "role":
+                      return (
+                        <td key={column} className="px-4 py-2">
+                          <Badge variant="outline" className="border-transparent bg-gray-100 text-gray-800 capitalize">
+                            {user.role === "admin" ? "Admin" : "User"}
+                          </Badge>
+                          {user.is_active === false && (
+                            <Badge variant="outline" className="ml-2 border-transparent bg-red-100 text-red-800">
+                              Deactivated
+                            </Badge>
+                          )}
+                        </td>
+                      );
+                    default:
+                      return null;
+                  }
+                };
+
+                return (
                 <tr key={user.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
-                  <td className="px-4 py-2">
-                    <div className="flex items-center space-x-3">
-                      <Avatar className="h-10 w-10">
-                        {(user.avatar_url || user.profilePhoto) && (
-                          <AvatarImage src={user.avatar_url || user.profilePhoto} alt={`${getUserInitials(user)} avatar`} />
-                        )}
-                        <AvatarFallback className="bg-primary/10 text-sm text-primary">
-                          {getUserInitials(user)}
-                        </AvatarFallback>
-                      </Avatar>
-                      <UserLink userId={user.id} name={getDisplayName(user)} stopPropagation />
-                    </div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="flex items-center text-sm text-foreground/70">
-                      <Mail className="mr-2 h-3.5 w-3.5" />
-                      <span className="max-w-[150px] truncate">{user.email || "N/A"}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <div className="flex items-center text-sm text-foreground/70">
-                      <Phone className="mr-2 h-3.5 w-3.5" />
-                      <span>{formatPhoneNumber(user.phone)}</span>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <Badge variant="outline" className="border-transparent bg-gray-100 text-gray-800 capitalize">
-                      {user.role === "admin" ? "Admin" : "User"}
-                    </Badge>
-                    {user.is_active === false && (
-                      <Badge variant="outline" className="ml-2 border-transparent bg-red-100 text-red-800">
-                        Deactivated
-                      </Badge>
-                    )}
-                  </td>
+                  {orderedColumns.map((column) => renderCell(column.key))}
                   <td className="px-4 py-2 text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -442,7 +477,8 @@ export function UserDirectory() {
                     </DropdownMenu>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

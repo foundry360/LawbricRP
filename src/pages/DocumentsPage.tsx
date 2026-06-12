@@ -22,6 +22,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SearchableSelect } from "@/components/SearchableSelect";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { listCases, type CaseRecord } from "@/lib/cases";
 import {
@@ -1716,12 +1717,13 @@ function DocumentMatterFolderList({
   handleSort: (column: DocumentMatterGroupSortColumn) => void;
   renderSortIcon: (column: DocumentMatterGroupSortColumn) => ReactNode;
 }) {
-  const columns: Array<[DocumentMatterGroupSortColumn, string]> = [
-    ["matter", "Matter"],
-    ["folders", "Folders"],
-    ["documents", "Documents"],
-    ["latest_upload", "Latest Upload"],
+  const columns: Array<ReorderableColumn<DocumentMatterGroupSortColumn>> = [
+    { key: "matter", label: "Matter" },
+    { key: "folders", label: "Folders" },
+    { key: "documents", label: "Documents" },
+    { key: "latest_upload", label: "Latest Upload" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.documentMatterGroups", columns);
 
   return (
     <div className="overflow-x-auto">
@@ -1735,14 +1737,18 @@ function DocumentMatterFolderList({
         </colgroup>
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1750,27 +1756,42 @@ function DocumentMatterFolderList({
           </tr>
         </thead>
         <tbody>
-          {matterGroups.map((matterGroup) => (
+          {matterGroups.map((matterGroup) => {
+            const renderCell = (column: DocumentMatterGroupSortColumn) => {
+              switch (column) {
+                case "matter":
+                  return (
+                    <td key={column} className="min-w-0 px-4 py-2">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-3 text-left font-medium text-[#2384CA] hover:underline"
+                        onClick={() => onOpenMatter(matterGroup.id)}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <FolderOpen className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0 truncate">{matterGroup.matterName}</span>
+                      </button>
+                    </td>
+                  );
+                case "folders":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{matterGroup.folders.length}</td>;
+                case "documents":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{matterGroup.documents.length}</td>;
+                case "latest_upload":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{formatDateTime(getLatestDocumentDate(matterGroup.documents))}</td>;
+                default:
+                  return null;
+              }
+            };
+
+            return (
             <tr
               key={matterGroup.id}
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
               onClick={() => onOpenMatter(matterGroup.id)}
             >
-              <td className="min-w-0 px-4 py-2">
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-center gap-3 text-left font-medium text-[#2384CA] hover:underline"
-                  onClick={() => onOpenMatter(matterGroup.id)}
-                >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                    <FolderOpen className="h-4 w-4" />
-                  </span>
-                  <span className="min-w-0 truncate">{matterGroup.matterName}</span>
-                </button>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">{matterGroup.folders.length}</td>
-              <td className="px-4 py-2 text-foreground/70">{matterGroup.documents.length}</td>
-              <td className="px-4 py-2 text-foreground/70">{formatDateTime(getLatestDocumentDate(matterGroup.documents))}</td>
+              {orderedColumns.map((column) => renderCell(column.key))}
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -1793,7 +1814,8 @@ function DocumentMatterFolderList({
                 </DropdownMenu>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1840,11 +1862,12 @@ function DocumentFolderList({
   handleSort: (column: DocumentFolderGroupSortColumn) => void;
   renderSortIcon: (column: DocumentFolderGroupSortColumn) => ReactNode;
 }) {
-  const columns: Array<[DocumentFolderGroupSortColumn, string]> = [
-    ["folder", "Folder"],
-    ["documents", "Documents"],
-    ["latest_upload", "Latest Upload"],
+  const columns: Array<ReorderableColumn<DocumentFolderGroupSortColumn>> = [
+    { key: "folder", label: "Folder" },
+    { key: "documents", label: "Documents" },
+    { key: "latest_upload", label: "Latest Upload" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.documentFolders", columns);
 
   return (
     <div className="overflow-x-auto">
@@ -1857,14 +1880,18 @@ function DocumentFolderList({
         </colgroup>
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1872,26 +1899,40 @@ function DocumentFolderList({
           </tr>
         </thead>
         <tbody>
-          {folderGroups.map((folderGroup) => (
+          {folderGroups.map((folderGroup) => {
+            const renderCell = (column: DocumentFolderGroupSortColumn) => {
+              switch (column) {
+                case "folder":
+                  return (
+                    <td key={column} className="min-w-0 px-4 py-2">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-3 text-left font-medium text-[#2384CA] hover:underline"
+                        onClick={() => onOpenFolder(folderGroup.id)}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <FolderOpen className="h-4 w-4" />
+                        </span>
+                        <span className="min-w-0 truncate">{folderGroup.folderName}</span>
+                      </button>
+                    </td>
+                  );
+                case "documents":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{folderGroup.documents.length}</td>;
+                case "latest_upload":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{formatDateTime(getLatestDocumentDate(folderGroup.documents))}</td>;
+                default:
+                  return null;
+              }
+            };
+
+            return (
             <tr
               key={folderGroup.id}
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
               onClick={() => onOpenFolder(folderGroup.id)}
             >
-              <td className="min-w-0 px-4 py-2">
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-center gap-3 text-left font-medium text-[#2384CA] hover:underline"
-                  onClick={() => onOpenFolder(folderGroup.id)}
-                >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                    <FolderOpen className="h-4 w-4" />
-                  </span>
-                  <span className="min-w-0 truncate">{folderGroup.folderName}</span>
-                </button>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">{folderGroup.documents.length}</td>
-              <td className="px-4 py-2 text-foreground/70">{formatDateTime(getLatestDocumentDate(folderGroup.documents))}</td>
+              {orderedColumns.map((column) => renderCell(column.key))}
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <DropdownMenu>
                   <DropdownMenuTrigger asChild>
@@ -1914,7 +1955,8 @@ function DocumentFolderList({
                 </DropdownMenu>
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -1946,14 +1988,15 @@ function DocumentTable({
   handleSort: (column: DocumentSortColumn) => void;
   renderSortIcon: (column: DocumentSortColumn) => ReactNode;
 }) {
-  const columns: Array<[DocumentSortColumn, string]> = [
-    ["name", "Name"],
-    ["matter", "Matter"],
-    ["folder", "Folder"],
-    ["storage_type", "Type"],
-    ["uploaded_by", "Uploaded By"],
-    ["created_at", "Created"],
+  const columns: Array<ReorderableColumn<DocumentSortColumn>> = [
+    { key: "name", label: "Name" },
+    { key: "matter", label: "Matter" },
+    { key: "folder", label: "Folder" },
+    { key: "storage_type", label: "Type" },
+    { key: "uploaded_by", label: "Uploaded By" },
+    { key: "created_at", label: "Created" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.documents", columns);
 
   return (
     <div className="overflow-x-auto">
@@ -1969,14 +2012,18 @@ function DocumentTable({
         </colgroup>
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1984,40 +2031,63 @@ function DocumentTable({
           </tr>
         </thead>
         <tbody>
-          {documents.map((documentRecord) => (
+          {documents.map((documentRecord) => {
+            const renderCell = (column: DocumentSortColumn) => {
+              switch (column) {
+                case "name":
+                  return (
+                    <td key={column} className="min-w-0 px-4 py-2">
+                      <button
+                        type="button"
+                        className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
+                        onClick={() => onView(documentRecord)}
+                      >
+                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <DocumentTypeIcon documentRecord={documentRecord} />
+                        </span>
+                        <span className="min-w-0 truncate">{getDocumentName(documentRecord)}</span>
+                      </button>
+                    </td>
+                  );
+                case "matter":
+                  return (
+                    <td key={column} className="min-w-0 px-4 py-2">
+                      <RouterLink to={`/case/${documentRecord.case_id || documentRecord.matter_id}`} className="block truncate text-[#2384CA] hover:underline">
+                        {getMatterName(documentRecord)}
+                      </RouterLink>
+                    </td>
+                  );
+                case "folder":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <button
+                        type="button"
+                        className="flex max-w-full items-center gap-2 text-left text-[#2384CA] hover:underline"
+                        onClick={() => onFolderOpen(getDocumentFolderGroupId(documentRecord))}
+                      >
+                        <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0 truncate">{getDisplayFolderName(documentRecord)}</span>
+                      </button>
+                    </td>
+                  );
+                case "storage_type":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <DocumentTypeBadge documentRecord={documentRecord} />
+                    </td>
+                  );
+                case "uploaded_by":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{getUploadedBy(documentRecord)}</td>;
+                case "created_at":
+                  return <td key={column} className="px-4 py-2 text-foreground/70">{formatDateTime(documentRecord.created_at)}</td>;
+                default:
+                  return null;
+              }
+            };
+
+            return (
             <tr key={documentRecord.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
-              <td className="min-w-0 px-4 py-2">
-                <button
-                  type="button"
-                  className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
-                  onClick={() => onView(documentRecord)}
-                >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                    <DocumentTypeIcon documentRecord={documentRecord} />
-                  </span>
-                  <span className="min-w-0 truncate">{getDocumentName(documentRecord)}</span>
-                </button>
-              </td>
-              <td className="min-w-0 px-4 py-2">
-                <RouterLink to={`/case/${documentRecord.case_id || documentRecord.matter_id}`} className="block truncate text-[#2384CA] hover:underline">
-                  {getMatterName(documentRecord)}
-                </RouterLink>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">
-                <button
-                  type="button"
-                  className="flex max-w-full items-center gap-2 text-left text-[#2384CA] hover:underline"
-                  onClick={() => onFolderOpen(getDocumentFolderGroupId(documentRecord))}
-                >
-                  <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="min-w-0 truncate">{getDisplayFolderName(documentRecord)}</span>
-                </button>
-              </td>
-              <td className="px-4 py-2">
-                <DocumentTypeBadge documentRecord={documentRecord} />
-              </td>
-              <td className="px-4 py-2 text-foreground/70">{getUploadedBy(documentRecord)}</td>
-              <td className="px-4 py-2 text-foreground/70">{formatDateTime(documentRecord.created_at)}</td>
+              {orderedColumns.map((column) => renderCell(column.key))}
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <DocumentActionMenu
                   documentRecord={documentRecord}
@@ -2031,7 +2101,8 @@ function DocumentTable({
                 />
               </td>
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

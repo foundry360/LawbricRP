@@ -239,7 +239,7 @@ export function NoteRichTextBody({ value, className }: { value?: string | null; 
   return (
     <div
       className={cn(
-        "note-rich-text-body space-y-1 whitespace-pre-wrap leading-snug [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_div]:my-0 [&_em]:italic [&_i]:italic [&_img]:max-w-full [&_i]:italic [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_strong]:font-semibold [&_u]:underline [&_ul]:list-disc [&_ul]:pl-5",
+        "note-rich-text-body whitespace-pre-wrap leading-tight [&_a]:font-medium [&_a]:text-[#2384CA] [&_a:hover]:text-[#1b6da8] [&_blockquote]:my-0 [&_blockquote]:border-l-2 [&_blockquote]:border-primary/40 [&_blockquote]:pl-3 [&_br]:leading-none [&_div]:my-0 [&_em]:italic [&_i]:italic [&_img]:max-w-full [&_li]:my-0 [&_ol]:my-0 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-0 [&_strong]:font-semibold [&_u]:underline [&_ul]:my-0 [&_ul]:list-disc [&_ul]:pl-5 [&_[data-lawbric-email-signature]_img]:mb-2 [&_[data-lawbric-email-signature]_img]:block",
         className,
       )}
       dangerouslySetInnerHTML={{ __html: html }}

@@ -24,6 +24,7 @@ import {
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DatePicker } from "@/components/DatePicker";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { UserLink } from "@/components/UserLink";
@@ -50,6 +51,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Textarea } from "@/components/ui/textarea";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import {
   getAppLocationContext,
@@ -65,7 +67,7 @@ import { type CaseRecord, createCase, deleteCase, listCases, updateCase } from "
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
-import { listPipelineConfigs, type PipelineConfig } from "@/lib/pipeline-configs";
+import { listPipelineConfigs, normalizePipelineColor, type PipelineConfig } from "@/lib/pipeline-configs";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
 import { supabase } from "@/lib/supabase";
 import { getAssignableUsers, getUserId, getUserName, type AssignableUser } from "@/lib/users";
@@ -322,6 +324,12 @@ function formatDate(value?: string) {
   if (!value) return "Recently";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Recently" : date.toLocaleDateString();
+}
+
+function formatDateInput(value?: string | null) {
+  if (!value) return "";
+  const [datePart] = value.split("T");
+  return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : "";
 }
 
 function formatContactDisplayName(value?: string | null) {
@@ -1312,6 +1320,7 @@ export function CasesPage({ section = "matters" }: { section?: CasesPageSection 
             <CasePipelineKanbanBoard
               cases={sortedCases}
               pipelines={activePipeline ? [activePipeline] : []}
+              pipelineConfigMap={pipelineConfigMap}
               countLabel={sectionCopy.countLabel}
               sectionTitle={sectionCopy.title}
               navigate={navigate}
@@ -1456,6 +1465,7 @@ function caseMatchesPipelineStage(caseRecord: CaseRecord, pipeline: GhlPipeline,
 function CasePipelineKanbanBoard({
   cases,
   pipelines,
+  pipelineConfigMap,
   countLabel,
   sectionTitle,
   navigate,
@@ -1471,6 +1481,7 @@ function CasePipelineKanbanBoard({
 }: {
   cases: CaseRecord[];
   pipelines: GhlPipeline[];
+  pipelineConfigMap: Map<string, PipelineConfig>;
   countLabel: string;
   sectionTitle: string;
   navigate: (path: string) => void;
@@ -1510,6 +1521,7 @@ function CasePipelineKanbanBoard({
     <div className="space-y-6">
       {pipelines.map((pipeline) => {
         const stages = pipeline.stages || [];
+        const pipelineColor = normalizePipelineColor(pipelineConfigMap.get(pipeline.id)?.color_hex);
         const pipelineCaseCount = cases.filter((caseRecord) =>
           stages.some((stage) => caseMatchesPipelineStage(caseRecord, pipeline, stage)),
         ).length;
@@ -1555,10 +1567,11 @@ function CasePipelineKanbanBoard({
                     >
                       <div
                         className={cn(
-                          "relative z-10 flex h-10 items-center justify-between bg-[#0384C8] py-2 pl-3 pr-1 text-white",
+                          "relative z-10 flex h-10 items-center justify-between border-b-4 bg-[#0384C8] py-2 pl-3 pr-1 text-white",
                           index === 0 && "rounded-tl-md",
                           index === stages.length - 1 && "rounded-tr-md",
                         )}
+                        style={{ borderBottomColor: pipelineColor }}
                       >
                         <div className="flex min-w-0 items-center gap-2">
                           <div className="truncate text-xs font-semibold uppercase tracking-wide text-white">
@@ -1585,6 +1598,7 @@ function CasePipelineKanbanBoard({
                             canEdit={canEdit}
                             canDelete={canDelete}
                             onDelete={() => onDelete(caseRecord)}
+                            pipelineColor={pipelineColor}
                           />
                         ))}
                       </div>
@@ -1609,6 +1623,7 @@ function KanbanCaseCard({
   canEdit,
   canDelete,
   onDelete,
+  pipelineColor,
 }: {
   caseRecord: CaseRecord;
   navigate: (path: string) => void;
@@ -1618,6 +1633,7 @@ function KanbanCaseCard({
   canEdit: boolean;
   canDelete: boolean;
   onDelete: () => void;
+  pipelineColor: string;
 }) {
   const clientName = formatContactDisplayName(caseRecord.primary_contact_name) || caseRecord.ghl_contact_id || "No client";
   const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
@@ -1632,9 +1648,10 @@ function KanbanCaseCard({
     <Card
       draggable={!updating && canEdit}
       className={cn(
-        "cursor-grab overflow-hidden bg-background transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
+        "cursor-grab overflow-hidden border-l-4 bg-background shadow-sm transition-all hover:border-primary/50 hover:shadow-md active:cursor-grabbing",
         updating && "cursor-wait opacity-60",
       )}
+      style={{ borderLeftColor: pipelineColor }}
       onClick={() => navigate(`/case/${caseRecord.id}`)}
       onDragStart={handleDragStart}
     >
@@ -1842,28 +1859,33 @@ function CaseTable({
   onEdit: (caseRecord: CaseRecord) => void;
   onDelete: (caseRecord: CaseRecord) => void;
 }) {
-  const columns: Array<[keyof CaseRecord, string]> = [
-    ["case_name", "Matter"],
-    ["primary_contact_name", "Client"],
-    ["status", "Status"],
-    ["case_type", "Practice Area"],
-    ["stage", "Stage"],
-    ["updated_at", "Last Updated"],
+  const columns: Array<ReorderableColumn<keyof CaseRecord & string>> = [
+    { key: "case_name", label: "Matter" },
+    { key: "primary_contact_name", label: "Client" },
+    { key: "status", label: "Status" },
+    { key: "case_type", label: "Practice Area" },
+    { key: "stage", label: "Stage" },
+    { key: "updated_at", label: "Last Updated" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.matters", columns);
 
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">
         <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
           <tr>
-            {columns.map(([column, label]) => (
+            {orderedColumns.map((column) => (
               <th
-                key={column}
-                className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                onClick={() => handleSort(column)}
+                key={column.key}
+                className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                {...getColumnDragProps(column.key)}
+                onClick={() => {
+                  if (shouldSuppressColumnClick()) return;
+                  handleSort(column.key);
+                }}
               >
                 <div className="flex items-center">
-                  {label} {renderSortIcon(column)}
+                  {column.label} {renderSortIcon(column.key)}
                 </div>
               </th>
             ))}
@@ -1890,60 +1912,82 @@ function CaseTable({
             const sourceAttorneyName = getCaseSourceAttorneyName(caseRecord, users);
             const sourceAttorney = getCaseSourceAttorney(caseRecord, users);
 
+            const renderCell = (column: keyof CaseRecord & string) => {
+              switch (column) {
+                case "case_name":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <div className="flex items-center space-x-3">
+                        <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
+                          <Briefcase className="h-4 w-4" />
+                        </div>
+                        <div>
+                          <Link to={`/case/${caseRecord.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
+                            {caseRecord.case_name}
+                          </Link>
+                          <div className="text-xs text-muted-foreground">{caseRecord.case_number}</div>
+                          <div className="text-xs text-muted-foreground">
+                            Source Attorney:{" "}
+                            <UserLink
+                              userId={getCaseSourceAttorneyId(caseRecord, users)}
+                              user={sourceAttorney}
+                              name={sourceAttorneyName}
+                              stopPropagation
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                  );
+                case "primary_contact_name":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="h-8 w-8">
+                          {clientAvatarUrl ? (
+                            <AvatarImage src={clientAvatarUrl} alt={`${clientInitials} avatar`} />
+                          ) : null}
+                          <AvatarFallback className="bg-blue-50 text-xs text-primary">
+                            {clientInitials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span>{clientName}</span>
+                      </div>
+                    </td>
+                  );
+                case "status":
+                  return (
+                    <td key={column} className="px-4 py-2">
+                      <Badge variant="outline" className={cn("border-transparent capitalize", getCaseStatusClass(caseRecord.status))}>
+                        {caseRecord.status}
+                      </Badge>
+                    </td>
+                  );
+                case "case_type":
+                  return <td key={column} className="px-4 py-2 text-foreground/80">{caseRecord.case_type}</td>;
+                case "stage":
+                  return <td key={column} className="px-4 py-2 capitalize text-foreground/80">{caseRecord.stage.replace(/_/g, " ")}</td>;
+                case "updated_at":
+                  return (
+                    <td key={column} className="px-4 py-2 text-foreground/70">
+                      <div className="flex items-center">
+                        <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
+                        <span>{formatDate(caseRecord.updated_at)}</span>
+                      </div>
+                    </td>
+                  );
+                default:
+                  return null;
+              }
+            };
+
             return (
             <tr
               key={caseRecord.id}
               className="cursor-pointer border-b transition-colors last:border-0 hover:bg-muted/30"
               onClick={() => navigate(`/case/${caseRecord.id}`)}
             >
-              <td className="px-4 py-2">
-                <div className="flex items-center space-x-3">
-                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-blue-50 text-primary">
-                    <Briefcase className="h-4 w-4" />
-                  </div>
-                  <div>
-                    <Link to={`/case/${caseRecord.id}`} onClick={(event) => event.stopPropagation()} className="capitalize text-[#2384CA] hover:underline">
-                      {caseRecord.case_name}
-                    </Link>
-                    <div className="text-xs text-muted-foreground">{caseRecord.case_number}</div>
-                    <div className="text-xs text-muted-foreground">
-                      Source Attorney:{" "}
-                      <UserLink
-                        userId={getCaseSourceAttorneyId(caseRecord, users)}
-                        user={sourceAttorney}
-                        name={sourceAttorneyName}
-                        stopPropagation
-                      />
-                    </div>
-                  </div>
-                </div>
-              </td>
-              <td className="px-4 py-2 text-foreground/70">
-                <div className="flex items-center gap-3">
-                  <Avatar className="h-8 w-8">
-                    {clientAvatarUrl ? (
-                      <AvatarImage src={clientAvatarUrl} alt={`${clientInitials} avatar`} />
-                    ) : null}
-                    <AvatarFallback className="bg-blue-50 text-xs text-primary">
-                      {clientInitials}
-                    </AvatarFallback>
-                  </Avatar>
-                  <span>{clientName}</span>
-                </div>
-              </td>
-              <td className="px-4 py-2">
-                <Badge variant="outline" className={cn("border-transparent capitalize", getCaseStatusClass(caseRecord.status))}>
-                  {caseRecord.status}
-                </Badge>
-              </td>
-              <td className="px-4 py-2 text-foreground/80">{caseRecord.case_type}</td>
-              <td className="px-4 py-2 capitalize text-foreground/80">{caseRecord.stage.replace(/_/g, " ")}</td>
-              <td className="px-4 py-2 text-foreground/70">
-                <div className="flex items-center">
-                  <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
-                  <span>{formatDate(caseRecord.updated_at)}</span>
-                </div>
-              </td>
+              {orderedColumns.map((column) => renderCell(column.key))}
               <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                 <CaseActions
                   onView={() => navigate(`/case/${caseRecord.id}`)}
@@ -2183,6 +2227,7 @@ function CreateCaseSheet({
     pipelineId: defaultPipelineSelection.pipelineId,
     pipelineStageId: defaultPipelineSelection.pipelineStageId,
     contactId: "",
+    statuteOfLimitationsAt: "",
     assignedUserId: "",
     sourceAttorneyUserId: "",
     notes: "",
@@ -2221,6 +2266,7 @@ function CreateCaseSheet({
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
       contactId: "",
+      statuteOfLimitationsAt: "",
       assignedUserId: "",
       sourceAttorneyUserId: "",
       notes: "",
@@ -2328,6 +2374,7 @@ function CreateCaseSheet({
         contactName: selectedContact ? formatContactName(selectedContact) : "",
         contactEmail: selectedContact?.email || "",
         contactPhone: formatPhoneNumber(selectedContact?.phone, ""),
+        statuteOfLimitationsAt: form.statuteOfLimitationsAt || null,
         ...(canAssign ? { assignedUserId: form.assignedUserId || null } : {}),
         ...(canAssign ? { sourceAttorneyUserId: form.sourceAttorneyUserId || null } : {}),
         ghlPipelineId: form.pipelineId || null,
@@ -2412,6 +2459,16 @@ function CreateCaseSheet({
                 )}
               </SelectContent>
             </Select>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Filing Deadline</Label>
+            <DatePicker
+              value={form.statuteOfLimitationsAt}
+              onValueChange={(statuteOfLimitationsAt) => setForm({ ...form, statuteOfLimitationsAt })}
+              placeholder="Select filing deadline"
+              displayMonth="long"
+            />
           </div>
 
           <div className="space-y-3 rounded-lg border border-border p-3">
@@ -2714,6 +2771,7 @@ function EditCaseSheet({
     status: "open",
     pipelineId: "",
     pipelineStageId: "",
+    statuteOfLimitationsAt: "",
     assignedUserId: "",
     sourceAttorneyUserId: "",
   });
@@ -2729,6 +2787,7 @@ function EditCaseSheet({
       status: caseRecord.status || "open",
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
+      statuteOfLimitationsAt: formatDateInput(caseRecord.statute_of_limitations_at),
       assignedUserId: caseRecord.assigned_user_id || "",
       sourceAttorneyUserId: caseRecord.source_attorney_user_id || "",
     });
@@ -2781,6 +2840,7 @@ function EditCaseSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        statuteOfLimitationsAt: form.statuteOfLimitationsAt || null,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         ...(canAssign ? { assignedUserId: form.assignedUserId || null } : {}),
@@ -2839,6 +2899,16 @@ function EditCaseSheet({
               placeholder="Select practice area"
               searchPlaceholder="Search practice areas..."
               emptyMessage="No practice areas found."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Filing Deadline</Label>
+            <DatePicker
+              value={form.statuteOfLimitationsAt}
+              onValueChange={(statuteOfLimitationsAt) => setForm({ ...form, statuteOfLimitationsAt })}
+              placeholder="Select filing deadline"
+              displayMonth="long"
             />
           </div>
 

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import {
   createLocationTag,
@@ -49,6 +50,13 @@ export function TagSettings() {
         .sort((a, b) => a.name.localeCompare(b.name)),
     [tags, searchTerm],
   );
+  type TagColumn = "name" | "createdAt" | "updatedAt";
+  const columns: Array<ReorderableColumn<TagColumn>> = [
+    { key: "name", label: "Tag Name" },
+    { key: "createdAt", label: "Created On" },
+    { key: "updatedAt", label: "Updated On" },
+  ];
+  const { orderedColumns, getColumnDragProps } = useColumnOrder("lawbric.tableColumns.tags", columns);
 
   const loadTags = async () => {
     setLoading(true);
@@ -197,9 +205,15 @@ export function TagSettings() {
         <table className="w-full text-left text-sm">
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="h-12 px-4 py-4 font-medium">Tag Name</th>
-              <th className="h-12 px-4 py-4 font-medium">Created On</th>
-              <th className="h-12 px-4 py-4 font-medium">Updated On</th>
+              {orderedColumns.map((column) => (
+                <th
+                  key={column.key}
+                  className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                  {...getColumnDragProps(column.key)}
+                >
+                  {column.label}
+                </th>
+              ))}
               <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
             </tr>
           </thead>
@@ -218,11 +232,23 @@ export function TagSettings() {
                 </td>
               </tr>
             ) : (
-              sortedTags.map((tag) => (
+              sortedTags.map((tag) => {
+                const renderCell = (column: TagColumn) => {
+                  switch (column) {
+                    case "name":
+                      return <td key={column} className="px-4 py-2 font-medium">{tag.name}</td>;
+                    case "createdAt":
+                      return <td key={column} className="px-4 py-2 text-muted-foreground">{formatDate(tag.createdAt)}</td>;
+                    case "updatedAt":
+                      return <td key={column} className="px-4 py-2 text-muted-foreground">{formatDate(tag.updatedAt)}</td>;
+                    default:
+                      return null;
+                  }
+                };
+
+                return (
                 <tr key={tag.id} className="border-b last:border-0 hover:bg-muted/30">
-                  <td className="px-4 py-2 font-medium">{tag.name}</td>
-                  <td className="px-4 py-2 text-muted-foreground">{formatDate(tag.createdAt)}</td>
-                  <td className="px-4 py-2 text-muted-foreground">{formatDate(tag.updatedAt)}</td>
+                  {orderedColumns.map((column) => renderCell(column.key))}
                   <td className="px-4 py-2">
                     <div className="flex justify-end gap-1">
                       <Button
@@ -244,7 +270,8 @@ export function TagSettings() {
                     </div>
                   </td>
                 </tr>
-              ))
+                );
+              })
             )}
           </tbody>
         </table>

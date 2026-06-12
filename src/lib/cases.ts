@@ -20,6 +20,7 @@ export type CaseRecord = {
   ghl_pipeline_stage_id?: string | null;
   metadata?: Record<string, unknown>;
   opened_at?: string | null;
+  statute_of_limitations_at?: string | null;
   closed_at?: string | null;
   created_at: string;
   updated_at: string;

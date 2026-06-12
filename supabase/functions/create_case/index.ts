@@ -10,6 +10,20 @@ import {
   syncCaseReference,
 } from "../_shared/case-utils.ts";
 
+function normalizeOptionalTimestamp(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T00:00:00.000Z` : text;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) throw new Error("Invalid Filing Deadline date.");
+
+  return date.toISOString();
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -24,6 +38,7 @@ serve(async (req) => {
 
     const contactId = body.contactId.trim();
     let assignedUserId = body.assignedUserId || null;
+    const statuteOfLimitationsAt = normalizeOptionalTimestamp(body.statuteOfLimitationsAt);
 
     if (!assignedUserId) {
       const { data: contactAssignment, error: contactAssignmentError } = await context.supabase
@@ -59,6 +74,7 @@ serve(async (req) => {
         assigned_ghl_user_id: body.assignedGhlUserId || null,
         ghl_pipeline_id: body.ghlPipelineId || null,
         ghl_pipeline_stage_id: body.ghlPipelineStageId || null,
+        statute_of_limitations_at: statuteOfLimitationsAt ?? null,
         metadata: body.metadata || {},
         created_by: context.user.id,
         updated_by: context.user.id,

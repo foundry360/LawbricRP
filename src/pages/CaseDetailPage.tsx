@@ -1,14 +1,16 @@
 import { type ChangeEvent, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
-  ArrowLeft,
   ArrowUpDown,
   Briefcase,
   Calendar,
   Check,
   CheckSquare,
+  ChevronLeft,
+  ChevronRight,
   Clock,
   DollarSign,
+  Download,
   ExternalLink,
   FileArchive,
   FileImage,
@@ -38,7 +40,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { DateTimePicker } from "@/components/DatePicker";
+import { DatePicker, DateTimePicker } from "@/components/DatePicker";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
@@ -61,6 +63,7 @@ import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetT
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
+import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
 import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, sendGhlEmail, type GhlPipeline } from "@/lib/api";
 import {
@@ -217,6 +220,20 @@ function formatDateTime(value?: string | null) {
   }).format(new Date(value));
 }
 
+function formatDateOnly(value?: string | null) {
+  if (!value) return "Not set";
+  const [datePart] = value.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const date = year && month && day ? new Date(year, month - 1, day) : new Date(value);
+  if (Number.isNaN(date.getTime())) return "Not set";
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  }).format(date);
+}
+
 function getCaseDisplayName(caseRecord: Pick<CaseRecord, "case_name" | "case_number">) {
   return caseRecord.case_number
     ? `${caseRecord.case_name} (${caseRecord.case_number})`
@@ -230,6 +247,12 @@ function formatDateTimeInput(value?: string | null) {
   const offset = date.getTimezoneOffset();
   const localDate = new Date(date.getTime() - offset * 60_000);
   return localDate.toISOString().slice(0, 16);
+}
+
+function formatDateInput(value?: string | null) {
+  if (!value) return "";
+  const [datePart] = value.split("T");
+  return /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? datePart : "";
 }
 
 function formatTaskDate(value?: string | null) {
@@ -587,6 +610,7 @@ export function CaseDetailPage() {
   const [noteSheetMode, setNoteSheetMode] = useState<"view" | "edit" | "create">("create");
   const [activeDetailTab, setActiveDetailTab] = useState("dashboard");
   const [communicationComposeRequested, setCommunicationComposeRequested] = useState(false);
+  const [isMatterDetailsCollapsed, setIsMatterDetailsCollapsed] = useState(false);
   const [contactAddress, setContactAddress] = useState("Not set");
   const [users, setUsers] = useState<AssignableUser[]>([]);
 
@@ -810,20 +834,15 @@ export function CaseDetailPage() {
         }}
       />
       <div className="shrink-0 border-b border-border pb-4">
-        <div className="grid items-center gap-6 md:grid-cols-[1fr_auto]">
-          <div className="flex items-center gap-5">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border-2 border-background bg-blue-50 text-primary shadow-sm">
-              <Briefcase className="h-6 w-6" />
-            </div>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h1 className="mr-1 text-2xl font-bold text-foreground">{detail.case.case_name}</h1>
-                <Badge variant="outline" className="h-6 shrink-0 border-transparent bg-gray-100 px-3 font-semibold text-gray-900">
-                  {detail.case.case_type}
-                </Badge>
-              </div>
-            </div>
-          </div>
+        <div className="grid items-center gap-6 md:grid-cols-[auto_1fr_auto]">
+          <nav className="flex min-w-0 items-center gap-1.5 text-sm text-muted-foreground" aria-label="Breadcrumb">
+            <Link to="/cases" className="font-medium text-[#2384CA] transition-colors hover:text-[#1b6da8]">
+              Matters
+            </Link>
+            <ChevronRight className="h-4 w-4 shrink-0" />
+            <span className="max-w-[180px] truncate text-foreground">{detail.case.case_name}</span>
+          </nav>
+          <h1 className="min-w-0 truncate text-center text-xl font-bold text-foreground">{detail.case.case_name}</h1>
           <div className="flex w-full gap-3 md:w-auto md:justify-self-end">
             <Button
               size="icon"
@@ -887,62 +906,93 @@ export function CaseDetailPage() {
         </div>
       </div>
 
-      <div className="grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:grid-cols-[22fr_78fr] lg:divide-x lg:divide-border">
-        <div className="hover-scrollbar h-full overflow-y-auto py-6 lg:pr-6">
-          <div className="mb-2 border-b border-border pb-3">
-            <h2 className="flex items-center gap-2 text-lg font-semibold">
-              <Link to="/cases" className="text-muted-foreground transition-colors hover:text-foreground" title="Back to matters">
-                <ArrowLeft className="h-5 w-5" />
-              </Link>
-              Matter Details
-            </h2>
-          </div>
-          <Accordion type="multiple" defaultValue={["case", "client", "system"]} className="w-full">
-            <AccordionItem value="case">
-              <AccordionTrigger>Matter Information</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-3 pt-2">
-                  <DetailRow label="Matter Number" value={detail.case.case_number} />
-                  <DetailRow label="Practice Area" value={detail.case.case_type} />
-                  <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
-                  <DetailRow
-                    label="Source Attorney"
-                    value={<UserLink userId={sourceAttorneyLinkUserId} user={sourceAttorneyUser} name={sourceAttorneyName} />}
-                  />
-                  <DetailRow label="Status" value={detail.case.status} className="capitalize" />
-                  <DetailRow label="Stage" value={detail.case.stage.replace(/_/g, " ")} className="capitalize" />
-                  <DetailRow label="Opened" value={formatDateTime(detail.case.created_at)} />
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-            <AccordionItem value="client">
-              <AccordionTrigger>Client Information</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-3 pt-2">
-                  <DetailRow
-                    label="Name"
-                    value={
-                      <Link to={`/contact/${detail.case.ghl_contact_id}`} className="text-[#2384CA] hover:underline">
-                        {clientName}
-                      </Link>
-                    }
-                  />
-                  <DetailRow label="Email" value={detail.case.primary_contact_email || "Not set"} />
-                  <DetailRow label="Phone" value={detail.case.primary_contact_phone || "Not set"} />
-                  <DetailRow label="Address" value={contactAddress} className="whitespace-pre-line" />
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-            <AccordionItem value="system">
-              <AccordionTrigger>System Information</AccordionTrigger>
-              <AccordionContent>
-                <div className="space-y-3 pt-2">
-                  <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
-                  <DetailRow label="Updated" value={formatDateTime(detail.case.updated_at)} />
-                </div>
-              </AccordionContent>
-            </AccordionItem>
-          </Accordion>
+      <div
+        className={cn(
+          "grid flex-1 grid-cols-1 overflow-hidden border-b border-border lg:divide-x lg:divide-border",
+          isMatterDetailsCollapsed ? "lg:grid-cols-[3rem_minmax(0,1fr)]" : "lg:grid-cols-[22fr_78fr]",
+        )}
+      >
+        <div
+          className={cn(
+            "hover-scrollbar h-full overflow-y-auto py-6",
+            isMatterDetailsCollapsed ? "flex justify-center px-1" : "lg:pr-6",
+          )}
+        >
+          {isMatterDetailsCollapsed ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full bg-muted text-muted-foreground hover:bg-[#2384CA] hover:text-white"
+              aria-label="Expand matter details"
+              onClick={() => setIsMatterDetailsCollapsed(false)}
+            >
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          ) : (
+            <>
+              <div className="mb-2 flex items-center justify-between gap-3 border-b border-border pb-3">
+                <h2 className="text-lg font-semibold">Matter Details</h2>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full bg-muted text-muted-foreground hover:bg-[#2384CA] hover:text-white"
+                  aria-label="Collapse matter details"
+                  onClick={() => setIsMatterDetailsCollapsed(true)}
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+              </div>
+              <Accordion type="multiple" defaultValue={["case", "client", "system"]} className="w-full">
+                <AccordionItem value="case">
+                  <AccordionTrigger>Matter Information</AccordionTrigger>
+                  <AccordionContent>
+                    <div className="space-y-3 pt-2">
+                      <DetailRow label="Matter Number" value={detail.case.case_number} />
+                      <DetailRow label="Practice Area" value={detail.case.case_type} />
+                      <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
+                      <DetailRow
+                        label="Source Attorney"
+                        value={<UserLink userId={sourceAttorneyLinkUserId} user={sourceAttorneyUser} name={sourceAttorneyName} />}
+                      />
+                      <DetailRow label="Status" value={detail.case.status} className="capitalize" />
+                      <DetailRow label="Stage" value={detail.case.stage.replace(/_/g, " ")} className="capitalize" />
+                      <DetailRow label="Opened" value={formatDateTime(detail.case.opened_at || detail.case.created_at)} />
+                      <DetailRow label="Filing Deadline" value={formatDateOnly(detail.case.statute_of_limitations_at)} />
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+                <AccordionItem value="client">
+                  <AccordionTrigger>Client Information</AccordionTrigger>
+                  <AccordionContent>
+                    <div className="space-y-3 pt-2">
+                      <DetailRow
+                        label="Name"
+                        value={
+                          <Link to={`/contact/${detail.case.ghl_contact_id}`} className="text-[#2384CA] hover:underline">
+                            {clientName}
+                          </Link>
+                        }
+                      />
+                      <DetailRow label="Email" value={detail.case.primary_contact_email || "Not set"} />
+                      <DetailRow label="Phone" value={detail.case.primary_contact_phone || "Not set"} />
+                      <DetailRow label="Address" value={contactAddress} className="whitespace-pre-line" />
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+                <AccordionItem value="system">
+                  <AccordionTrigger>System Information</AccordionTrigger>
+                  <AccordionContent>
+                    <div className="space-y-3 pt-2">
+                      <DetailRow label="Lead Attorney" value={<UserLink userId={assignedUserId} name={assignedUserName} />} />
+                      <DetailRow label="Updated" value={formatDateTime(detail.case.updated_at)} />
+                    </div>
+                  </AccordionContent>
+                </AccordionItem>
+              </Accordion>
+            </>
+          )}
         </div>
 
         <div className="h-full overflow-hidden lg:px-6">
@@ -988,7 +1038,14 @@ export function CaseDetailPage() {
               </TabsList>
             </div>
 
-            <div className="hover-scrollbar min-h-0 flex-1 overflow-y-auto pb-6">
+            <div
+              className={cn(
+                "min-h-0 flex-1",
+                activeDetailTab === "communications"
+                  ? "overflow-hidden pb-0"
+                  : "hover-scrollbar overflow-y-auto pb-6",
+              )}
+            >
               <TabsContent value="dashboard" className="m-0">
                 <MatterDashboardTab
                   detail={detail}
@@ -1033,7 +1090,7 @@ export function CaseDetailPage() {
                   onDeleteNote={handleDeleteMatterNote}
                 />
               </TabsContent>
-              <TabsContent value="communications" className="m-0">
+              <TabsContent value="communications" className="m-0 h-full min-h-0">
                 <CommunicationsTab
                   detail={detail}
                   composeRequested={communicationComposeRequested}
@@ -1094,6 +1151,7 @@ function EditCaseSheet({
     stage: detail.case.stage,
     pipelineId: detail.case.ghl_pipeline_id || "",
     pipelineStageId: detail.case.ghl_pipeline_stage_id || "",
+    statuteOfLimitationsAt: formatDateInput(detail.case.statute_of_limitations_at),
     assignedUserId,
     sourceAttorneyUserId: detail.case.source_attorney_user_id || "",
   });
@@ -1109,6 +1167,7 @@ function EditCaseSheet({
       stage: detail.case.stage,
       pipelineId: selection.pipelineId,
       pipelineStageId: selection.pipelineStageId,
+      statuteOfLimitationsAt: formatDateInput(detail.case.statute_of_limitations_at),
       assignedUserId,
       sourceAttorneyUserId: detail.case.source_attorney_user_id || "",
     });
@@ -1122,6 +1181,7 @@ function EditCaseSheet({
     detail.case.source_attorney_user_id,
     detail.case.stage,
     detail.case.status,
+    detail.case.statute_of_limitations_at,
     open,
     pipelines,
   ]);
@@ -1156,6 +1216,7 @@ function EditCaseSheet({
         caseType: form.caseType,
         status: form.status,
         stage: form.stage,
+        statuteOfLimitationsAt: form.statuteOfLimitationsAt || null,
         ghlPipelineId: form.pipelineId || null,
         ghlPipelineStageId: form.pipelineStageId || null,
         assignedUserId: form.assignedUserId || null,
@@ -1249,6 +1310,16 @@ function EditCaseSheet({
               placeholder="Select practice area"
               searchPlaceholder="Search practice areas..."
               emptyMessage="No practice areas found."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label>Filing Deadline</Label>
+            <DatePicker
+              value={form.statuteOfLimitationsAt}
+              onValueChange={(statuteOfLimitationsAt) => setForm({ ...form, statuteOfLimitationsAt })}
+              placeholder="Select filing deadline"
+              displayMonth="long"
             />
           </div>
 
@@ -1787,6 +1858,37 @@ function MatterDashboardTab({
     { label: "Notes", value: detail.notes.length, icon: NotebookPen },
     { label: "Financials", value: money(financialTotal, detail.financials[0]?.currency || "USD"), icon: DollarSign },
   ];
+  type DashboardTaskColumn = "task" | "priority" | "status" | "due_at";
+  type DashboardActivityColumn = "activity" | "type" | "date";
+  type DashboardDocumentColumn = "document" | "folder" | "uploaded";
+  const dashboardTaskColumns: Array<ReorderableColumn<DashboardTaskColumn>> = [
+    { key: "task", label: "Task" },
+    { key: "priority", label: "Priority" },
+    { key: "status", label: "Status" },
+    { key: "due_at", label: "Due Date" },
+  ];
+  const dashboardActivityColumns: Array<ReorderableColumn<DashboardActivityColumn>> = [
+    { key: "activity", label: "Activity" },
+    { key: "type", label: "Type" },
+    { key: "date", label: "Date" },
+  ];
+  const dashboardDocumentColumns: Array<ReorderableColumn<DashboardDocumentColumn>> = [
+    { key: "document", label: "Document" },
+    { key: "folder", label: "Folder" },
+    { key: "uploaded", label: "Uploaded" },
+  ];
+  const {
+    orderedColumns: orderedDashboardTaskColumns,
+    getColumnDragProps: getDashboardTaskColumnDragProps,
+  } = useColumnOrder("lawbric.tableColumns.matterDashboardTasks", dashboardTaskColumns);
+  const {
+    orderedColumns: orderedDashboardActivityColumns,
+    getColumnDragProps: getDashboardActivityColumnDragProps,
+  } = useColumnOrder("lawbric.tableColumns.matterDashboardActivity", dashboardActivityColumns);
+  const {
+    orderedColumns: orderedDashboardDocumentColumns,
+    getColumnDragProps: getDashboardDocumentColumnDragProps,
+  } = useColumnOrder("lawbric.tableColumns.matterDashboardDocuments", dashboardDocumentColumns);
 
   return (
     <div className="space-y-4 pt-3">
@@ -1893,14 +1995,52 @@ function MatterDashboardTab({
                   </colgroup>
                   <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                     <tr>
-                      <th className="h-10 px-3 py-3 font-medium">Task</th>
-                      <th className="h-10 px-3 py-3 font-medium">Priority</th>
-                      <th className="h-10 px-3 py-3 font-medium">Status</th>
-                      <th className="h-10 px-3 py-3 font-medium">Due Date</th>
+                      {orderedDashboardTaskColumns.map((column) => (
+                        <th
+                          key={column.key}
+                          className="h-10 cursor-grab px-3 py-3 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                          {...getDashboardTaskColumnDragProps(column.key)}
+                        >
+                          {column.label}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {dashboardTasks.map((task) => (
+                    {dashboardTasks.map((task) => {
+                      const renderCell = (column: DashboardTaskColumn) => {
+                        switch (column) {
+                          case "task":
+                            return (
+                              <td key={column} className="min-w-0 px-3 py-2">
+                                <div className="flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]">
+                                  <span className="truncate">{task.title}</span>
+                                  {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+                                </div>
+                              </td>
+                            );
+                          case "priority":
+                            return (
+                              <td key={column} className="px-3 py-2">
+                                <Badge variant="outline" className="capitalize">{task.priority || "normal"}</Badge>
+                              </td>
+                            );
+                          case "status":
+                            return (
+                              <td key={column} className="px-3 py-2">
+                                <Badge variant="outline" className={cn("whitespace-nowrap border-transparent capitalize", getStatusClass(task.status))}>
+                                  {formatTaskStatusLabel(task.status)}
+                                </Badge>
+                              </td>
+                            );
+                          case "due_at":
+                            return <td key={column} className="px-3 py-2 text-foreground/70">{formatTaskDate(task.due_at)}</td>;
+                          default:
+                            return null;
+                        }
+                      };
+
+                      return (
                       <tr
                         key={task.id}
                         role="button"
@@ -1914,23 +2054,10 @@ function MatterDashboardTab({
                           }
                         }}
                       >
-                        <td className="min-w-0 px-3 py-2">
-                          <div className="flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]">
-                            <span className="truncate">{task.title}</span>
-                            {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline" className="capitalize">{task.priority || "normal"}</Badge>
-                        </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline" className={cn("whitespace-nowrap border-transparent capitalize", getStatusClass(task.status))}>
-                            {formatTaskStatusLabel(task.status)}
-                          </Badge>
-                        </td>
-                        <td className="px-3 py-2 text-foreground/70">{formatTaskDate(task.due_at)}</td>
+                        {orderedDashboardTaskColumns.map((column) => renderCell(column.key))}
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1958,23 +2085,46 @@ function MatterDashboardTab({
                   </colgroup>
                   <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                     <tr>
-                      <th className="h-10 px-3 py-3 font-medium">Activity</th>
-                      <th className="h-10 px-3 py-3 font-medium">Type</th>
-                      <th className="h-10 px-3 py-3 font-medium">Date</th>
+                      {orderedDashboardActivityColumns.map((column) => (
+                        <th
+                          key={column.key}
+                          className="h-10 cursor-grab px-3 py-3 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                          {...getDashboardActivityColumnDragProps(column.key)}
+                        >
+                          {column.label}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {recentActivity.map((item) => (
-                      <tr key={`${item.type}-${item.id}`} className="border-b last:border-0">
-                        <td className="min-w-0 px-3 py-2">
-                          <div className="truncate font-medium text-foreground">{item.title}</div>
-                        </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline" className="capitalize">{item.type}</Badge>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(item.occurred_at)}</td>
-                      </tr>
-                    ))}
+                    {recentActivity.map((item) => {
+                      const renderCell = (column: DashboardActivityColumn) => {
+                        switch (column) {
+                          case "activity":
+                            return (
+                              <td key={column} className="min-w-0 px-3 py-2">
+                                <div className="truncate font-medium text-foreground">{item.title}</div>
+                              </td>
+                            );
+                          case "type":
+                            return (
+                              <td key={column} className="px-3 py-2">
+                                <Badge variant="outline" className="capitalize">{item.type}</Badge>
+                              </td>
+                            );
+                          case "date":
+                            return <td key={column} className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(item.occurred_at)}</td>;
+                          default:
+                            return null;
+                        }
+                      };
+
+                      return (
+                        <tr key={`${item.type}-${item.id}`} className="border-b last:border-0">
+                          {orderedDashboardActivityColumns.map((column) => renderCell(column.key))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2011,23 +2161,46 @@ function MatterDashboardTab({
                   </colgroup>
                   <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                     <tr>
-                      <th className="h-10 px-3 py-3 font-medium">Document</th>
-                      <th className="h-10 px-3 py-3 font-medium">Folder</th>
-                      <th className="h-10 px-3 py-3 font-medium">Uploaded</th>
+                      {orderedDashboardDocumentColumns.map((column) => (
+                        <th
+                          key={column.key}
+                          className="h-10 cursor-grab px-3 py-3 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                          {...getDashboardDocumentColumnDragProps(column.key)}
+                        >
+                          {column.label}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {recentDocuments.map((document) => (
-                      <tr key={document.id} className="border-b last:border-0">
-                        <td className="min-w-0 px-3 py-2">
-                          <div className="truncate font-medium text-[#2384CA]">{getDocumentName(document)}</div>
-                        </td>
-                        <td className="px-3 py-2 text-foreground/70">
-                          <div className="truncate">{getDisplayFolderName(document)}</div>
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(document.created_at)}</td>
-                      </tr>
-                    ))}
+                    {recentDocuments.map((document) => {
+                      const renderCell = (column: DashboardDocumentColumn) => {
+                        switch (column) {
+                          case "document":
+                            return (
+                              <td key={column} className="min-w-0 px-3 py-2">
+                                <div className="truncate font-medium text-[#2384CA]">{getDocumentName(document)}</div>
+                              </td>
+                            );
+                          case "folder":
+                            return (
+                              <td key={column} className="px-3 py-2 text-foreground/70">
+                                <div className="truncate">{getDisplayFolderName(document)}</div>
+                              </td>
+                            );
+                          case "uploaded":
+                            return <td key={column} className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(document.created_at)}</td>;
+                          default:
+                            return null;
+                        }
+                      };
+
+                      return (
+                        <tr key={document.id} className="border-b last:border-0">
+                          {orderedDashboardDocumentColumns.map((column) => renderCell(column.key))}
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2103,6 +2276,14 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
   const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
   const paginatedContactRows = filteredContactRows.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
   const activeFilterCount = Number(typeFilter !== ALL_MATTER_CONTACT_TYPES) + Number(roleFilter !== ALL_MATTER_CONTACT_ROLES);
+  type MatterContactColumn = "contact" | "type" | "role" | "emailOrPhone";
+  const columns: Array<ReorderableColumn<MatterContactColumn>> = [
+    { key: "contact", label: "Contact" },
+    { key: "type", label: "Type" },
+    { key: "role", label: "Role" },
+    { key: "emailOrPhone", label: "Email / Phone" },
+  ];
+  const { orderedColumns, getColumnDragProps } = useColumnOrder("lawbric.tableColumns.matterContacts", columns);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -2249,56 +2430,82 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
           </colgroup>
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="h-12 px-4 py-4 font-medium">Contact</th>
-              <th className="h-12 px-4 py-4 font-medium">Type</th>
-              <th className="h-12 px-4 py-4 font-medium">Role</th>
-              <th className="h-12 px-4 py-4 font-medium">Email / Phone</th>
+              {orderedColumns.map((column) => (
+                <th
+                  key={column.key}
+                  className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                  {...getColumnDragProps(column.key)}
+                >
+                  {column.label}
+                </th>
+              ))}
               <th className="h-12 px-4 py-4 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {paginatedContactRows.map((row) => (
+            {paginatedContactRows.map((row) => {
+              const renderCell = (column: MatterContactColumn) => {
+                switch (column) {
+                  case "contact":
+                    return (
+                      <td key={column} className="max-w-xs px-4 py-2">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className={cn(
+                            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary",
+                            !row.isPrimary && "text-[11px] font-medium",
+                          )}>
+                            {row.isPrimary ? <UserRound className="h-4 w-4" /> : getAvatarInitials({ fullName: row.name, email: row.email }, "C")}
+                          </div>
+                          <div className="min-w-0">
+                            {row.contactId ? (
+                              <Link
+                                to={`/contact/${row.contactId}`}
+                                className="block truncate font-medium text-[#2384CA] hover:underline"
+                              >
+                                {row.name}
+                              </Link>
+                            ) : (
+                              <div className="truncate font-medium text-foreground">{row.name}</div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    );
+                  case "type":
+                    return (
+                      <td key={column} className="px-4 py-2 capitalize text-foreground/70">
+                        <div className="truncate">{row.type}</div>
+                      </td>
+                    );
+                  case "role":
+                    return (
+                      <td key={column} className="px-4 py-2">
+                        {row.isPrimary ? (
+                          <Badge variant="outline" className="border-primary/20 bg-primary/5 text-xs font-medium text-primary">
+                            Primary
+                          </Badge>
+                        ) : (
+                          <div className="truncate text-foreground/70">{row.role}</div>
+                        )}
+                      </td>
+                    );
+                  case "emailOrPhone":
+                    return (
+                      <td key={column} className="px-4 py-2 text-foreground/70">
+                        <div className="truncate">{row.emailOrPhone}</div>
+                      </td>
+                    );
+                  default:
+                    return null;
+                }
+              };
+
+              return (
                 <tr
                   key={row.id}
                   className="border-b transition-colors last:border-0 hover:bg-muted/30"
                 >
-                  <td className="max-w-xs px-4 py-2">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className={cn(
-                        "flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary",
-                        !row.isPrimary && "text-[11px] font-medium",
-                      )}>
-                        {row.isPrimary ? <UserRound className="h-4 w-4" /> : getAvatarInitials({ fullName: row.name, email: row.email }, "C")}
-                      </div>
-                      <div className="min-w-0">
-                        {row.contactId ? (
-                          <Link
-                            to={`/contact/${row.contactId}`}
-                            className="block truncate font-medium text-[#2384CA] hover:underline"
-                          >
-                            {row.name}
-                          </Link>
-                        ) : (
-                          <div className="truncate font-medium text-foreground">{row.name}</div>
-                        )}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 capitalize text-foreground/70">
-                    <div className="truncate">{row.type}</div>
-                  </td>
-                  <td className="px-4 py-2">
-                    {row.isPrimary ? (
-                      <Badge variant="outline" className="border-primary/20 bg-primary/5 text-xs font-medium text-primary">
-                        Primary
-                      </Badge>
-                    ) : (
-                      <div className="truncate text-foreground/70">{row.role}</div>
-                    )}
-                  </td>
-                  <td className="px-4 py-2 text-foreground/70">
-                    <div className="truncate">{row.emailOrPhone}</div>
-                  </td>
+                  {orderedColumns.map((column) => renderCell(column.key))}
                   <td className="px-4 py-2 text-right">
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -2344,7 +2551,8 @@ function ContactsTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () 
                     </DropdownMenu>
                   </td>
                 </tr>
-              ))}
+              );
+            })}
 
             {displayTotalCount === 0 ? (
               <tr>
@@ -3187,6 +3395,8 @@ function CommunicationsTab({
   const recipients = useMemo(() => getMatterCommunicationRecipients(detail), [detail]);
   const attachmentInputRef = useRef<HTMLInputElement | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [isComposerOpen, setIsComposerOpen] = useState(false);
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isDocumentPickerOpen, setIsDocumentPickerOpen] = useState(false);
@@ -3297,6 +3507,15 @@ function CommunicationsTab({
     occurredAt: string;
     date: string;
   }> = sentCommunications;
+  const typeOptions = Array.from(new Set(["email", ...communications.map((communication) => communication.type)])).sort();
+  const statusOptions = Array.from(new Set(["sent", "received", "draft", ...communications.map((communication) => communication.status)])).sort();
+  const activeFilterCount = Number(typeFilter !== "all") + Number(statusFilter !== "all");
+  const hasCommunicationListFilters = Boolean(searchTerm.trim()) || activeFilterCount > 0;
+  const clearCommunicationListFilters = () => {
+    setSearchTerm("");
+    setTypeFilter("all");
+    setStatusFilter("all");
+  };
   const filteredCommunications = communications.filter((communication) => {
     const normalizedSearch = searchTerm.trim().toLowerCase();
     const matchesSearch = !normalizedSearch || [
@@ -3307,7 +3526,9 @@ function CommunicationsTab({
       communication.status,
       communication.date,
     ].some((value) => value.toLowerCase().includes(normalizedSearch));
-    return matchesSearch;
+    const matchesType = typeFilter === "all" || communication.type === typeFilter;
+    const matchesStatus = statusFilter === "all" || communication.status === statusFilter;
+    return matchesSearch && matchesType && matchesStatus;
   });
   const sortedCommunications = useMemo(() => {
     return [...filteredCommunications].sort((a, b) => {
@@ -3388,6 +3609,12 @@ function CommunicationsTab({
   useEffect(() => {
     if (!composeRequested) return;
     setIsComposerExpanded(false);
+    setCustomRecipientInput("");
+    setDraft((current) => ({
+      ...current,
+      toRecipientKeys: [],
+      customRecipientEmails: [],
+    }));
     setIsComposerOpen(true);
     onComposeHandled?.();
   }, [composeRequested, onComposeHandled]);
@@ -3436,7 +3663,9 @@ function CommunicationsTab({
     setAttachedDocumentIds((current) => current.filter((id) => id !== documentId));
   };
   const getCommunicationBodyText = (value = draft.body) =>
-    String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    typeof DOMParser !== "undefined"
+      ? new DOMParser().parseFromString(String(value || ""), "text/html").body.textContent?.replace(/\s+/g, " ").trim() || ""
+      : String(value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
   const getCommunicationPreview = (communication: typeof communications[number]) =>
     getCommunicationBodyText(communication.preview || communication.body || communication.message || communication.html || "");
   const bodyContainsEmailSignature = (value: string) => /data-lawbric-email-signature=["']true["']/i.test(value);
@@ -3679,7 +3908,14 @@ function CommunicationsTab({
         normalizeMatterCommunication(savedCommunication),
         ...current,
       ]);
-      setDraft((current) => ({ ...current, subject: "", body: "" }));
+      setDraft((current) => ({
+        ...current,
+        toRecipientKeys: [],
+        customRecipientEmails: [],
+        subject: "",
+        body: "",
+      }));
+      setCustomRecipientInput("");
       setAttachments([]);
       setAttachedDocumentIds([]);
       setIsComposerOpen(false);
@@ -3724,19 +3960,19 @@ function CommunicationsTab({
           "inline-flex max-w-full items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium",
           "isCustom" in recipient && recipient.isCustom
             ? "border border-blue-200 bg-blue-50 text-[#2384CA]"
-            : "border border-amber-200 bg-amber-50 text-amber-700",
+            : "border border-blue-200 bg-blue-50 text-[#2384CA]",
         )}
       >
         {initial ? (
           <span className={cn(
             "flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white",
-            "isCustom" in recipient && recipient.isCustom ? "bg-[#2384CA]" : "bg-amber-500",
+            "bg-[#2384CA]",
           )}>
             {initial}
           </span>
         ) : null}
         {!("isCustom" in recipient && recipient.isCustom) ? (
-          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+          <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[#2384CA]">
             <UserRound className="h-3 w-3" />
           </span>
         ) : null}
@@ -3749,7 +3985,7 @@ function CommunicationsTab({
             "shrink-0 rounded-full",
             "isCustom" in recipient && recipient.isCustom
               ? "text-[#2384CA]/70 hover:text-[#2384CA]"
-              : "text-amber-700/70 hover:text-amber-700",
+              : "text-[#2384CA]/70 hover:text-[#2384CA]",
           )}
           aria-label={`Remove ${displayName || recipient.email}`}
           onClick={removeRecipient}
@@ -3846,7 +4082,7 @@ function CommunicationsTab({
   const renderCommunicationViewer = () => {
     if (!selectedCommunication) {
       return (
-        <div className="flex min-h-[calc(100vh-250px)] items-center justify-center bg-muted/10 p-8 text-center">
+        <div className="flex h-full min-h-0 items-center justify-center bg-muted/10 p-8 text-center">
           <div>
             <Mail className="mx-auto h-9 w-9 text-muted-foreground/60" />
             <div className="mt-3 text-sm font-medium text-foreground">Select a message</div>
@@ -3863,12 +4099,12 @@ function CommunicationsTab({
       const source = String(recipient?.source || "").toLowerCase();
       return source.includes("custom") || source.includes("previous")
         ? "border-blue-200 bg-blue-50 text-[#2384CA]"
-        : "border-amber-200 bg-amber-50 text-amber-700";
+        : "border-blue-200 bg-blue-50 text-[#2384CA]";
     };
 
     return (
-      <div className="min-h-[calc(100vh-250px)] bg-background">
-        <div className="space-y-4 px-5 py-4">
+      <div className="flex h-full min-h-0 flex-col bg-background">
+        <div className="hover-scrollbar min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pl-8 pr-5">
           <div className="flex flex-col gap-3 border-b pb-4">
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0">
@@ -3899,8 +4135,8 @@ function CommunicationsTab({
               </div>
             </div>
             <div className="grid gap-2 text-sm">
-              <div className="flex gap-2">
-                <span className="w-12 shrink-0 text-muted-foreground">To</span>
+              <div className="flex gap-1.5">
+                <span className="w-5 shrink-0 text-muted-foreground">To</span>
                 <span className="flex min-w-0 flex-wrap gap-1.5 text-foreground">
                   {selectedRecipients.length > 0 ? (
                     selectedRecipients.map((recipient: any, index: number) => {
@@ -3914,7 +4150,7 @@ function CommunicationsTab({
                         >
                           {!String(recipient?.source || "").toLowerCase().includes("custom") &&
                             !String(recipient?.source || "").toLowerCase().includes("previous") ? (
-                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+                            <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-blue-100 text-[#2384CA]">
                               <UserRound className="h-3 w-3" />
                             </span>
                           ) : null}
@@ -3932,7 +4168,7 @@ function CommunicationsTab({
 
           <div className="min-h-[180px] rounded-md bg-muted/10 p-3">
             {body ? (
-              <NoteRichTextBody value={body} className="text-sm text-foreground" />
+              <NoteRichTextBody value={body} className="text-sm leading-tight text-foreground" />
             ) : (
               <div className="text-sm text-muted-foreground">No message body saved.</div>
             )}
@@ -3941,20 +4177,59 @@ function CommunicationsTab({
           {selectedAttachments.length > 0 ? (
             <div className="space-y-2 border-t pt-3">
               <div className="text-xs font-medium uppercase text-muted-foreground">Attachments</div>
-              <div className="space-y-2">
+              <div className="grid gap-2 sm:grid-cols-2">
                 {selectedAttachments.map((attachment: any, index: number) => {
                   const url = String(attachment?.url || "");
+                  const name = String(attachment?.name || url.split("/").pop() || `Attachment ${index + 1}`);
+                  const isImage = /\.(apng|avif|gif|jpe?g|png|webp)$/i.test(name) || /\.(apng|avif|gif|jpe?g|png|webp)(\?|#|$)/i.test(url);
                   return (
-                    <a
+                    <div
                       key={`${url || "attachment"}-${index}`}
-                      href={url || undefined}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm text-[#2384CA] hover:bg-muted/40"
+                      className="flex min-w-0 items-center gap-3 rounded-lg border bg-background p-2 shadow-sm"
                     >
-                      <Paperclip className="h-4 w-4 shrink-0" />
-                      <span className="truncate">{String(attachment?.name || url || `Attachment ${index + 1}`)}</span>
-                    </a>
+                      <div className="flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-md border bg-blue-50 text-[#2384CA]">
+                        {isImage && url ? (
+                          <img src={url} alt={name} className="h-full w-full object-cover" />
+                        ) : (
+                          <FileText className="h-5 w-5" />
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-medium text-foreground">{name}</div>
+                        <div className="truncate text-xs text-muted-foreground">{url ? "Attached file" : "Attachment unavailable"}</div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        {url ? (
+                          <a
+                            href={url}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[#2384CA] hover:text-white"
+                            aria-label={`Open ${name}`}
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                          </a>
+                        ) : (
+                          <span className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground/40">
+                            <ExternalLink className="h-4 w-4" />
+                          </span>
+                        )}
+                        {url ? (
+                          <a
+                            href={url}
+                            download={name}
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-[#2384CA] hover:text-white"
+                            aria-label={`Download ${name}`}
+                          >
+                            <Download className="h-4 w-4" />
+                          </a>
+                        ) : (
+                          <span className="inline-flex h-8 w-8 items-center justify-center rounded-full text-muted-foreground/40">
+                            <Download className="h-4 w-4" />
+                          </span>
+                        )}
+                      </div>
+                    </div>
                   );
                 })}
               </div>
@@ -4004,7 +4279,7 @@ function CommunicationsTab({
         key={communication.id}
         type="button"
         className={cn(
-          "flex w-full gap-3 border-b px-4 py-3 text-left transition-colors last:border-0 hover:bg-muted/40",
+          "flex w-full gap-3 border-b py-3 pl-4 pr-6 text-left transition-colors last:border-0 hover:bg-muted/40",
           selected && "bg-blue-50/70 hover:bg-blue-50/70",
         )}
         onClick={() => setSelectedCommunicationId(communication.id)}
@@ -4028,9 +4303,19 @@ function CommunicationsTab({
       </button>
     );
   };
+  const openCommunicationComposer = () => {
+    setCustomRecipientInput("");
+    setDraft((current) => ({
+      ...current,
+      toRecipientKeys: [],
+      customRecipientEmails: [],
+    }));
+    setIsComposerExpanded(false);
+    setIsComposerOpen(true);
+  };
 
   return (
-    <div className="space-y-4 pt-0">
+    <div className="flex h-full min-h-0 flex-col pt-0">
       <input
         ref={attachmentInputRef}
         type="file"
@@ -4038,13 +4323,97 @@ function CommunicationsTab({
         className="hidden"
         onChange={handleAttachmentChange}
       />
-      <div>
-        <div className="p-0">
-          <div className="overflow-hidden rounded-xl bg-background">
-          <div className="flex items-center justify-between gap-4 border-b bg-muted/20 px-4 py-3">
+      <div className="min-h-0 flex-1">
+        <div className="h-full p-0">
+          <div className="flex h-full min-h-0 flex-col overflow-visible rounded-xl bg-background">
+          <div className="shrink-0 flex items-center justify-between gap-4 border-b bg-muted/20 px-4 py-3">
             <div className="flex min-w-0 items-center gap-2">
-              <Mail className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <div className="truncate text-sm font-medium text-foreground">Messages</div>
+              <Button
+                type="button"
+                size="sm"
+                className="h-9 rounded-full bg-primary px-4 text-primary-foreground hover:bg-[#0484C8]"
+                onClick={openCommunicationComposer}
+              >
+                <Mail className="mr-2 h-4 w-4" />
+                Compose
+              </Button>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="icon"
+                    className={cn(
+                      "relative h-9 w-9 shrink-0 rounded-full",
+                      activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
+                    )}
+                    aria-label="Filter communications"
+                    title="Filter communications"
+                  >
+                    <Filter className="h-4 w-4" />
+                    {activeFilterCount > 0 ? (
+                      <span className="absolute -right-1 -top-1 flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold text-primary-foreground">
+                        {activeFilterCount}
+                      </span>
+                    ) : null}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="top-full z-[220] mt-2 w-80 p-4">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold">Filter Communications</div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="h-8 px-2 text-xs text-muted-foreground"
+                        onClick={() => {
+                          setTypeFilter("all");
+                          setStatusFilter("all");
+                        }}
+                      >
+                        Clear
+                      </Button>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Type</Label>
+                      <Select value={typeFilter} onValueChange={setTypeFilter}>
+                        <SelectTrigger>
+                          <span className={typeFilter === "all" ? "text-muted-foreground" : "capitalize"}>
+                            {typeFilter === "all" ? "Any Type" : typeFilter}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                          <SelectItem value="all">Any Type</SelectItem>
+                          {typeOptions.map((type) => (
+                            <SelectItem key={type} value={type}>
+                              <span className="capitalize">{type}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Status</Label>
+                      <Select value={statusFilter} onValueChange={setStatusFilter}>
+                        <SelectTrigger>
+                          <span className={statusFilter === "all" ? "text-muted-foreground" : "capitalize"}>
+                            {statusFilter === "all" ? "Any Status" : statusFilter}
+                          </span>
+                        </SelectTrigger>
+                        <SelectContent className="z-[150] max-h-64 overflow-y-auto">
+                          <SelectItem value="all">Any Status</SelectItem>
+                          {statusOptions.map((status) => (
+                            <SelectItem key={status} value={status}>
+                              <span className="capitalize">{status}</span>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
             <div className="relative ml-auto w-full max-w-sm">
               <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
@@ -4053,17 +4422,30 @@ function CommunicationsTab({
                 value={searchTerm}
                 onChange={(event) => setSearchTerm(event.target.value)}
                 placeholder="Search communications..."
-                className="h-9 rounded-full bg-background pl-9"
+                className="h-9 !rounded-full bg-background pl-9"
               />
             </div>
           </div>
-          <div className="grid min-h-[calc(100vh-250px)] gap-0 xl:grid-cols-[minmax(0,0.72fr)_minmax(0,1.48fr)]">
-            <div className="h-full overflow-hidden xl:border-r">
-              <div className="max-h-[540px] overflow-y-auto">
+          <div className="grid min-h-0 flex-1 overflow-hidden gap-0 xl:grid-cols-[minmax(0,0.72fr)_minmax(0,1.48fr)]">
+            <div className="min-h-0 overflow-hidden xl:border-r">
+              <div className="hover-scrollbar h-full min-h-0 overflow-y-auto">
                 {sortedCommunications.length === 0 ? (
                   <div className="px-4 py-10 text-center">
                     <Mail className="mx-auto h-8 w-8 text-muted-foreground/60" />
-                    <div className="mt-3 text-sm font-medium text-foreground">No Communications</div>
+                    <div className="mt-3 text-sm font-medium text-foreground">
+                      {hasCommunicationListFilters ? "No matching communications" : "No Communications"}
+                    </div>
+                    {hasCommunicationListFilters ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="mt-4 rounded-full"
+                        onClick={clearCommunicationListFilters}
+                      >
+                        Clear Filters
+                      </Button>
+                    ) : null}
                   </div>
                 ) : (
                   <Accordion
@@ -4073,13 +4455,8 @@ function CommunicationsTab({
                   >
                     {communicationGroups.map((group) => (
                       <AccordionItem key={group.key} value={group.key} className="last:border-0">
-                        <AccordionTrigger className="px-4 py-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:text-foreground">
-                          <span className="flex w-full items-center justify-between pr-3">
-                            <span>{group.label}</span>
-                            <span className="text-[11px] font-medium normal-case text-muted-foreground">
-                              {group.communications.length}
-                            </span>
-                          </span>
+                        <AccordionTrigger className="border-b border-slate-200 bg-slate-100 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 hover:bg-slate-200 hover:text-slate-800">
+                          <span>{group.label}</span>
                         </AccordionTrigger>
                         <AccordionContent className="pb-0">
                           {group.communications.map(renderCommunicationListItem)}
@@ -4590,13 +4967,14 @@ function MatterTaskList({
   const lastVisibleRow = Math.min(displayTotalCount, effectiveCurrentPage * itemsPerPage);
   const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
   const paginatedTasks = tasks.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
-  const columns: Array<[MatterTaskSortColumn, string]> = [
-    ["title", "Task"],
-    ["assigned_to", "Assigned To"],
-    ["priority", "Priority"],
-    ["status", "Status"],
-    ["due_at", "Due Date"],
+  const columns: Array<ReorderableColumn<MatterTaskSortColumn>> = [
+    { key: "title", label: "Task" },
+    { key: "assigned_to", label: "Assigned To" },
+    { key: "priority", label: "Priority" },
+    { key: "status", label: "Status" },
+    { key: "due_at", label: "Due Date" },
   ];
+  const { orderedColumns, getColumnDragProps, shouldSuppressColumnClick } = useColumnOrder("lawbric.tableColumns.matterTasks", columns);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -4620,14 +4998,18 @@ function MatterTaskList({
           </colgroup>
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
-              {columns.map(([column, label]) => (
+              {orderedColumns.map((column) => (
                 <th
-                  key={column}
-                  className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                  onClick={() => handleSort(column)}
+                  key={column.key}
+                  className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                  {...getColumnDragProps(column.key)}
+                  onClick={() => {
+                    if (shouldSuppressColumnClick()) return;
+                    handleSort(column.key);
+                  }}
                 >
                   <div className="flex items-center">
-                    {label} {renderSortIcon(column)}
+                    {column.label} {renderSortIcon(column.key)}
                   </div>
                 </th>
               ))}
@@ -4645,6 +5027,86 @@ function MatterTaskList({
               } = getMatterTaskAssignedInfo(task, users);
               const completed = isCompletedTask(task);
               const dueLabel = formatTaskDate(task.due_at);
+              const renderCell = (column: MatterTaskSortColumn) => {
+                switch (column) {
+                  case "title":
+                    return (
+                      <td key={column} className="max-w-xs px-4 py-2">
+                        <div className="flex items-center gap-3">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                            <CheckSquare className="h-4 w-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className={cn("flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
+                              <span className="truncate">{task.title}</span>
+                              {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
+                            </div>
+                            {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
+                          </div>
+                        </div>
+                      </td>
+                    );
+                  case "assigned_to":
+                    return (
+                      <td key={column} className="px-4 py-2 text-foreground/70">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <Avatar className="h-8 w-8 shrink-0">
+                            {assignedUserAvatar ? (
+                              <AvatarImage
+                                src={assignedUserAvatar}
+                                alt={`${getAvatarInitials(
+                                  { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                                  "U",
+                                )} avatar`}
+                              />
+                            ) : null}
+                            <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
+                              {getAvatarInitials(
+                                { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
+                                "U",
+                              )}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div className="min-w-0 truncate" onClick={(event) => event.stopPropagation()}>
+                            <UserLink
+                              userId={assignedUserId}
+                              user={matchedUser}
+                              name={assignedUserName || "Unassigned"}
+                              stopPropagation
+                            />
+                          </div>
+                        </div>
+                      </td>
+                    );
+                  case "priority":
+                    return (
+                      <td key={column} className="px-4 py-2">
+                        <Badge variant="outline" className="capitalize">
+                          {task.priority || "normal"}
+                        </Badge>
+                      </td>
+                    );
+                  case "status":
+                    return (
+                      <td key={column} className="px-4 py-2">
+                        <Badge variant="outline" className={cn("border-transparent capitalize", getStatusClass(task.status))}>
+                          {formatTaskStatusLabel(task.status)}
+                        </Badge>
+                      </td>
+                    );
+                  case "due_at":
+                    return (
+                      <td key={column} className="px-4 py-2 text-foreground/70">
+                        <div className="flex items-center">
+                          <Clock className="mr-2 h-3.5 w-3.5 shrink-0" />
+                          <span>{dueLabel}</span>
+                        </div>
+                      </td>
+                    );
+                  default:
+                    return null;
+                }
+              };
 
               return (
                 <tr
@@ -4660,65 +5122,7 @@ function MatterTaskList({
                     }
                   }}
                 >
-                  <td className="max-w-xs px-4 py-2">
-                    <div className="flex items-center gap-3">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                        <CheckSquare className="h-4 w-4" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className={cn("flex min-w-0 items-center gap-1.5 font-medium text-[#2384CA]", completed && "text-muted-foreground line-through")}>
-                          <span className="truncate">{task.title}</span>
-                          {isPrivateTask(task) ? <Eye className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Private task" /> : null}
-                        </div>
-                        {task.description ? <div className="line-clamp-1 text-xs text-muted-foreground">{task.description}</div> : null}
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2 text-foreground/70">
-                    <div className="flex min-w-0 items-center gap-3">
-                      <Avatar className="h-8 w-8 shrink-0">
-                        {assignedUserAvatar ? (
-                          <AvatarImage
-                            src={assignedUserAvatar}
-                            alt={`${getAvatarInitials(
-                              { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
-                              "U",
-                            )} avatar`}
-                          />
-                        ) : null}
-                        <AvatarFallback className="bg-primary/10 text-[11px] font-medium text-primary">
-                          {getAvatarInitials(
-                            { fullName: assignedUserName || "Unassigned", email: assignedUserEmail },
-                            "U",
-                          )}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="min-w-0 truncate" onClick={(event) => event.stopPropagation()}>
-                        <UserLink
-                          userId={assignedUserId}
-                          user={matchedUser}
-                          name={assignedUserName || "Unassigned"}
-                          stopPropagation
-                        />
-                      </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-2">
-                    <Badge variant="outline" className="capitalize">
-                      {task.priority || "normal"}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-2">
-                    <Badge variant="outline" className={cn("border-transparent capitalize", getStatusClass(task.status))}>
-                      {formatTaskStatusLabel(task.status)}
-                    </Badge>
-                  </td>
-                  <td className="px-4 py-2 text-foreground/70">
-                    <div className="flex items-center">
-                      <Clock className="mr-2 h-3.5 w-3.5 shrink-0" />
-                      <span>{dueLabel}</span>
-                    </div>
-                  </td>
+                  {orderedColumns.map((column) => renderCell(column.key))}
                   <td className="px-4 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -4866,6 +5270,14 @@ function MatterNoteList({
   const lastVisibleRow = Math.min(displayTotalCount, effectiveCurrentPage * itemsPerPage);
   const visiblePageItems = getPaginationItems(effectiveCurrentPage, safeTotalPages);
   const paginatedNotes = sortedNotes.slice(firstVisibleRow === 0 ? 0 : firstVisibleRow - 1, lastVisibleRow);
+  type MatterNoteColumn = "subject" | "note" | "created_by" | "created_at";
+  const columns: Array<ReorderableColumn<MatterNoteColumn>> = [
+    { key: "subject", label: "Subject" },
+    { key: "note", label: "Note" },
+    { key: "created_by", label: "Created By" },
+    { key: "created_at", label: "Created" },
+  ];
+  const { orderedColumns, getColumnDragProps } = useColumnOrder("lawbric.tableColumns.matterNotes", columns);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -4888,15 +5300,48 @@ function MatterNoteList({
           </colgroup>
           <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
             <tr>
-              <th className="h-10 px-3 py-3 font-medium">Subject</th>
-              <th className="h-10 px-3 py-3 font-medium">Note</th>
-              <th className="h-10 px-3 py-3 font-medium">Created By</th>
-              <th className="h-10 px-3 py-3 font-medium">Created</th>
+              {orderedColumns.map((column) => (
+                <th
+                  key={column.key}
+                  className="h-10 cursor-grab px-3 py-3 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                  {...getColumnDragProps(column.key)}
+                >
+                  {column.label}
+                </th>
+              ))}
               <th className="h-10 px-3 py-3 text-right font-medium">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {paginatedNotes.map((note) => (
+            {paginatedNotes.map((note) => {
+              const renderCell = (column: MatterNoteColumn) => {
+                switch (column) {
+                  case "subject":
+                    return (
+                      <td key={column} className="min-w-0 px-3 py-2">
+                        <div className="truncate font-medium text-[#2384CA]">{getNoteSubject(note)}</div>
+                      </td>
+                    );
+                  case "note":
+                    return (
+                      <td key={column} className="min-w-0 px-3 py-2">
+                        <div className="truncate text-foreground/80">{getNotePreviewText(note.body)}</div>
+                      </td>
+                    );
+                  case "created_by":
+                    return (
+                      <td key={column} className="px-3 py-2 text-foreground/70">
+                        <div className="truncate">{getNoteAuthorName(note, users)}</div>
+                      </td>
+                    );
+                  case "created_at":
+                    return <td key={column} className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(note.created_at)}</td>;
+                  default:
+                    return null;
+                }
+              };
+
+              return (
               <tr
                 key={note.id || note.created_at}
                 role="button"
@@ -4910,16 +5355,7 @@ function MatterNoteList({
                   }
                 }}
               >
-                <td className="min-w-0 px-3 py-2">
-                  <div className="truncate font-medium text-[#2384CA]">{getNoteSubject(note)}</div>
-                </td>
-                <td className="min-w-0 px-3 py-2">
-                  <div className="truncate text-foreground/80">{getNotePreviewText(note.body)}</div>
-                </td>
-                <td className="px-3 py-2 text-foreground/70">
-                  <div className="truncate">{getNoteAuthorName(note, users)}</div>
-                </td>
-                <td className="whitespace-nowrap px-3 py-2 text-foreground/70">{formatDateTime(note.created_at)}</td>
+                {orderedColumns.map((column) => renderCell(column.key))}
                 <td className="px-3 py-2 text-right" onClick={(event) => event.stopPropagation()}>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
@@ -4950,7 +5386,8 @@ function MatterNoteList({
                   </DropdownMenu>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -5243,6 +5680,29 @@ function DocumentsTab({
     (effectiveCurrentPage - 1) * itemsPerPage,
     effectiveCurrentPage * itemsPerPage,
   );
+  const documentColumns: Array<ReorderableColumn<MatterDocumentSortColumn>> = [
+    { key: "name", label: "Name" },
+    { key: "storage_type", label: "Type" },
+    { key: "folder", label: "Folder" },
+    { key: "created_at", label: "Uploaded" },
+  ];
+  const folderColumns: Array<ReorderableColumn<MatterDocumentFolderSortColumn>> = [
+    { key: "folder", label: "Folder" },
+    { key: "matter", label: "Matter" },
+    { key: "documents", label: "Documents" },
+    { key: "latest_uploaded", label: "Latest Upload" },
+    { key: "last_user_edit", label: "Last User Edit" },
+  ];
+  const {
+    orderedColumns: orderedDocumentColumns,
+    getColumnDragProps: getDocumentColumnDragProps,
+    shouldSuppressColumnClick: shouldSuppressDocumentColumnClick,
+  } = useColumnOrder("lawbric.tableColumns.matterDocuments", documentColumns);
+  const {
+    orderedColumns: orderedFolderColumns,
+    getColumnDragProps: getFolderColumnDragProps,
+    shouldSuppressColumnClick: shouldSuppressFolderColumnClick,
+  } = useColumnOrder("lawbric.tableColumns.matterDocumentFolders", folderColumns);
 
   const activeFilterCount = [storageTypeFilter, folderFilter].filter(
     (value) => value !== ALL_MATTER_DOCUMENT_STORAGE_TYPES && value !== ALL_MATTER_DOCUMENT_FOLDERS,
@@ -5568,20 +6028,18 @@ function DocumentsTab({
               </colgroup>
               <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                 <tr>
-                  {([
-                    ["folder", "Folder", "pl-4 pr-1"],
-                    ["matter", "Matter", "pl-1 pr-4"],
-                    ["documents", "Documents", "pl-3 pr-1"],
-                    ["latest_uploaded", "Latest Upload", "pl-1 pr-3"],
-                    ["last_user_edit", "Last User Edit", "pl-3 pr-1"],
-                  ] as Array<[MatterDocumentFolderSortColumn, string, string]>).map(([column, label, paddingClass]) => (
+                  {orderedFolderColumns.map((column) => (
                     <th
-                      key={column}
-                      className={cn("h-12 cursor-pointer py-4 font-medium transition-colors hover:bg-muted/80", paddingClass)}
-                      onClick={() => handleFolderSort(column)}
+                      key={column.key}
+                      className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                      {...getFolderColumnDragProps(column.key)}
+                      onClick={() => {
+                        if (shouldSuppressFolderColumnClick()) return;
+                        handleFolderSort(column.key);
+                      }}
                     >
                       <div className="flex items-center">
-                        {label} {renderFolderSortIcon(column)}
+                        {column.label} {renderFolderSortIcon(column.key)}
                       </div>
                     </th>
                   ))}
@@ -5596,6 +6054,57 @@ function DocumentsTab({
                   const lastEditedDocument = [...folderGroup.documents].sort((a, b) =>
                     String(b.updated_at || b.created_at || "").localeCompare(String(a.updated_at || a.created_at || "")),
                   )[0];
+                  const renderCell = (column: MatterDocumentFolderSortColumn) => {
+                    switch (column) {
+                      case "folder":
+                        return (
+                          <td key={column} className="max-w-xs px-4 py-2">
+                            <div className="flex min-w-0 items-center gap-3">
+                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                                <FolderOpen className="h-4 w-4" />
+                              </span>
+                              <span className="truncate font-medium text-[#2384CA] hover:underline">{folderGroup.folderName}</span>
+                            </div>
+                          </td>
+                        );
+                      case "matter":
+                        return (
+                          <td key={column} className="min-w-0 px-4 py-2 text-foreground/70">
+                            <div className="min-w-0">
+                              <Link to={`/case/${detail.case.id}`} className="block truncate font-medium text-[#2384CA] hover:underline">
+                                {detail.case.case_name}
+                              </Link>
+                              <div className="truncate text-xs text-muted-foreground">{detail.case.case_number}</div>
+                            </div>
+                          </td>
+                        );
+                      case "documents":
+                        return <td key={column} className="whitespace-nowrap px-4 py-2 text-foreground/70">{folderGroup.documents.length}</td>;
+                      case "latest_uploaded":
+                        return (
+                          <td key={column} className="px-4 py-2 text-foreground/70">
+                            <div className="truncate">
+                              {latestDocument ? formatDateTime(latestDocument.created_at) : "Not set"}
+                            </div>
+                          </td>
+                        );
+                      case "last_user_edit":
+                        return (
+                          <td key={column} className="px-4 py-2 text-foreground/70">
+                            <div className="truncate" onClick={(event) => event.stopPropagation()}>
+                              <UserLink
+                                userId={getDocumentUserId(lastEditedDocument)}
+                                user={lastEditedDocument?.updated_user || lastEditedDocument?.uploaded_user}
+                                name={getDocumentUserName(lastEditedDocument)}
+                                stopPropagation
+                              />
+                            </div>
+                          </td>
+                        );
+                      default:
+                        return null;
+                    }
+                  };
                   return (
                     <tr
                       key={folderGroup.id}
@@ -5610,38 +6119,7 @@ function DocumentsTab({
                         }
                       }}
                     >
-                      <td className="max-w-xs py-2 pl-4 pr-1">
-                        <div className="flex min-w-0 items-center gap-3">
-                          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                            <FolderOpen className="h-4 w-4" />
-                          </span>
-                          <span className="truncate font-medium text-[#2384CA] hover:underline">{folderGroup.folderName}</span>
-                        </div>
-                      </td>
-                      <td className="min-w-0 py-2 pl-1 pr-4 text-foreground/70">
-                        <div className="min-w-0">
-                          <Link to={`/case/${detail.case.id}`} className="block truncate font-medium text-[#2384CA] hover:underline">
-                            {detail.case.case_name}
-                          </Link>
-                          <div className="truncate text-xs text-muted-foreground">{detail.case.case_number}</div>
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap py-2 pl-3 pr-1 text-foreground/70">{folderGroup.documents.length}</td>
-                      <td className="py-2 pl-1 pr-3 text-foreground/70">
-                        <div className="truncate">
-                          {latestDocument ? formatDateTime(latestDocument.created_at) : "Not set"}
-                        </div>
-                      </td>
-                      <td className="py-2 pl-3 pr-1 text-foreground/70">
-                        <div className="truncate" onClick={(event) => event.stopPropagation()}>
-                          <UserLink
-                            userId={getDocumentUserId(lastEditedDocument)}
-                            user={lastEditedDocument?.updated_user || lastEditedDocument?.uploaded_user}
-                            name={getDocumentUserName(lastEditedDocument)}
-                            stopPropagation
-                          />
-                        </div>
-                      </td>
+                      {orderedFolderColumns.map((column) => renderCell(column.key))}
                       <td className="py-2 pl-1 pr-3 text-right" onClick={(event) => event.stopPropagation()}>
                         <DropdownMenu>
                           <DropdownMenuTrigger asChild>
@@ -5688,19 +6166,18 @@ function DocumentsTab({
               </colgroup>
               <thead className="bg-muted/50 text-xs uppercase text-muted-foreground">
                 <tr>
-                  {([
-                    ["name", "Name"],
-                    ["storage_type", "Type"],
-                    ["folder", "Folder"],
-                    ["created_at", "Uploaded"],
-                  ] as Array<[MatterDocumentSortColumn, string]>).map(([column, label]) => (
+                  {orderedDocumentColumns.map((column) => (
                     <th
-                      key={column}
-                      className="h-12 cursor-pointer px-4 py-4 font-medium transition-colors hover:bg-muted/80"
-                      onClick={() => handleSort(column)}
+                      key={column.key}
+                      className="h-12 cursor-grab px-4 py-4 font-medium transition-colors hover:bg-muted/80 active:cursor-grabbing"
+                      {...getDocumentColumnDragProps(column.key)}
+                      onClick={() => {
+                        if (shouldSuppressDocumentColumnClick()) return;
+                        handleSort(column.key);
+                      }}
                     >
                       <div className="flex items-center">
-                        {label} {renderSortIcon(column)}
+                        {column.label} {renderSortIcon(column.key)}
                       </div>
                     </th>
                   ))}
@@ -5708,35 +6185,56 @@ function DocumentsTab({
                 </tr>
               </thead>
               <tbody>
-                {paginatedDocumentsToDisplay.map((document) => (
+                {paginatedDocumentsToDisplay.map((document) => {
+                  const renderCell = (column: MatterDocumentSortColumn) => {
+                    switch (column) {
+                      case "name":
+                        return (
+                          <td key={column} className="min-w-0 px-4 py-2">
+                            <button
+                              type="button"
+                              className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
+                              onClick={() => handleViewDocument(document)}
+                            >
+                              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
+                                <DocumentTypeIcon documentRecord={document} />
+                              </span>
+                              <span className="min-w-0 truncate">{getDocumentName(document)}</span>
+                            </button>
+                          </td>
+                        );
+                      case "storage_type":
+                        return (
+                          <td key={column} className="px-4 py-2">
+                            <Badge variant="outline" className="capitalize">{getStorageTypeLabel(document.storage_type)}</Badge>
+                          </td>
+                        );
+                      case "folder":
+                        return (
+                          <td key={column} className="px-4 py-2 text-foreground/70">
+                            <div className="flex items-center gap-2">
+                              <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                              <span className="truncate">{getDisplayFolderName(document)}</span>
+                            </div>
+                          </td>
+                        );
+                      case "created_at":
+                        return (
+                          <td key={column} className="px-4 py-2 text-foreground/70">
+                            <div className="flex items-center">
+                              <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
+                              <span>{formatDateTime(document.created_at)}</span>
+                            </div>
+                          </td>
+                        );
+                      default:
+                        return null;
+                    }
+                  };
+
+                  return (
                   <tr key={document.id} className="border-b transition-colors last:border-0 hover:bg-muted/30">
-                    <td className="min-w-0 px-4 py-2">
-                      <button
-                        type="button"
-                        className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
-                        onClick={() => handleViewDocument(document)}
-                      >
-                        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
-                          <DocumentTypeIcon documentRecord={document} />
-                        </span>
-                        <span className="min-w-0 truncate">{getDocumentName(document)}</span>
-                      </button>
-                    </td>
-                    <td className="px-4 py-2">
-                      <Badge variant="outline" className="capitalize">{getStorageTypeLabel(document.storage_type)}</Badge>
-                    </td>
-                    <td className="px-4 py-2 text-foreground/70">
-                      <div className="flex items-center gap-2">
-                        <FolderOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                        <span className="truncate">{getDisplayFolderName(document)}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-2 text-foreground/70">
-                      <div className="flex items-center">
-                        <Calendar className="mr-2 h-3.5 w-3.5 shrink-0" />
-                        <span>{formatDateTime(document.created_at)}</span>
-                      </div>
-                    </td>
+                    {orderedDocumentColumns.map((column) => renderCell(column.key))}
                     <td className="px-4 py-2 text-right">
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
@@ -5775,7 +6273,8 @@ function DocumentsTab({
                       </DropdownMenu>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

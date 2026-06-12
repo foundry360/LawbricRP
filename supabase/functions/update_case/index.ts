@@ -11,6 +11,20 @@ import {
   syncCaseStageToGhl,
 } from "../_shared/case-utils.ts";
 
+function normalizeOptionalTimestamp(value: unknown) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+
+  const text = String(value).trim();
+  if (!text) return null;
+
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(text) ? `${text}T00:00:00.000Z` : text;
+  const date = new Date(normalized);
+  if (Number.isNaN(date.getTime())) throw new Error("Invalid Filing Deadline date.");
+
+  return date.toISOString();
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
@@ -34,6 +48,9 @@ serve(async (req) => {
     if (body.caseType !== undefined) updates.case_type = String(body.caseType).trim() || "General";
     if (body.status !== undefined) updates.status = body.status;
     if (body.stage !== undefined) updates.stage = body.stage;
+    if (body.statuteOfLimitationsAt !== undefined) {
+      updates.statute_of_limitations_at = normalizeOptionalTimestamp(body.statuteOfLimitationsAt);
+    }
 
     if (body.assignedUserId !== undefined) updates.assigned_user_id = body.assignedUserId || null;
     if (body.assignedUserId !== undefined) updates.assigned_ghl_user_id = null;
