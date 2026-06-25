@@ -130,7 +130,22 @@ export async function listCases(params: Record<string, unknown> = {}) {
 }
 
 export async function getCase(caseId: string) {
-  return invokeCaseFunction<CaseDetail>("get_case", { caseId });
+  const detail = await invokeCaseFunction<CaseDetail>("get_case", { caseId });
+  const { data, error } = await supabase
+    .from("case_communications")
+    .select("*, created_user:profiles!case_communications_created_by_fkey(id, full_name, email, avatar_url)")
+    .eq("case_id", caseId)
+    .is("deleted_at", null)
+    .order("occurred_at", { ascending: false });
+
+  if (!error && data) {
+    return {
+      ...detail,
+      communications: data,
+    };
+  }
+
+  return detail;
 }
 
 export async function createCase(payload: Record<string, unknown>) {
@@ -186,6 +201,41 @@ export async function createCaseCommunication(payload: Record<string, unknown>) 
   await requirePermission("matters.edit", "You do not have permission to save matter communications.");
   const data = await invokeCaseFunction<{ communication: any }>("create_communication", payload);
   return data.communication;
+}
+
+export async function sendCaseCommunication(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to send matter communications.");
+  const data = await invokeCaseFunction<{ communication: any }>("send_case_communication", payload);
+  return data.communication;
+}
+
+export async function updateCaseCommunication(payload: Record<string, unknown>) {
+  if (typeof payload.communicationId === "string" && typeof payload.isRead === "boolean") {
+    const isRead = payload.isRead;
+    const { data, error } = await supabase
+      .from("case_communications")
+      .update({
+        is_read: isRead,
+        read_at: isRead ? new Date().toISOString() : null,
+      })
+      .eq("id", payload.communicationId)
+      .select("*, created_user:profiles!case_communications_created_by_fkey(id, full_name, email, avatar_url)")
+      .single();
+
+    if (error) throw new Error(error.message);
+    return data;
+  }
+
+  const data = await invokeCaseFunction<{ communication: any }>("update_communication", payload);
+  return data.communication;
+}
+
+export async function deleteCaseCommunication(payload: Record<string, unknown>) {
+  await requirePermission("matters.edit", "You do not have permission to delete matter communications.");
+  return invokeCaseFunction<{ ok: boolean; communicationId: string; softDeleted: boolean }>("update_communication", {
+    ...payload,
+    softDelete: true,
+  });
 }
 
 export async function updateCaseNote(payload: Record<string, unknown>) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link as RouterLink, useNavigate } from "react-router-dom";
+import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowUpDown, ExternalLink, FileArchive, FileImage, FileSpreadsheet, FileText, Filter, Folder, FolderOpen, LayoutGrid, List, Loader2, MoreVertical, Pencil, Pin, Plus, Search, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,10 +35,13 @@ import {
   moveDocument,
   renameDocument,
   uploadDocument,
+  uploadGoogleDriveDocument,
   type DocumentCapabilities,
   type DocumentRecord,
 } from "@/lib/documents";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { GoogleDriveBrowser } from "@/components/GoogleDriveBrowser";
+import { getGoogleDriveStatus } from "@/lib/google-drive";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +64,7 @@ type DocumentDisplayMode = "files" | "folders";
 type DocumentSortColumn = "name" | "matter" | "folder" | "storage_type" | "uploaded_by" | "created_at";
 type DocumentMatterGroupSortColumn = "matter" | "folders" | "documents" | "latest_upload";
 type DocumentFolderGroupSortColumn = "folder" | "documents" | "latest_upload";
+type UploadDestination = "internal" | "gdrive";
 type DocumentFolderGroup = {
   id: string;
   folderName: string;
@@ -148,6 +152,17 @@ function getMatterName(document: DocumentRecord) {
   return document.case?.case_name || document.case?.case_number || "Unknown matter";
 }
 
+function getDocumentMatterId(document: DocumentRecord) {
+  return document.case_id || document.matter_id || document.case?.id || "";
+}
+
+function getMatterDetailLink(matterId: string) {
+  return {
+    to: `/case/${matterId}`,
+    state: { activeDetailTab: "documents" },
+  };
+}
+
 function getCaseDisplayName(caseRecord: CaseRecord) {
   return caseRecord.case_number
     ? `${caseRecord.case_name} (${caseRecord.case_number})`
@@ -214,6 +229,7 @@ function getLatestDocumentDate(documents: DocumentRecord[]) {
 export function DocumentsPage() {
   const { toast } = useToast();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [cases, setCases] = useState<CaseRecord[]>([]);
   const [capabilities, setCapabilities] = useState<DocumentCapabilities>({
@@ -229,7 +245,20 @@ export function DocumentsPage() {
   const [pinnedViewMode, setPinnedViewMode] = useState<DocumentViewMode | null>(getInitialPinnedDocumentViewMode);
   const [isSavingPinnedView, setIsSavingPinnedView] = useState(false);
   const [displayMode, setDisplayMode] = useState<DocumentDisplayMode>(getInitialDocumentDisplayMode);
-  const [activeListViewId, setActiveListViewId] = useState("all");
+  const [activeListViewId, setActiveListViewId] = useState(() => {
+    if (typeof window !== "undefined" && (window.location.hash === "#gdrive" || window.location.search.includes("driveFolder="))) {
+      return "gdrive";
+    }
+    return "all";
+  });
+  const initialDriveFolder = useMemo(() => {
+    const driveFolder = searchParams.get("driveFolder");
+    if (!driveFolder) return null;
+    return {
+      id: driveFolder,
+      name: searchParams.get("driveFolderName") || "Folder",
+    };
+  }, [searchParams]);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [matterFilter, setMatterFilter] = useState(ALL_MATTERS);
@@ -905,7 +934,19 @@ export function DocumentsPage() {
         </div>
       </div>
 
-      {documents.length === 0 ? (
+      {activeListViewId === "gdrive" ? (
+        <GoogleDriveBrowser
+          viewMode={viewMode}
+          displayMode={displayMode}
+          initialFolder={initialDriveFolder}
+          onInitialFolderConsumed={() => {
+            const nextParams = new URLSearchParams(searchParams);
+            nextParams.delete("driveFolder");
+            nextParams.delete("driveFolderName");
+            setSearchParams(nextParams, { replace: true });
+          }}
+        />
+      ) : documents.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/40 bg-muted/5 px-4 py-20 text-center">
           <div className="mb-4 rounded-full bg-muted/30 p-4 text-muted-foreground/50">
             <FileText className="h-8 w-8" />
@@ -1186,6 +1227,9 @@ function GlobalUploadDocumentSheet({
 }) {
   const { toast } = useToast();
   const [matterId, setMatterId] = useState("");
+  const [destination, setDestination] = useState<UploadDestination>("internal");
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [driveStatusLoading, setDriveStatusLoading] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -1195,10 +1239,20 @@ function GlobalUploadDocumentSheet({
   useEffect(() => {
     if (!open) {
       setMatterId("");
+      setDestination("internal");
+      setDriveConnected(false);
+      setDriveStatusLoading(false);
       setFolderName("");
       setFile(null);
       setIsDraggingFile(false);
+      return;
     }
+
+    setDriveStatusLoading(true);
+    getGoogleDriveStatus()
+      .then((status) => setDriveConnected(Boolean(status.connected)))
+      .catch(() => setDriveConnected(false))
+      .finally(() => setDriveStatusLoading(false));
   }, [open]);
 
   const folderOptions = useMemo(() => {
@@ -1213,18 +1267,28 @@ function GlobalUploadDocumentSheet({
 
   const handleSubmit = async () => {
     if (!matterId || !file) return;
+    if (destination === "gdrive" && !driveConnected) return;
     setSubmitting(true);
     try {
-      const documentRecord = await uploadDocument(file, matterId, undefined, { folderName });
+      const documentRecord = destination === "gdrive"
+        ? await uploadGoogleDriveDocument(file, matterId, { folderName })
+        : await uploadDocument(file, matterId, undefined, { folderName });
       onSaved(documentRecord);
       onOpenChange(false);
-      toast({ title: "Document Uploaded", description: "The document has been added to the selected matter." });
+      toast({
+        title: destination === "gdrive" ? "Uploaded to Google Drive" : "Document Uploaded",
+        description: destination === "gdrive"
+          ? "The file has been added to the matter's Google Drive folder."
+          : "The document has been added to the selected matter.",
+      });
     } catch (error) {
       toast({ title: "Document Not Uploaded", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
   };
+
+  const canSubmit = Boolean(matterId && file && (destination === "internal" || driveConnected));
 
   const handleFileDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -1255,11 +1319,38 @@ function GlobalUploadDocumentSheet({
             />
           </div>
           <div className="space-y-2">
-            <Label>Folder</Label>
+            <Label>Destination</Label>
+            <Select
+              value={destination}
+              onValueChange={(value) => setDestination(value as UploadDestination)}
+            >
+              <SelectTrigger>
+                <span>{destination === "gdrive" ? "Google Drive" : "Internal"}</span>
+              </SelectTrigger>
+              <SelectContent className="z-[220]">
+                <SelectItem value="internal">Internal</SelectItem>
+                <SelectItem value="gdrive" disabled={!driveConnected && !driveStatusLoading}>
+                  Google Drive
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {destination === "gdrive" && !driveStatusLoading && !driveConnected ? (
+              <p className="text-xs text-muted-foreground">
+                Connect Google Drive from Tools → Connected Apps to upload files there.
+              </p>
+            ) : null}
+            {destination === "gdrive" && driveConnected ? (
+              <p className="text-xs text-muted-foreground">
+                Files are uploaded to the matter&apos;s Google Drive folder.
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label>{destination === "gdrive" ? "Drive subfolder" : "Folder"}</Label>
             <Input
               value={folderName}
               onChange={(event) => setFolderName(event.target.value)}
-              placeholder="Folder name"
+              placeholder={destination === "gdrive" ? "Optional subfolder name" : "Folder name"}
             />
             {folderOptions.length > 0 ? (
               <div className="flex flex-wrap gap-2 pt-1">
@@ -1333,7 +1424,7 @@ function GlobalUploadDocumentSheet({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={!matterId || !file || submitting}>
+          <Button type="button" onClick={handleSubmit} disabled={!canSubmit || submitting}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             Upload
           </Button>
@@ -1634,13 +1725,18 @@ function DocumentCard({
               <CardTitle className="truncate text-xs font-semibold text-foreground group-hover:text-primary">
                 {getDocumentName(documentRecord)}
               </CardTitle>
-              <RouterLink
-                to={`/case/${documentRecord.case_id || documentRecord.matter_id}`}
-                className="mt-1 block truncate text-xs text-muted-foreground hover:text-primary hover:underline"
-                onClick={(event) => event.stopPropagation()}
-              >
-                {getMatterName(documentRecord)}
-              </RouterLink>
+              {getDocumentMatterId(documentRecord) ? (
+                <RouterLink
+                  to={getMatterDetailLink(getDocumentMatterId(documentRecord)).to}
+                  state={getMatterDetailLink(getDocumentMatterId(documentRecord)).state}
+                  className="mt-1 block truncate text-xs text-[#2384CA] hover:underline"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  {getMatterName(documentRecord)}
+                </RouterLink>
+              ) : (
+                <div className="mt-1 truncate text-xs text-muted-foreground">{getMatterName(documentRecord)}</div>
+              )}
             </div>
           </div>
           <DocumentActionMenu
@@ -1687,9 +1783,14 @@ function DocumentMatterFolderCard({ matterGroup, onOpenMatter }: { matterGroup: 
             </div>
             <div className="min-w-0">
               <CardTitle className="truncate text-xs font-semibold">
-                <button type="button" className="max-w-full truncate text-left text-[#2384CA] hover:underline" onClick={onOpenMatter}>
+                <RouterLink
+                  to={getMatterDetailLink(matterGroup.matterId).to}
+                  state={getMatterDetailLink(matterGroup.matterId).state}
+                  className="max-w-full truncate text-[#2384CA] hover:underline"
+                  onClick={(event) => event.stopPropagation()}
+                >
                   {matterGroup.matterName}
-                </button>
+                </RouterLink>
               </CardTitle>
               <div className="mt-1 truncate text-xs text-muted-foreground">
                 {matterGroup.folders.length} {matterGroup.folders.length === 1 ? "folder" : "folders"}
@@ -1762,16 +1863,17 @@ function DocumentMatterFolderList({
                 case "matter":
                   return (
                     <td key={column} className="min-w-0 px-4 py-2">
-                      <button
-                        type="button"
-                        className="flex w-full min-w-0 items-center gap-3 text-left font-medium text-[#2384CA] hover:underline"
-                        onClick={() => onOpenMatter(matterGroup.id)}
+                      <RouterLink
+                        to={getMatterDetailLink(matterGroup.matterId).to}
+                        state={getMatterDetailLink(matterGroup.matterId).state}
+                        className="flex w-full min-w-0 items-center gap-3 font-medium text-[#2384CA] hover:underline"
+                        onClick={(event) => event.stopPropagation()}
                       >
                         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-50 text-primary">
                           <FolderOpen className="h-4 w-4" />
                         </span>
                         <span className="min-w-0 truncate">{matterGroup.matterName}</span>
-                      </button>
+                      </RouterLink>
                     </td>
                   );
                 case "folders":
@@ -2052,9 +2154,17 @@ function DocumentTable({
                 case "matter":
                   return (
                     <td key={column} className="min-w-0 px-4 py-2">
-                      <RouterLink to={`/case/${documentRecord.case_id || documentRecord.matter_id}`} className="block truncate text-[#2384CA] hover:underline">
-                        {getMatterName(documentRecord)}
-                      </RouterLink>
+                      {getDocumentMatterId(documentRecord) ? (
+                        <RouterLink
+                          to={getMatterDetailLink(getDocumentMatterId(documentRecord)).to}
+                          state={getMatterDetailLink(getDocumentMatterId(documentRecord)).state}
+                          className="block truncate font-medium text-[#2384CA] hover:underline"
+                        >
+                          {getMatterName(documentRecord)}
+                        </RouterLink>
+                      ) : (
+                        <span className="block truncate text-foreground/70">{getMatterName(documentRecord)}</span>
+                      )}
                     </td>
                   );
                 case "folder":

@@ -22,6 +22,7 @@ import {
   Link2,
   Loader2,
   Mail,
+  MailOpen,
   Maximize2,
   MoreVertical,
   NotebookPen,
@@ -66,19 +67,21 @@ import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
 import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, sendGhlEmail, type GhlPipeline } from "@/lib/api";
+import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
-  createCaseCommunication,
   createCaseEvent,
   createCaseNote,
   createCaseTask,
+  deleteCaseCommunication,
   deleteCaseNote,
   getCase,
   listCases,
   type CaseRecord,
   type CaseDetail,
+  sendCaseCommunication,
   updateCase,
+  updateCaseCommunication,
   updateCaseParty,
   updateCaseNote,
 } from "@/lib/cases";
@@ -94,11 +97,13 @@ import {
   renameDocument,
   renameDocumentFolder,
   uploadDocument,
+  uploadGoogleDriveDocument,
   viewDocument,
   type DocumentCapabilities,
   type DocumentRecord,
   type DocumentStorageType,
 } from "@/lib/documents";
+import { getGoogleDriveStatus, getMatterDriveFolder, type MatterDriveFolderResult } from "@/lib/google-drive";
 import { deleteTask, formatTaskStatusLabel, updateTask } from "@/lib/tasks";
 import { getAvatarInitials } from "@/lib/avatar";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
@@ -1037,7 +1042,7 @@ export function CaseDetailPage() {
                 </TabsTrigger>
                 <TabsTrigger value="communications" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
                   <Mail className="mr-2 h-4 w-4 shrink-0" />
-                  Communications
+                  Conversations
                 </TabsTrigger>
                 <TabsTrigger value="timeline" className={CASE_DETAIL_TAB_TRIGGER_CLASS}>
                   <Clock className="mr-2 h-4 w-4" />
@@ -1115,6 +1120,51 @@ export function CaseDetailPage() {
                   detail={detail}
                   composeRequested={communicationComposeRequested}
                   onComposeHandled={() => setCommunicationComposeRequested(false)}
+                  onCommunicationsRefreshed={(communications) => {
+                    setDetail((current) =>
+                      current
+                        ? {
+                          ...current,
+                          communications,
+                        }
+                        : current
+                    );
+                  }}
+                  onCommunicationCreated={(communication) => {
+                    setDetail((current) =>
+                      current
+                        ? {
+                          ...current,
+                          communications: [
+                            communication,
+                            ...current.communications.filter((item: any) => String(item.id) !== String(communication.id)),
+                          ],
+                        }
+                        : current
+                    );
+                  }}
+                  onCommunicationUpdated={(communication) => {
+                    setDetail((current) =>
+                      current
+                        ? {
+                          ...current,
+                          communications: current.communications.map((item: any) =>
+                            String(item.id) === String(communication.id) ? communication : item
+                          ),
+                        }
+                        : current
+                    );
+                  }}
+                  onCommunicationDeleted={(communicationId) => {
+                    setDetail((current) =>
+                      current
+                        ? {
+                          ...current,
+                          communications: current.communications.filter((item: any) => String(item.id) !== String(communicationId)),
+                        }
+                        : current
+                    );
+                  }}
                 />
               </TabsContent>
               <TabsContent value="timeline" className="m-0">
@@ -3400,6 +3450,56 @@ function getCommunicationIdList(...values: unknown[]) {
   );
 }
 
+function cleanInboundPlainTextMarkup(value: string) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/(^|\s)>\s*\[?https?:\/\/email\.lc\.[^\]\s]+]?\s*/gi, "\n")
+    .split("\n")
+    .filter((line) => {
+      const trimmedLine = line.trim();
+      const unquotedLine = trimmedLine.replace(/^>\s?/, "").trim();
+      if (!unquotedLine) return true;
+      if (/^\[?https?:\/\/email\.lc\.[^\]\s]+]?\s*$/i.test(unquotedLine)) return false;
+      if (/^https?:\/\/email\.lc\.[^\s]+$/i.test(unquotedLine)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function cleanInboundCommunicationText(communication: any, value: string) {
+  const metadata = communication?.metadata && typeof communication.metadata === "object" ? communication.metadata : {};
+  const direction = String(communication?.direction || metadata.direction || "").toLowerCase();
+  const status = String(communication?.status || "").toLowerCase();
+  const isInboundEmail = (direction.includes("inbound") || status === "received") &&
+    String(communication?.channel || communication?.type || "email").toLowerCase() === "email";
+  return isInboundEmail ? cleanInboundPlainTextMarkup(value) : value;
+}
+
+function getCommunicationReadState(communication: any, direction: string, status: string) {
+  const metadata = communication?.metadata && typeof communication.metadata === "object" ? communication.metadata : {};
+  const readStateValues = [
+    communication?.is_read,
+    communication?.isRead,
+    metadata.is_read,
+    metadata.isRead,
+  ];
+
+  for (const value of readStateValues) {
+    if (typeof value === "boolean") return value;
+    if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) {
+      return value.trim().toLowerCase() === "true";
+    }
+  }
+
+  return direction === "outbound" || status === "sent";
+}
+
+function isVisibleMatterCommunication(communication: any) {
+  return !communication?.deleted_at && !communication?.deletedAt;
+}
+
 function normalizeMatterCommunication(communication: any) {
   const occurredAt = communication?.occurred_at || communication?.occurredAt || communication?.created_at || new Date().toISOString();
   const sender = Array.isArray(communication?.created_user)
@@ -3407,6 +3507,9 @@ function normalizeMatterCommunication(communication: any) {
     : communication?.created_user || communication?.sender || {};
   const metadata = communication?.metadata && typeof communication.metadata === "object" ? communication.metadata : {};
   const senderEmail = String(sender?.email || communication?.senderEmail || metadata.senderEmail || metadata.fromEmail || "");
+  const direction = String(communication?.direction || metadata.direction || "");
+  const status = String(communication?.status || "sent");
+  const isRead = getCommunicationReadState(communication, direction, status);
   const senderName = String(
     sender?.full_name ||
       sender?.name ||
@@ -3418,12 +3521,12 @@ function normalizeMatterCommunication(communication: any) {
   return {
     id: String(communication?.id || crypto.randomUUID()),
     type: String(communication?.channel || communication?.type || "email"),
-    direction: String(communication?.direction || metadata.direction || ""),
+    direction,
     subject: String(communication?.subject || "No subject"),
-    preview: String(communication?.preview || ""),
-    body: typeof communication?.body === "string" ? communication.body : undefined,
-    message: typeof communication?.message === "string" ? communication.message : undefined,
-    html: typeof communication?.html === "string" ? communication.html : undefined,
+    preview: String(cleanInboundCommunicationText(communication, communication?.preview || "") || ""),
+    body: typeof communication?.body === "string" ? cleanInboundCommunicationText(communication, communication.body) : undefined,
+    message: typeof communication?.message === "string" ? cleanInboundCommunicationText(communication, communication.message) : undefined,
+    html: typeof communication?.html === "string" ? cleanInboundCommunicationText(communication, communication.html) : undefined,
     recipients: Array.isArray(communication?.recipients) ? communication.recipients : [],
     attachments: Array.isArray(communication?.attachments) ? communication.attachments : [],
     participant: getCommunicationRecipientsLabel(communication),
@@ -3432,7 +3535,9 @@ function normalizeMatterCommunication(communication: any) {
     senderAvatarUrl: String(sender?.avatar_url || sender?.avatarUrl || metadata.senderAvatarUrl || ""),
     ghlMessageIds: getCommunicationIdList(communication?.ghl_message_ids, communication?.ghlMessageIds),
     ghlConversationIds: getCommunicationIdList(communication?.ghl_conversation_ids, communication?.ghlConversationIds),
-    status: String(communication?.status || "sent"),
+    status,
+    isRead,
+    readAt: String(communication?.read_at || communication?.readAt || metadata.readAt || ""),
     occurredAt,
     date: formatDateTime(occurredAt),
   };
@@ -3442,10 +3547,18 @@ function CommunicationsTab({
   detail,
   composeRequested = false,
   onComposeHandled,
+  onCommunicationsRefreshed,
+  onCommunicationCreated,
+  onCommunicationUpdated,
+  onCommunicationDeleted,
 }: {
   detail: CaseDetail;
   composeRequested?: boolean;
   onComposeHandled?: () => void;
+  onCommunicationsRefreshed?: (communications: any[]) => void;
+  onCommunicationCreated?: (communication: any) => void;
+  onCommunicationUpdated?: (communication: any) => void;
+  onCommunicationDeleted?: (communicationId: string) => void;
 }) {
   const { toast } = useToast();
   const recipients = useMemo(() => getMatterCommunicationRecipients(detail), [detail]);
@@ -3457,6 +3570,7 @@ function CommunicationsTab({
   const [isComposerExpanded, setIsComposerExpanded] = useState(false);
   const [isDocumentPickerOpen, setIsDocumentPickerOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [communicationActionId, setCommunicationActionId] = useState<string>("");
   const [isRecipientInputFocused, setIsRecipientInputFocused] = useState(false);
   const [selectedCommunicationId, setSelectedCommunicationId] = useState<string>("");
   const [replyContext, setReplyContext] = useState<{
@@ -3484,6 +3598,10 @@ function CommunicationsTab({
   const [attachments, setAttachments] = useState<File[]>([]);
   const [attachedDocumentIds, setAttachedDocumentIds] = useState<string[]>([]);
   const selectedMatterRecipients = recipients.filter((recipient) => draft.toRecipientKeys.includes(recipient.key));
+  const visibleDetailCommunications = useMemo(
+    () => (detail.communications || []).filter(isVisibleMatterCommunication),
+    [detail.communications],
+  );
   const knownRecipientOptions = useMemo(() => {
     const optionMap = new Map<string, {
       key: string;
@@ -3495,7 +3613,7 @@ function CommunicationsTab({
     recipients.forEach((recipient) => {
       optionMap.set(recipient.email.trim().toLowerCase(), recipient);
     });
-    (detail.communications || []).forEach((communication: any) => {
+    visibleDetailCommunications.forEach((communication: any) => {
       const communicationRecipients = Array.isArray(communication?.recipients) ? communication.recipients : [];
       communicationRecipients.forEach((recipient: any) => {
         const email = String(recipient?.email || "").trim();
@@ -3512,7 +3630,7 @@ function CommunicationsTab({
       });
     });
     return Array.from(optionMap.values()).sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email));
-  }, [detail.communications, recipients]);
+  }, [visibleDetailCommunications, recipients]);
   const customRecipients = draft.customRecipientEmails.map((email) => ({
     key: `custom:${email}`,
     contactId: knownRecipientOptions.find((recipient) => recipient.email.trim().toLowerCase() === email.trim().toLowerCase())?.contactId || "",
@@ -3553,9 +3671,11 @@ function CommunicationsTab({
     ghlMessageIds?: string[];
     ghlConversationIds?: string[];
     status: string;
+    isRead: boolean;
+    readAt?: string;
     occurredAt: string;
     date: string;
-  }>>(() => (detail.communications || []).map(normalizeMatterCommunication));
+  }>>(() => visibleDetailCommunications.map(normalizeMatterCommunication));
   const communications: Array<{
     id: string;
     type: string;
@@ -3574,6 +3694,8 @@ function CommunicationsTab({
     ghlMessageIds?: string[];
     ghlConversationIds?: string[];
     status: string;
+    isRead: boolean;
+    readAt?: string;
     occurredAt: string;
     date: string;
   }> = sentCommunications;
@@ -3657,8 +3779,56 @@ function CommunicationsTab({
   }, [recipients]);
 
   useEffect(() => {
-    setSentCommunications((detail.communications || []).map(normalizeMatterCommunication));
-  }, [detail.communications]);
+    setSentCommunications(visibleDetailCommunications.map(normalizeMatterCommunication));
+  }, [visibleDetailCommunications]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const refreshCommunications = async () => {
+      const { data, error } = await supabase
+        .from("case_communications")
+        .select("*, created_user:profiles!case_communications_created_by_fkey(id, full_name, email, avatar_url)")
+        .eq("case_id", detail.case.id)
+        .is("deleted_at", null)
+        .order("occurred_at", { ascending: false });
+
+      if (cancelled) return;
+      if (error) {
+        console.error("Failed to refresh matter conversations", error);
+        return;
+      }
+
+      const communications = data || [];
+      setSentCommunications((current) => {
+        const currentIds = new Set(current.map((communication) => communication.id));
+        const hasNewInbound = communications.some((communication: any) =>
+          !currentIds.has(String(communication.id)) &&
+          String(communication.direction || "").toLowerCase() === "inbound"
+        );
+
+        if (hasNewInbound) {
+          setSearchTerm("");
+          setTypeFilter("all");
+          setStatusFilter("all");
+        }
+
+        return communications.map(normalizeMatterCommunication);
+      });
+      onCommunicationsRefreshed?.(communications);
+    };
+
+    void refreshCommunications();
+
+    const intervalId = window.setInterval(() => {
+      void refreshCommunications();
+    }, 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [detail.case.id]);
 
   const loadEmailSignature = async (userId?: string) => {
     const profileUserId = userId || (await supabase.auth.getUser()).data.user?.id;
@@ -3922,44 +4092,22 @@ function CommunicationsTab({
     }
 
     setSending(true);
-    let emailSent = false;
     try {
       const attachmentUrls = await getSendableAttachmentUrls();
       const resolvedRecipients = await resolveRecipientsForSend();
       const emailBodyHtml = getEmailBodyWithSignature();
-      const responses = await Promise.all(
-        resolvedRecipients.map((recipient) =>
-          sendGhlEmail({
-            contactId: recipient.contactId,
-            emailTo: recipient.email,
-            emailFrom: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : undefined,
-            subject: draft.subject.trim(),
-            html: emailBodyHtml,
-            message: bodyText,
-            conversationId: replyContext?.ghlConversationIds[0],
-            attachments: attachmentUrls,
-          }),
-        ),
-      );
-      emailSent = true;
-      const sentAt = new Date().toISOString();
       const participantNames = resolvedRecipients.map((recipient) => recipient.name).join(", ");
-      const ghlMessageIds = responses
-        .map((response) => response.messageId || response.message?.id)
-        .filter(Boolean)
-        .map(String);
-      const ghlConversationIds = getCommunicationIdList(
-        replyContext?.ghlConversationIds,
-        responses.map((response) => response.conversationId),
-      );
-      const savedCommunication = await createCaseCommunication({
+      const savedCommunication = await sendCaseCommunication({
         caseId: detail.case.id,
-        channel: "email",
-        direction: "outbound",
+        locationId: detail.case.location_id,
         subject: draft.subject.trim(),
         body: emailBodyHtml,
+        message: bodyText,
         preview: bodyText,
-        status: "sent",
+        emailFrom: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : undefined,
+        conversationId: replyContext?.ghlConversationIds[0],
+        replyMessageId: replyContext?.ghlMessageIds[0],
+        emailReplyMode: replyContext ? "reply" : undefined,
         participantName: participantNames,
         recipients: resolvedRecipients.map((recipient) => ({
           contactId: recipient.contactId,
@@ -3968,9 +4116,7 @@ function CommunicationsTab({
           source: recipient.source,
         })),
         attachments: attachmentUrls.map((url) => ({ url })),
-        ghlMessageIds,
-        ghlConversationIds,
-        occurredAt: sentAt,
+        attachmentUrls,
         metadata: {
           fromEmail: draft.fromEmail.includes("@") ? draft.fromEmail.trim() : null,
           signatureApplied: emailSignature.enabled && Boolean(emailSignature.html || emailSignature.logoUrl),
@@ -3983,6 +4129,7 @@ function CommunicationsTab({
         normalizeMatterCommunication(savedCommunication),
         ...current,
       ]);
+      onCommunicationCreated?.(savedCommunication);
       setDraft((current) => ({
         ...current,
         toRecipientKeys: [],
@@ -4004,12 +4151,10 @@ function CommunicationsTab({
       });
     } catch (error) {
       toast({
-        title: emailSent ? "Email Sent, Not Saved" : "Email Not Sent",
+        title: "Email Not Sent",
         description: getUserFriendlyErrorMessage(
           error,
-          emailSent
-            ? "The email was sent through GHL, but Lawbric could not save it to this matter."
-            : "Could not send this email through GHL. Please try again.",
+          "Could not send this email through GHL. A failed conversation entry is saved when the request reaches Lawbric.",
         ),
         variant: "destructive",
       });
@@ -4394,21 +4539,134 @@ function CommunicationsTab({
       />
     </div>
   );
+  const handleSetCommunicationRead = async (
+    communication: typeof communications[number],
+    nextIsRead: boolean,
+    options: { silent?: boolean } = {},
+  ) => {
+    const readAt = nextIsRead ? new Date().toISOString() : "";
+    setCommunicationActionId(communication.id);
+    setSentCommunications((current) =>
+      current.map((item) => item.id === communication.id ? { ...item, isRead: nextIsRead, readAt } : item)
+    );
+    try {
+      const updatedCommunication = await updateCaseCommunication({
+        locationId: detail.case.location_id,
+        communicationId: communication.id,
+        isRead: nextIsRead,
+      });
+      if (updatedCommunication) onCommunicationUpdated?.(updatedCommunication);
+      if (!options.silent && updatedCommunication) {
+        setSentCommunications((current) =>
+          current.map((item) => item.id === communication.id ? normalizeMatterCommunication(updatedCommunication) : item)
+        );
+      }
+    } catch (error) {
+      if (!options.silent) {
+        setSentCommunications((current) =>
+          current.map((item) =>
+            item.id === communication.id
+              ? { ...item, isRead: communication.isRead, readAt: communication.readAt }
+              : item
+          )
+        );
+        toast({
+          title: "Conversation Not Updated",
+          description: getUserFriendlyErrorMessage(error, "Could not update the conversation read state."),
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setCommunicationActionId("");
+    }
+  };
+  const handleToggleCommunicationRead = async (communication: typeof communications[number]) => {
+    const nextIsRead = !communication.isRead;
+    await handleSetCommunicationRead(communication, nextIsRead);
+    if (!nextIsRead) {
+      setTimeout(() => {
+        void updateCaseCommunication({
+          locationId: detail.case.location_id,
+          communicationId: communication.id,
+          isRead: false,
+        }).catch(() => undefined);
+      }, 1000);
+    }
+  };
+  const handleDeleteCommunication = async (communication: typeof communications[number]) => {
+    const previousCommunications = sentCommunications;
+    const previousSelectedCommunicationId = selectedCommunicationId;
+    const nextSelectedCommunication = sortedCommunications.find((item) => item.id !== communication.id);
+    setCommunicationActionId(communication.id);
+    setSentCommunications((current) => current.filter((item) => item.id !== communication.id));
+    if (selectedCommunicationId === communication.id) {
+      setSelectedCommunicationId(nextSelectedCommunication?.id || "");
+    }
+
+    try {
+      await deleteCaseCommunication({
+        locationId: detail.case.location_id,
+        communicationId: communication.id,
+        deleteReason: "Deleted from matter conversations list",
+      });
+      onCommunicationDeleted?.(communication.id);
+    } catch (error) {
+      setSentCommunications(previousCommunications);
+      setSelectedCommunicationId(previousSelectedCommunicationId);
+      toast({
+        title: "Conversation Not Deleted",
+        description: getUserFriendlyErrorMessage(error, "Could not delete the conversation."),
+        variant: "destructive",
+      });
+    } finally {
+      setCommunicationActionId("");
+    }
+  };
+  const handleSelectCommunication = (communication: typeof communications[number]) => {
+    setSelectedCommunicationId(communication.id);
+    if (!communication.isRead && communicationActionId !== communication.id) {
+      const readAt = new Date().toISOString();
+      setSentCommunications((current) =>
+        current.map((item) => item.id === communication.id ? { ...item, isRead: true, readAt } : item)
+      );
+      void updateCaseCommunication({
+        locationId: detail.case.location_id,
+        communicationId: communication.id,
+        isRead: true,
+      })
+        .then((updatedCommunication) => {
+          if (updatedCommunication) onCommunicationUpdated?.(updatedCommunication);
+        })
+        .catch(() => undefined);
+    }
+  };
   const renderCommunicationListItem = (communication: typeof sortedCommunications[number]) => {
     const preview = getCommunicationPreview(communication);
     const selected = communication.id === selectedCommunicationId;
+    const isUnread = !communication.isRead;
+    const actionsDisabled = communicationActionId === communication.id;
     return (
-      <button
+      <div
         key={communication.id}
-        type="button"
+        role="button"
+        tabIndex={0}
         className={cn(
-          "flex w-full gap-3 border-b border-l-4 border-l-transparent py-3 pl-4 pr-6 text-left transition-colors last:border-b-0 hover:bg-muted/40",
+          "group flex w-full cursor-pointer gap-3 border-b border-l-4 border-l-transparent py-3 pl-4 pr-4 text-left outline-none transition-colors last:border-b-0 hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-[#2384CA]/30",
           selected && "bg-blue-50/70 hover:bg-blue-50/70",
+          isUnread && !selected && "bg-blue-50/30",
         )}
         style={{ borderLeftColor: selected ? "#2384CA" : "transparent" }}
-        onClick={() => setSelectedCommunicationId(communication.id)}
+        onClick={() => handleSelectCommunication(communication)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          handleSelectCommunication(communication);
+        }}
       >
-        <Avatar className="mt-0.5 h-8 w-8 shrink-0">
+        <Avatar className={cn(
+          "mt-0.5 h-8 w-8 shrink-0 border border-slate-200 bg-background",
+          isUnread && "ring-2 ring-[#2384CA]/20",
+        )}>
           {communication.senderAvatarUrl ? (
             <AvatarImage src={communication.senderAvatarUrl} alt={`${communication.senderName || "Sender"} avatar`} />
           ) : null}
@@ -4420,18 +4678,55 @@ function CommunicationsTab({
           </AvatarFallback>
         </Avatar>
         <span className="min-w-0 flex-1">
-          <span className="mb-0.5 block truncate text-xs font-medium text-black">
-            {communication.senderName || "Unknown sender"}
+          <span className="mb-0.5 flex min-w-0 items-center gap-2">
+            {isUnread ? <span className="h-2 w-2 shrink-0 rounded-full bg-[#2384CA]" aria-label="Unread conversation" /> : null}
+            <span className={cn("block truncate text-xs text-black", isUnread ? "font-semibold" : "font-medium")}>
+              {communication.senderName || "Unknown sender"}
+            </span>
           </span>
           <span className="flex items-center justify-between gap-2">
-            <span className="truncate text-sm font-medium text-[#2384CA]">{communication.subject}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">{communication.date}</span>
+            <span className={cn("truncate text-sm text-[#2384CA]", isUnread ? "font-semibold" : "font-medium")}>{communication.subject}</span>
+            <span className="flex shrink-0 items-center gap-1">
+              <span className="text-xs text-muted-foreground">{communication.date}</span>
+              <span className="ml-1 flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:bg-blue-100 hover:text-[#2384CA]"
+                  disabled={actionsDisabled}
+                  aria-label={communication.isRead ? "Mark conversation unread" : "Mark conversation read"}
+                  title={communication.isRead ? "Mark unread" : "Mark read"}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleToggleCommunicationRead(communication);
+                  }}
+                >
+                  {communication.isRead ? <Mail className="h-3.5 w-3.5" /> : <MailOpen className="h-3.5 w-3.5" />}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 rounded-full text-muted-foreground hover:bg-red-50 hover:text-red-600"
+                  disabled={actionsDisabled}
+                  aria-label="Delete conversation"
+                  title="Delete"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleDeleteCommunication(communication);
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              </span>
+            </span>
           </span>
           {preview ? (
-            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{preview}</span>
+            <span className={cn("mt-0.5 block truncate text-xs", isUnread ? "font-medium text-slate-700" : "text-muted-foreground")}>{preview}</span>
           ) : null}
         </span>
-      </button>
+      </div>
     );
   };
   const openCommunicationComposer = () => {
@@ -4479,8 +4774,8 @@ function CommunicationsTab({
                       "relative h-9 w-9 shrink-0 rounded-full",
                       activeFilterCount > 0 && "border-primary/40 bg-primary/10 text-primary",
                     )}
-                    aria-label="Filter communications"
-                    title="Filter communications"
+                    aria-label="Filter conversations"
+                    title="Filter conversations"
                   >
                     <Filter className="h-4 w-4" />
                     {activeFilterCount > 0 ? (
@@ -4493,7 +4788,7 @@ function CommunicationsTab({
                 <PopoverContent align="start" className="top-full z-[220] mt-2 w-80 p-4">
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold">Filter Communications</div>
+                      <div className="text-sm font-semibold">Filter Conversations</div>
                       <Button
                         type="button"
                         variant="ghost"
@@ -4565,7 +4860,7 @@ function CommunicationsTab({
                   <div className="px-4 py-10 text-center">
                     <Mail className="mx-auto h-8 w-8 text-muted-foreground/60" />
                     <div className="mt-3 text-sm font-medium text-foreground">
-                      {hasCommunicationListFilters ? "No matching communications" : "No Communications"}
+                      {hasCommunicationListFilters ? "No matching conversations" : "No Conversations"}
                     </div>
                     {hasCommunicationListFilters ? (
                       <Button
@@ -4611,7 +4906,7 @@ function CommunicationsTab({
             <div className="flex min-w-0 items-center gap-2">
               <Mail className="h-4 w-4 shrink-0" />
               <div className="truncate text-sm font-semibold">
-                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Communication"}
+                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Conversation"}
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
@@ -4620,7 +4915,7 @@ function CommunicationsTab({
                 variant="ghost"
                 size="icon"
                 className="h-8 w-8 text-white hover:bg-white/10 hover:text-white"
-                aria-label="Expand communication composer"
+                aria-label="Expand conversation composer"
                 title="Expand"
                 onClick={() => {
                   setIsComposerExpanded(true);
@@ -4680,7 +4975,7 @@ function CommunicationsTab({
             <div className="flex items-center gap-2">
               <Mail className="h-4 w-4" />
               <DialogTitle className="text-base">
-                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Communication"}
+                {replyContext ? `Reply to ${replyContext.senderName || replyContext.senderEmail}` : "New Conversation"}
               </DialogTitle>
             </div>
           </div>
@@ -5687,6 +5982,7 @@ function DocumentsTab({
   onDocumentView: (document: DocumentRecord) => void;
 }) {
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [capabilities, setCapabilities] = useState<DocumentCapabilities>({
     canView: false,
     canUpload: false,
@@ -5716,6 +6012,8 @@ function DocumentsTab({
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
   const [folderSortColumn, setFolderSortColumn] = useState<MatterDocumentFolderSortColumn>("folder");
   const [folderSortDirection, setFolderSortDirection] = useState<"asc" | "desc">("asc");
+  const [driveFolderStatus, setDriveFolderStatus] = useState<MatterDriveFolderResult | null>(null);
+  const [driveFolderLoading, setDriveFolderLoading] = useState(false);
   const documents = (detail.documents || []) as DocumentRecord[];
 
   const folderOptions = useMemo(() => {
@@ -5905,6 +6203,36 @@ function DocumentsTab({
         setAccessibleDocuments(documents);
       });
   }, [detail.case, documents]);
+
+  const loadDriveFolder = async (
+    createIfMissing = false,
+    { showErrorToast = true, showSuccessToast = false } = {},
+  ) => {
+    try {
+      setDriveFolderLoading(true);
+      const result = await getMatterDriveFolder(detail.case.id, createIfMissing);
+      setDriveFolderStatus(result);
+      if (showSuccessToast && createIfMissing && result.folder?.webUrl) {
+        toast({ title: "Google Drive folder ready", description: "The matter folder has been created." });
+      }
+    } catch (error) {
+      if (showErrorToast) {
+        toast({
+          title: "Google Drive folder unavailable",
+          description: getUserFriendlyErrorMessage(error, "Could not load the Google Drive folder for this matter."),
+          variant: "destructive",
+        });
+      } else {
+        console.error("Google Drive folder setup failed", error);
+      }
+    } finally {
+      setDriveFolderLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void loadDriveFolder(true, { showErrorToast: false });
+  }, [detail.case.id]);
 
   const handleViewDocument = async (document: DocumentRecord) => {
     onDocumentView(document);
@@ -6134,6 +6462,51 @@ function DocumentsTab({
                 </TabsTrigger>
               </TabsList>
             </Tabs>
+            {driveFolderStatus?.folder?.driveFolderId ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 shrink-0 rounded-full"
+                onClick={() => {
+                  const params = new URLSearchParams({
+                    driveFolder: driveFolderStatus.folder?.driveFolderId || "",
+                    driveFolderName: driveFolderStatus.folder?.folderName || "Matter folder",
+                  });
+                  navigate(`/documents?${params.toString()}#gdrive`);
+                }}
+              >
+                <FolderOpen className="mr-2 h-4 w-4" />
+                Drive Folder
+              </Button>
+            ) : driveFolderStatus?.connected && driveFolderStatus.rootFolderId ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 shrink-0 rounded-full"
+                disabled={driveFolderLoading}
+                onClick={() => {
+                  const params = new URLSearchParams({
+                    driveFolder: driveFolderStatus.rootFolderId || "",
+                    driveFolderName: "Lawbric",
+                  });
+                  navigate(`/documents?${params.toString()}#gdrive`);
+                }}
+              >
+                {driveFolderLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+                Lawbric Folder
+              </Button>
+            ) : driveFolderStatus?.connected && capabilities.canUpload ? (
+              <Button
+                type="button"
+                variant="outline"
+                className="h-10 shrink-0 rounded-full"
+                disabled={driveFolderLoading}
+                onClick={() => loadDriveFolder(true, { showSuccessToast: true })}
+              >
+                {driveFolderLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FolderOpen className="mr-2 h-4 w-4" />}
+                Create Drive Folder
+              </Button>
+            ) : null}
             {!capabilitiesLoaded ? null : capabilities.canUpload ? (
               <Button
                 type="button"
@@ -6773,6 +7146,9 @@ function UploadDocumentDialog({
   onSaved: () => void;
 }) {
   const { toast } = useToast();
+  const [destination, setDestination] = useState<"internal" | "gdrive">("internal");
+  const [driveConnected, setDriveConnected] = useState(false);
+  const [driveStatusLoading, setDriveStatusLoading] = useState(false);
   const [folderName, setFolderName] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -6781,10 +7157,20 @@ function UploadDocumentDialog({
 
   useEffect(() => {
     if (!open) {
+      setDestination("internal");
+      setDriveConnected(false);
+      setDriveStatusLoading(false);
       setFolderName("");
       setFile(null);
       setIsDraggingFile(false);
+      return;
     }
+
+    setDriveStatusLoading(true);
+    getGoogleDriveStatus()
+      .then((status) => setDriveConnected(Boolean(status.connected)))
+      .catch(() => setDriveConnected(false))
+      .finally(() => setDriveStatusLoading(false));
   }, [open]);
 
   const folderOptions = useMemo(() => {
@@ -6799,18 +7185,30 @@ function UploadDocumentDialog({
 
   const handleSubmit = async () => {
     if (!file) return;
+    if (destination === "gdrive" && !driveConnected) return;
     setSubmitting(true);
     try {
-      await uploadDocument(file, matterId, undefined, { folderName });
+      if (destination === "gdrive") {
+        await uploadGoogleDriveDocument(file, matterId, { folderName });
+      } else {
+        await uploadDocument(file, matterId, undefined, { folderName });
+      }
       onOpenChange(false);
       onSaved();
-      toast({ title: "Document Uploaded", description: "The document has been added to this matter." });
+      toast({
+        title: destination === "gdrive" ? "Uploaded to Google Drive" : "Document Uploaded",
+        description: destination === "gdrive"
+          ? "The file has been added to this matter's Google Drive folder."
+          : "The document has been added to this matter.",
+      });
     } catch (error) {
       toast({ title: "Document Not Uploaded", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
   };
+
+  const canSubmit = Boolean(file && (destination === "internal" || driveConnected));
 
   const handleFileDrop = (event: React.DragEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -6827,11 +7225,38 @@ function UploadDocumentDialog({
         </SheetHeader>
         <div className="space-y-5">
           <div className="space-y-2">
-            <Label>Folder</Label>
+            <Label>Destination</Label>
+            <Select
+              value={destination}
+              onValueChange={(value) => setDestination(value as "internal" | "gdrive")}
+            >
+              <SelectTrigger>
+                <span>{destination === "gdrive" ? "Google Drive" : "Internal"}</span>
+              </SelectTrigger>
+              <SelectContent className="z-[220]">
+                <SelectItem value="internal">Internal</SelectItem>
+                <SelectItem value="gdrive" disabled={!driveConnected && !driveStatusLoading}>
+                  Google Drive
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {destination === "gdrive" && !driveStatusLoading && !driveConnected ? (
+              <p className="text-xs text-muted-foreground">
+                Connect Google Drive from Tools → Connected Apps to upload files there.
+              </p>
+            ) : null}
+            {destination === "gdrive" && driveConnected ? (
+              <p className="text-xs text-muted-foreground">
+                Files are uploaded to this matter&apos;s Google Drive folder.
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            <Label>{destination === "gdrive" ? "Drive subfolder" : "Folder"}</Label>
             <Input
               value={folderName}
               onChange={(event) => setFolderName(event.target.value)}
-              placeholder="Folder name"
+              placeholder={destination === "gdrive" ? "Optional subfolder name" : "Folder name"}
             />
             {folderOptions.length > 0 ? (
               <div className="flex flex-wrap gap-2 pt-1">
@@ -6905,7 +7330,7 @@ function UploadDocumentDialog({
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="button" onClick={handleSubmit} disabled={!file || submitting}>
+          <Button type="button" onClick={handleSubmit} disabled={!canSubmit || submitting}>
             {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Upload className="mr-2 h-4 w-4" />}
             Upload
           </Button>

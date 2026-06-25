@@ -13,6 +13,12 @@ type MatterMatch = {
   matchedBy: string;
 };
 
+type CommunicationMatchRow = {
+  case_id: string | null;
+  location_id: string | null;
+  recipients: unknown;
+};
+
 function getEnv(name: string) {
   const value = Deno.env.get(name);
   if (!value) throw new Error(`${name} is not configured`);
@@ -25,6 +31,35 @@ function asObject(value: unknown): Record<string, any> {
 
 function asArray(value: unknown) {
   return Array.isArray(value) ? value : [];
+}
+
+function asStringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.map((item) => firstString(item)).filter(Boolean)
+    : firstString(value)
+    ? [firstString(value)]
+    : [];
+}
+
+function asEmailRecipientArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.map((item) => {
+      if (item && typeof item === "object") {
+        const record = item as Record<string, unknown>;
+        const email = normalizeEmail(firstString(
+          record.email,
+          record.address,
+          record.emailAddress,
+          record.email_address,
+          record.value,
+        ));
+        return email ? { email } : null;
+      }
+
+      const email = normalizeEmail(item);
+      return email ? { email } : null;
+    }).filter((recipient): recipient is { email: string } => Boolean(recipient))
+    : asStringArray(value).map((recipient) => ({ email: normalizeEmail(recipient) || recipient }));
 }
 
 function normalizeEmail(value: unknown) {
@@ -72,6 +107,24 @@ function firstPathString(sources: Array<Record<string, any>>, ...paths: string[]
   return "";
 }
 
+function cleanInboundPlainText(value: string) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/(^|\s)>\s*\[?https?:\/\/email\.lc\.[^\]\s]+]?\s*/gi, "\n")
+    .split("\n")
+    .filter((line) => {
+      const trimmedLine = line.trim();
+      const unquotedLine = trimmedLine.replace(/^>\s?/, "").trim();
+      if (!unquotedLine) return true;
+      if (/^\[?https?:\/\/email\.lc\.[^\]\s]+]?\s*$/i.test(unquotedLine)) return false;
+      if (/^https?:\/\/email\.lc\.[^\s]+$/i.test(unquotedLine)) return false;
+      return true;
+    })
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 function isUuid(value: string) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -80,14 +133,53 @@ function getBearerToken(req: Request) {
   return req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
 }
 
-function getWebhookSecret() {
-  return Deno.env.get("INBOUND_EMAIL_WEBHOOK_SECRET") || Deno.env.get("GHL_WEBHOOK_SECRET") || "";
+function timingSafeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let mismatch = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    mismatch |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return mismatch === 0;
 }
 
-function verifyWebhookSecret(req: Request, configuredSecret: string) {
+async function sha256Hex(value: string) {
+  const data = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return [...new Uint8Array(hash)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function getWebhookSecrets() {
+  return [
+    Deno.env.get("INBOUND_EMAIL_WEBHOOK_SECRET"),
+    Deno.env.get("GHL_WEBHOOK_SECRET"),
+    Deno.env.get("GHL_WEBHOOK_SHARED_SECRET"),
+  ].filter((value): value is string => Boolean(value));
+}
+
+function getWebhookSecretHashes() {
+  return [
+    Deno.env.get("INBOUND_EMAIL_WEBHOOK_SECRET_SHA256"),
+    Deno.env.get("GHL_WEBHOOK_SECRET_SHA256"),
+    Deno.env.get("GHL_WEBHOOK_SHARED_SECRET_SHA256"),
+  ].filter((value): value is string => Boolean(value));
+}
+
+async function verifyWebhookSecret(req: Request) {
   const url = new URL(req.url);
-  const providedSecret = req.headers.get("x-lawbric-webhook-secret") || getBearerToken(req) || url.searchParams.get("secret");
-  return providedSecret === configuredSecret;
+  const providedSecret =
+    req.headers.get("x-lawbric-webhook-secret") ||
+    req.headers.get("x-ghl-webhook-secret") ||
+    getBearerToken(req) ||
+    url.searchParams.get("secret") ||
+    "";
+  if (!providedSecret) return false;
+
+  for (const configuredSecret of getWebhookSecrets()) {
+    if (timingSafeEqual(providedSecret, configuredSecret)) return true;
+  }
+
+  const providedSecretSha256 = await sha256Hex(providedSecret);
+  return getWebhookSecretHashes().some((configuredHash) => timingSafeEqual(providedSecretSha256, configuredHash));
 }
 
 function getInboundPayload(body: Record<string, any>) {
@@ -99,33 +191,52 @@ function getInboundPayload(body: Record<string, any>) {
   const conversation = asObject(body.conversation || data.conversation || message.conversation);
   const contact = asObject(body.contact || data.contact || message.contact);
   const sources = [body, customData, data, inboundEmail, email, message];
-  const rawFrom = firstPathString(sources, "from.email", "from", "sender.email", "senderEmail", "sender_email", "inboundEmail.from", "inboundEmail.senderEmail");
+  const rawFrom = firstPathString(
+    sources,
+    "from.email",
+    "from",
+    "fromEmail",
+    "from_email",
+    "fromAddress",
+    "from_address",
+    "email.from.address",
+    "email.from.email",
+    "sender.email",
+    "senderEmail",
+    "sender_email",
+    "inboundEmail.from",
+    "inboundEmail.fromEmail",
+    "inboundEmail.senderEmail",
+  );
   const from = asObject(body.from || data.from || inboundEmail.from || email.from || message.from || message.sender);
-  const to = asArray(body.to || data.to || inboundEmail.to || email.to || message.to || message.recipients);
-  const direction = firstPathString(sources, "direction", "type", "message.direction", "inboundEmail.direction").toLowerCase();
+  const to = asEmailRecipientArray(body.to || data.to || inboundEmail.to || email.to || message.to || message.toEmail || message.recipients);
+  const direction = firstPathString(sources, "direction", "type", "message.direction", "inboundEmail.direction", "messageType").toLowerCase();
 
   return {
-    locationId: firstPathString(sources, "locationId", "location_id", "location.id", "inboundEmail.locationId"),
+    locationId: firstPathString(sources, "locationId", "location_id", "location.id", "inboundEmail.locationId", "inboundEmail.location_id"),
     messageIds: collectIds(
-      firstPathString(sources, "messageId", "message_id", "message.id", "inboundEmail.messageId", "inboundEmail.message_id", "id"),
+      firstPathString(sources, "messageId", "message_id", "message.messageId", "inboundEmail.messageId", "inboundEmail.message_id", "id"),
+      firstPathString(sources, "emailMessageId", "email_message_id", "message.emailMessageId", "inboundEmail.emailMessageId"),
+      firstPathString(sources, "providerMessageId", "provider_message_id", "message.providerMessageId", "message.provider_message_id"),
+      firstPathString(sources, "message.id", "inboundEmail.id", "threadId", "thread_id", "inboundEmail.threadId"),
     ),
     conversationIds: collectIds(
-      firstPathString(sources, "conversationId", "conversation_id", "conversation.id", "message.conversationId", "inboundEmail.conversationId"),
+      firstPathString(sources, "conversationId", "conversation_id", "conversation.id", "message.conversationId", "inboundEmail.conversationId", "conversationProviderId", "message.conversationProviderId"),
       conversation.id,
     ),
-    contactId: firstPathString(sources, "contactId", "contact_id", "contact.id", "message.contactId", "inboundEmail.contactId"),
+    contactId: firstPathString(sources, "contactId", "contact_id", "contact.id", "message.contactId", "inboundEmail.contactId", "inboundEmail.contact_id"),
     senderName: firstString(
       from.name,
       from.fullName,
       from.full_name,
-      firstPathString(sources, "senderName", "sender_name", "from.name", "sender.name", "inboundEmail.senderName"),
+      firstPathString(sources, "senderName", "sender_name", "fromName", "from_name", "from.name", "sender.name", "inboundEmail.fromName", "inboundEmail.senderName"),
       contact.name,
       contact.fullName,
     ),
     senderEmail: normalizeEmail(firstString(
       from.email,
       rawFrom,
-      firstPathString(sources, "senderEmail", "sender_email", "from.email", "sender.email", "inboundEmail.from", "inboundEmail.senderEmail"),
+      firstPathString(sources, "senderEmail", "sender_email", "fromEmail", "from_email", "fromAddress", "from_address", "from.email", "from.address", "sender.email", "email.from.address", "inboundEmail.from", "inboundEmail.fromEmail", "inboundEmail.senderEmail"),
       contact.email,
     )),
     subject: firstPathString(sources, "subject", "emailSubject", "message.subject", "inboundEmail.subject"),
@@ -191,7 +302,6 @@ async function findCaseByConversation(supabase: Awaited<ReturnType<typeof getSup
     let query = supabase
       .from("case_communications")
       .select("case_id, location_id")
-      .is("deleted_at", null)
       .filter("ghl_conversation_ids", "cs", JSON.stringify([conversationId]))
       .limit(10);
 
@@ -288,6 +398,55 @@ async function findCaseByMatterContact(
   return { caseId: "", locationId: "", matchedBy: "" };
 }
 
+function communicationHasParticipant(row: CommunicationMatchRow, contactId: string, senderEmail: string) {
+  const recipients = Array.isArray(row.recipients) ? row.recipients : [];
+  return recipients.some((recipient) => {
+    if (!recipient || typeof recipient !== "object") return false;
+    const recipientRecord = recipient as Record<string, unknown>;
+    const recipientContactId = firstString(recipientRecord.contactId, recipientRecord.contact_id);
+    const recipientEmail = normalizeEmail(recipientRecord.email);
+    return Boolean(
+      (contactId && recipientContactId === contactId) ||
+        (senderEmail && recipientEmail === senderEmail),
+    );
+  });
+}
+
+async function findCaseByRecentCommunicationParticipant(
+  supabase: Awaited<ReturnType<typeof getSupabase>>,
+  locationId: string,
+  contactId: string,
+  senderEmail: string,
+) {
+  if (!contactId && !senderEmail) return { caseId: "", locationId: "", matchedBy: "" };
+
+  let query = supabase
+    .from("case_communications")
+    .select("case_id, location_id, recipients")
+    .eq("channel", "email")
+    .eq("direction", "outbound")
+    .order("occurred_at", { ascending: false })
+    .limit(200);
+
+  if (locationId) query = query.eq("location_id", locationId);
+
+  const { data, error } = await query;
+  if (error) throw new Error(error.message);
+
+  const matches = new Map<string, CommunicationMatchRow>();
+  (data || []).forEach((row) => {
+    if (!row.case_id || !row.location_id || !communicationHasParticipant(row, contactId, senderEmail)) return;
+    if (!matches.has(row.case_id)) matches.set(row.case_id, row);
+  });
+
+  if (matches.size === 1) {
+    const match = Array.from(matches.values())[0];
+    return { caseId: match.case_id || "", locationId: match.location_id || "", matchedBy: "communication_recipient" };
+  }
+  if (matches.size > 1) return { caseId: "", locationId: "", matchedBy: "ambiguous_communication_recipient" };
+  return { caseId: "", locationId: "", matchedBy: "" };
+}
+
 function getPreview(html: string, text: string) {
   const raw = text || html.replace(/<[^>]+>/g, " ");
   return raw.replace(/\s+/g, " ").trim().slice(0, 500);
@@ -296,9 +455,10 @@ function getPreview(html: string, text: string) {
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return jsonResponse({ error: "Method not allowed" }, 405);
-  const webhookSecret = getWebhookSecret();
-  if (!webhookSecret) return jsonResponse({ error: "Inbound email webhook secret is not configured" }, 500);
-  if (!verifyWebhookSecret(req, webhookSecret)) return jsonResponse({ error: "Invalid webhook secret" }, 401);
+  if (getWebhookSecrets().length === 0 && getWebhookSecretHashes().length === 0) {
+    return jsonResponse({ error: "Inbound email webhook secret is not configured" }, 500);
+  }
+  if (!await verifyWebhookSecret(req)) return jsonResponse({ error: "Invalid webhook secret" }, 401);
 
   try {
     const body = asObject(await readJsonBody(req));
@@ -319,8 +479,20 @@ serve(async (req) => {
     if (!match.caseId && !match.matchedBy.startsWith("ambiguous")) {
       match = await findCaseByMatterContact(supabase, scopedLocationId, inbound.contactId, inbound.senderEmail);
     }
+    if (!match.caseId && !match.matchedBy.startsWith("ambiguous")) {
+      match = await findCaseByRecentCommunicationParticipant(supabase, scopedLocationId, inbound.contactId, inbound.senderEmail);
+    }
 
     if (!match.caseId) {
+      console.warn("Inbound communication not matched", {
+        reason: match.matchedBy || "Matter not matched",
+        locationId: scopedLocationId || inbound.locationId || null,
+        messageIds: inbound.messageIds,
+        conversationIds: inbound.conversationIds,
+        contactId: inbound.contactId || null,
+        senderEmail: inbound.senderEmail || null,
+        subject: inbound.subject || null,
+      });
       return jsonResponse({ ok: true, ignored: true, reason: match.matchedBy || "Matter not matched" });
     }
 
@@ -337,7 +509,8 @@ serve(async (req) => {
 
     const senderName = inbound.senderName || inbound.senderEmail || "Unknown sender";
     const occurredAt = inbound.occurredAt || new Date().toISOString();
-    const bodyHtmlOrText = inbound.html || inbound.text;
+    const cleanedText = cleanInboundPlainText(inbound.text);
+    const bodyHtmlOrText = inbound.html || cleanedText;
 
     const { data: communication, error } = await supabase
       .from("case_communications")
@@ -348,13 +521,15 @@ serve(async (req) => {
         direction: "inbound",
         subject: inbound.subject || null,
         body: bodyHtmlOrText,
-        preview: getPreview(inbound.html, inbound.text) || null,
+        preview: getPreview(inbound.html, cleanedText) || null,
         status: "received",
         participant_name: senderName,
         recipients: inbound.recipients,
         attachments: inbound.attachments,
         ghl_message_ids: inbound.messageIds,
         ghl_conversation_ids: inbound.conversationIds,
+        is_read: false,
+        read_at: null,
         metadata: {
           senderName,
           senderEmail: inbound.senderEmail || null,

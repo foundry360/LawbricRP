@@ -27,6 +27,7 @@ import {
   LogOut,
   Maximize,
   Minimize,
+  Plug,
   Plus,
   Scale,
   Settings,
@@ -92,6 +93,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const [canViewContacts, setCanViewContacts] = useState(false);
   const [canViewMatters, setCanViewMatters] = useState(false);
   const [canViewLeads, setCanViewLeads] = useState(false);
+  const [canManageConnectedApps, setCanManageConnectedApps] = useState(false);
   const [isInitializing, setIsInitializing] = useState(true);
   const userIdRef = useRef("");
 
@@ -109,6 +111,7 @@ export function Layout({ children }: { children: ReactNode }) {
       hasPermission("matters.view_own"),
       hasPermission("leads.view_all"),
       hasPermission("leads.view_assigned"),
+      hasPermission("documents.manage_integrations"),
     ])
       .then(([
         dashboardAccess,
@@ -123,12 +126,14 @@ export function Layout({ children }: { children: ReactNode }) {
         mattersOwn,
         leadsAll,
         leadsAssigned,
+        connectedAppsAccess,
       ]) => {
         setCanViewDashboard(dashboardAccess);
         setCanViewUsers(userProfilesLimited || userProfilesAll || userProfilesAttorneys);
         setCanViewContacts(contactsAll || contactsLocation || contactsAssigned);
         setCanViewMatters(mattersAll || mattersAssigned || mattersOwn);
         setCanViewLeads(leadsAll || leadsAssigned);
+        setCanManageConnectedApps(connectedAppsAccess);
       })
       .catch(() => {
         setCanViewDashboard(false);
@@ -136,6 +141,7 @@ export function Layout({ children }: { children: ReactNode }) {
         setCanViewContacts(false);
         setCanViewMatters(false);
         setCanViewLeads(false);
+        setCanManageConnectedApps(false);
       });
   }, []);
 
@@ -577,7 +583,7 @@ export function Layout({ children }: { children: ReactNode }) {
                   <NavItem icon={FileText} label="Documents" to="/documents" active={location.pathname === "/documents"} />
                 )}
                 <NavItem icon={DollarSign} label="Payments" to="/payments" active={location.pathname === "/payments"} />
-                <ToolsNavItem active={location.pathname.startsWith("/tools")} />
+                <ToolsNavItem active={location.pathname.startsWith("/tools")} canManageConnectedApps={canManageConnectedApps} />
               </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
@@ -640,7 +646,7 @@ function NavItem({
   );
 }
 
-function ToolsNavItem({ active }: { active: boolean }) {
+function ToolsNavItem({ active, canManageConnectedApps }: { active: boolean; canManageConnectedApps: boolean }) {
   const location = useLocation();
   const [open, setOpen] = useState(active);
 
@@ -684,6 +690,17 @@ function ToolsNavItem({ active }: { active: boolean }) {
             <GitBranch className="mr-2 h-4 w-4" strokeWidth={1.5} />
             <span>Pipelines</span>
           </Link>
+          {canManageConnectedApps ? (
+            <Link
+              to="/tools/connected-apps"
+              className={`flex h-8 items-center gap-2 rounded-md px-3 text-[13px] transition-colors hover:bg-primary/10 hover:text-primary ${
+                location.pathname === "/tools/connected-apps" ? "bg-primary/10 font-medium text-primary" : "text-sidebar-foreground"
+              }`}
+            >
+              <Plug className="mr-2 h-4 w-4" strokeWidth={1.5} />
+              <span>Connected Apps</span>
+            </Link>
+          ) : null}
         </div>
       )}
     </SidebarMenuItem>

@@ -69,9 +69,32 @@ export type MoveDocumentOptions = {
 
 export type ViewDocumentResult = {
   url: string;
+  previewUrl?: string | null;
+  previewMimeType?: string | null;
   storageType: DocumentStorageType | string;
   document?: DocumentRecord;
 };
+
+export function getGoogleDriveFileId(document: Pick<DocumentRecord, "external_file_id" | "file_url">) {
+  const externalId = String(document.external_file_id || "").trim();
+  if (externalId) return externalId;
+
+  const fileUrl = String(document.file_url || "").trim();
+  if (!fileUrl) return null;
+
+  const fileMatch = fileUrl.match(/\/file\/d\/([^/?#]+)/);
+  if (fileMatch?.[1]) return fileMatch[1];
+
+  const openMatch = fileUrl.match(/[?&]id=([^&]+)/);
+  if (openMatch?.[1]) return openMatch[1];
+
+  return null;
+}
+
+export function getGoogleDrivePreviewUrl(document: Pick<DocumentRecord, "external_file_id" | "file_url">) {
+  const fileId = getGoogleDriveFileId(document);
+  return fileId ? `https://drive.google.com/file/d/${fileId}/preview` : null;
+}
 
 async function getLocationId() {
   const context = await getAppLocationContext();
@@ -230,6 +253,18 @@ export async function uploadDocument(file: File, matter_id: string, _user?: unkn
   return data.document;
 }
 
+export async function uploadGoogleDriveDocument(file: File, matter_id: string, options: UploadDocumentOptions = {}) {
+  const folderName = options.folderName?.trim();
+  const data = await invokeDocumentFunction<{ document: DocumentRecord }>("google_drive_upload_document", {
+    caseId: matter_id,
+    fileName: file.name,
+    mimeType: file.type || "application/octet-stream",
+    contentBase64: await fileToBase64(file),
+    ...(folderName ? { folderName } : {}),
+  });
+  return data.document;
+}
+
 export async function createExternalDocument(data: ExternalDocumentInput, matter_id: string, _user?: unknown) {
   const response = await invokeDocumentFunction<{ document: DocumentRecord }>("create_external_document", {
     caseId: matter_id,
@@ -321,7 +356,12 @@ export async function viewDocument(document_id: string, _user?: unknown): Promis
 
     if (document.storage_type && document.storage_type !== "internal") {
       if (!document.file_url) throw new Error("External document URL is missing");
-      return { url: document.file_url, storageType: document.storage_type, document: document as DocumentRecord };
+      return {
+        url: document.file_url,
+        previewUrl: null,
+        storageType: document.storage_type,
+        document: document as DocumentRecord,
+      };
     }
 
     const bucket = document.storage_bucket || "documents";

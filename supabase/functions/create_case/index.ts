@@ -9,6 +9,7 @@ import {
   requireContextPermission,
   syncCaseReference,
 } from "../_shared/case-utils.ts";
+import { ensureMatterDriveFolder } from "../_shared/google-drive.ts";
 
 function normalizeOptionalTimestamp(value: unknown) {
   if (value === undefined) return undefined;
@@ -164,6 +165,12 @@ serve(async (req) => {
       await syncCaseReference(context, caseRow);
     } catch (syncError) {
       console.warn("Case created, but GHL opportunity/reference sync failed", syncError);
+    }
+
+    try {
+      await ensureMatterDriveFolder(context, caseRow);
+    } catch (driveError) {
+      console.warn("Case created, but Google Drive folder creation failed", driveError);
     }
 
     return jsonResponse({ ok: true, case: caseRow }, 201);

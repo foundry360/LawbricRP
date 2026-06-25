@@ -94,11 +94,13 @@ function getDocumentTypeIconInfo(document?: DocumentRecord | null) {
 }
 
 function getDocumentViewerType(document?: DocumentRecord | null, result?: ViewDocumentResult | null) {
-  const mimeType = String(document?.mime_type || "").toLowerCase();
+  const mimeType = String(result?.previewMimeType || document?.mime_type || "").toLowerCase();
   const extension = document ? getDocumentExtension(document) : "";
-  const url = String(result?.url || "").toLowerCase();
-  if (document?.storage_type && document.storage_type !== "internal") return "external";
-  if (mimeType.includes("pdf") || extension === "pdf" || url.includes(".pdf")) return "pdf";
+  const displayUrl = String(result?.previewUrl || result?.url || "").toLowerCase();
+  if (document?.storage_type === "gdrive" && !result?.previewUrl) return "external";
+  if (document?.storage_type === "onedrive") return "external";
+  if (document?.storage_type && document.storage_type !== "internal" && !result?.previewUrl) return "external";
+  if (mimeType.includes("pdf") || extension === "pdf" || displayUrl.includes(".pdf")) return "pdf";
   if (mimeType.startsWith("image/") || ["jpg", "jpeg", "png", "gif", "webp", "svg"].includes(extension)) return "image";
   if (mimeType.startsWith("text/") || ["txt", "csv", "md", "json"].includes(extension)) return "iframe";
   if (!document && result?.url && (!result.storageType || result.storageType === "internal")) return "iframe";
@@ -339,6 +341,7 @@ export function DocumentViewerPage() {
 
   const documentRecord = result?.document || null;
   const viewerType = useMemo(() => getDocumentViewerType(documentRecord, result), [documentRecord, result]);
+  const displayUrl = result?.previewUrl || result?.url || null;
   const { Icon, className: iconClassName } = getDocumentTypeIconInfo(documentRecord);
   const matterId = documentRecord?.case_id || documentRecord?.matter_id || documentRecord?.case?.id;
   const matterName = documentRecord?.case?.case_name || documentRecord?.case?.case_number || (matterId ? `Matter ${matterId.slice(0, 8)}` : "Not set");
@@ -389,7 +392,7 @@ export function DocumentViewerPage() {
       </div>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[400px_1fr] lg:divide-x lg:divide-border">
-        <aside className="hover-scrollbar overflow-y-auto py-6 lg:pr-6">
+        <aside className="hover-scrollbar min-h-0 overflow-y-auto py-6 lg:pr-6">
           <div className="space-y-5">
             <div>
               <h2 className="text-base font-semibold text-foreground">Document Details</h2>
@@ -488,36 +491,44 @@ export function DocumentViewerPage() {
           </div>
         </aside>
 
-        <main className="min-h-0 overflow-hidden py-6 lg:pl-6">
-          <div className="flex h-full min-h-[480px] items-center justify-center overflow-hidden rounded-xl bg-muted/20">
+        <main className="flex min-h-0 flex-col overflow-hidden py-6 lg:pl-6">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl bg-muted/20">
             {loading ? (
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading preview...
+              <div className="flex flex-1 items-center justify-center">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading preview...
+                </div>
               </div>
             ) : errorMessage ? (
-              <div className="max-w-md text-center text-sm text-muted-foreground">{errorMessage}</div>
-            ) : result?.url && viewerType === "pdf" ? (
-              <PdfViewer url={result.url} />
-            ) : result?.url && viewerType === "image" ? (
-              <img src={result.url} alt={documentRecord ? getDocumentName(documentRecord) : "Document preview"} className="max-h-full max-w-full object-contain" />
-            ) : result?.url && viewerType === "iframe" ? (
-              <iframe src={result.url} title={documentRecord ? getDocumentName(documentRecord) : "Document preview"} className="h-full min-h-[480px] w-full border-0" />
+              <div className="flex flex-1 items-center justify-center px-6 text-center text-sm text-muted-foreground">
+                {errorMessage}
+              </div>
+            ) : displayUrl && viewerType === "pdf" ? (
+              <PdfViewer url={displayUrl} />
+            ) : displayUrl && viewerType === "image" ? (
+              <div className="flex flex-1 items-center justify-center p-4 pt-6">
+                <img src={displayUrl} alt={documentRecord ? getDocumentName(documentRecord) : "Document preview"} className="max-h-full max-w-full object-contain" />
+              </div>
+            ) : displayUrl && viewerType === "iframe" ? (
+              <iframe src={displayUrl} title={documentRecord ? getDocumentName(documentRecord) : "Document preview"} className="min-h-0 flex-1 w-full border-0 pt-6" />
             ) : result?.url ? (
-              <div className="max-w-md px-6 text-center">
-                <Download className="mx-auto mb-4 h-10 w-10 text-muted-foreground" />
-                <h2 className="text-lg font-semibold">Preview not available</h2>
-                <p className="mt-2 text-sm text-muted-foreground">
-                  This document type may not be previewable in the browser. Open it in a new tab to view or download it.
-                </p>
-                <Button
-                  type="button"
-                  className="mt-5 rounded-full"
-                  onClick={() => window.open(result.url, "_blank", "noopener,noreferrer")}
-                >
-                  <ExternalLink className="mr-2 h-4 w-4" />
-                  Open Document
-                </Button>
+              <div className="flex flex-1 items-center justify-center px-6">
+                <div className="max-w-md text-center">
+                  <Download className="mx-auto mb-4 h-10 w-10 text-muted-foreground" />
+                  <h2 className="text-lg font-semibold">Preview not available</h2>
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    This document type may not be previewable in the browser. Open it in a new tab to view or download it.
+                  </p>
+                  <Button
+                    type="button"
+                    className="mt-5 rounded-full"
+                    onClick={() => window.open(result.url, "_blank", "noopener,noreferrer")}
+                  >
+                    <ExternalLink className="mr-2 h-4 w-4" />
+                    Open Document
+                  </Button>
+                </div>
               </div>
             ) : null}
           </div>

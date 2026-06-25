@@ -4,6 +4,7 @@ import { CalendarPage } from "@/pages/CalendarPage";
 import { CaseDetailPage } from "@/pages/CaseDetailPage";
 import { CasesPage } from "@/pages/CasesPage";
 import { CompanyDetailPage } from "@/pages/CompanyDetailPage";
+import { ConnectedAppsPage } from "@/pages/ConnectedAppsPage";
 import { ContactDetailPage } from "@/pages/ContactDetailPage";
 import { DocumentViewerPage } from "@/pages/DocumentViewerPage";
 import { DocumentsPage } from "@/pages/DocumentsPage";
@@ -167,6 +168,14 @@ export function App() {
           />
           <Route path="/tools/data" element={<PlaceholderPage title="Data" />} />
           <Route path="/tools/pipelines" element={<PipelinesPage />} />
+          <Route
+            path="/tools/connected-apps"
+            element={(
+              <PermissionGate permission="documents.manage_integrations">
+                <ConnectedAppsPage />
+              </PermissionGate>
+            )}
+          />
           <Route path="/billing" element={<PlaceholderPage title="Billing" />} />
           <Route
             path="/documents"

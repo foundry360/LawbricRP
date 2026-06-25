@@ -689,11 +689,21 @@ export type SendGhlEmailPayload = {
   emailFrom?: string;
   emailTo?: string;
   conversationId?: string;
+  replyMessageId?: string;
+  emailReplyMode?: "reply" | "reply_all";
   attachments?: string[];
 };
 
 export async function sendGhlEmail(payload: SendGhlEmailPayload) {
-  return apiClient<{ messageId?: string; message?: { id?: string }; conversationId?: string; data?: unknown }>(
+  return apiClient<{
+    messageId?: string;
+    emailMessageId?: string;
+    messageIds?: string[];
+    message?: { id?: string; messageId?: string; emailMessageId?: string; conversationId?: string };
+    conversationId?: string;
+    conversation?: { id?: string };
+    data?: unknown;
+  }>(
     "/conversations/messages",
     {
       method: "POST",

@@ -8,6 +8,35 @@ import {
   readJsonBody,
   requireContextPermission,
 } from "../_shared/case-utils.ts";
+import {
+  assertCanAccessDriveFolder,
+  getConnectedGoogleDriveIntegration,
+  getDriveFilePreviewContent,
+  getValidGoogleDriveAccessToken,
+} from "../_shared/google-drive.ts";
+
+function getGoogleDriveFileId(document: { external_file_id?: string | null; file_url?: string | null }) {
+  const externalId = String(document.external_file_id || "").trim();
+  if (externalId) return externalId;
+
+  const fileUrl = String(document.file_url || "").trim();
+  if (!fileUrl) return null;
+
+  const fileMatch = fileUrl.match(/\/file\/d\/([^/?#]+)/);
+  if (fileMatch?.[1]) return fileMatch[1];
+
+  const openMatch = fileUrl.match(/[?&]id=([^&]+)/);
+  if (openMatch?.[1]) return openMatch[1];
+
+  return null;
+}
+
+function getPreviewStorageSuffix(mimeType: string) {
+  if (mimeType === "application/pdf") return "pdf";
+  if (mimeType.startsWith("image/")) return mimeType.split("/")[1] || "img";
+  if (mimeType.startsWith("text/")) return "txt";
+  return "bin";
+}
 
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -32,9 +61,77 @@ serve(async (req) => {
 
     await getCaseOrThrow(context, document.case_id || document.matter_id);
 
+    if (document.storage_type === "gdrive") {
+      if (!document.file_url) return jsonResponse({ error: "External document URL is missing" }, 400);
+
+      const fileId = getGoogleDriveFileId(document);
+      if (!fileId) {
+        return jsonResponse({
+          ok: true,
+          url: document.file_url,
+          previewUrl: null,
+          storageType: document.storage_type,
+          document,
+        });
+      }
+
+      const integration = await getConnectedGoogleDriveIntegration(context);
+      if (!integration) {
+        return jsonResponse({
+          ok: true,
+          url: document.file_url,
+          previewUrl: null,
+          storageType: document.storage_type,
+          document,
+        });
+      }
+
+      const { accessToken } = await getValidGoogleDriveAccessToken(context, integration);
+      await assertCanAccessDriveFolder(context, accessToken, fileId, integration);
+
+      try {
+        const preview = await getDriveFilePreviewContent(accessToken, fileId);
+        const previewPath = `preview-cache/gdrive/${document.id}/${fileId}.${getPreviewStorageSuffix(preview.mimeType)}`;
+        const upload = await context.supabase.storage.from("documents").upload(previewPath, preview.bytes, {
+          contentType: preview.mimeType,
+          upsert: true,
+        });
+        if (upload.error) throw new Error(upload.error.message);
+
+        const { data: signed, error: signedError } = await context.supabase.storage
+          .from("documents")
+          .createSignedUrl(previewPath, 60 * 10);
+        if (signedError) throw new Error(signedError.message);
+
+        return jsonResponse({
+          ok: true,
+          url: document.file_url,
+          previewUrl: signed.signedUrl,
+          previewMimeType: preview.mimeType,
+          storageType: document.storage_type,
+          document,
+        });
+      } catch (previewError) {
+        console.error("Google Drive inline preview failed:", previewError);
+        return jsonResponse({
+          ok: true,
+          url: document.file_url,
+          previewUrl: null,
+          storageType: document.storage_type,
+          document,
+        });
+      }
+    }
+
     if (document.storage_type && document.storage_type !== "internal") {
       if (!document.file_url) return jsonResponse({ error: "External document URL is missing" }, 400);
-      return jsonResponse({ ok: true, url: document.file_url, storageType: document.storage_type, document });
+      return jsonResponse({
+        ok: true,
+        url: document.file_url,
+        previewUrl: null,
+        storageType: document.storage_type,
+        document,
+      });
     }
 
     const bucket = document.storage_bucket || "documents";

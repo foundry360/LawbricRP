@@ -35,6 +35,7 @@ serve(async (req) => {
     const subject = typeof body.subject === "string" ? body.subject.trim() : "";
     const bodyText = typeof body.body === "string" ? body.body : "";
     const preview = typeof body.preview === "string" ? body.preview.trim() : "";
+    const isRead = body.isRead === undefined ? direction === "outbound" : Boolean(body.isRead);
     const { data: senderProfile } = await context.supabase
       .from("profiles")
       .select("full_name, email, avatar_url")
@@ -65,6 +66,8 @@ serve(async (req) => {
         ghl_message_ids: asArray(body.ghlMessageIds),
         ghl_conversation_ids: asArray(body.ghlConversationIds),
         metadata,
+        is_read: isRead,
+        read_at: isRead ? new Date().toISOString() : null,
         occurred_at: typeof body.occurredAt === "string" && body.occurredAt ? body.occurredAt : new Date().toISOString(),
         created_by: context.user.id,
       })

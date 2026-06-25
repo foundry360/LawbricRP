@@ -13,6 +13,8 @@ additional_redirect_urls = [
   "http://localhost:3000",
   "http://localhost:5173",
   "http://localhost:5173/reset-password",
+  "http://localhost:5174",
+  "http://localhost:5174/reset-password",
   "https://lawbric-rp.vercel.app",
   "https://lawbric-rp.vercel.app/reset-password",
 ]
@@ -96,8 +98,35 @@ verify_jwt = true
 [functions.create_communication]
 verify_jwt = true
 
+[functions.send_case_communication]
+verify_jwt = true
+
+[functions.update_communication]
+verify_jwt = true
+
+[functions.delete_communication]
+verify_jwt = true
+
 [functions.ingest_inbound_communication]
 verify_jwt = false
+
+[functions.google_drive_status]
+verify_jwt = true
+
+[functions.google_drive_oauth_callback]
+verify_jwt = false
+
+[functions.google_drive_disconnect]
+verify_jwt = true
+
+[functions.google_drive_matter_folder]
+verify_jwt = true
+
+[functions.google_drive_list_folder]
+verify_jwt = true
+
+[functions.google_drive_upload_document]
+verify_jwt = true
 
 [functions.update_note]
 verify_jwt = true
