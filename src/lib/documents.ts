@@ -287,32 +287,61 @@ export async function getDocumentsByMatter(matter_id: string, _user?: unknown) {
   }
 }
 
-export async function getAllDocuments(_user?: unknown) {
+const DEFAULT_DOCUMENT_CAPABILITIES: DocumentCapabilities = {
+  canView: false,
+  canUpload: false,
+  canEdit: false,
+  canMove: false,
+  canDelete: false,
+  canManageFolders: false,
+};
+
+export async function listDocumentsLibrary(caseId?: string) {
   try {
-    const data = await invokeDocumentFunction<{ documents: DocumentRecord[] }>("list_documents", {});
-    return data.documents || [];
+    const data = await invokeDocumentFunction<{
+      documents?: DocumentRecord[];
+      capabilities?: DocumentCapabilities;
+    }>("list_documents", caseId ? { caseId } : {});
+
+    return {
+      documents: data.documents || [],
+      capabilities: data.capabilities || DEFAULT_DOCUMENT_CAPABILITIES,
+    };
   } catch (error) {
     console.warn("Falling back to direct document query", error);
-    if (!await hasPermission("documents.view")) return [];
-    return listDocumentsDirect();
+    if (!await hasPermission("documents.view")) {
+      return { documents: [], capabilities: DEFAULT_DOCUMENT_CAPABILITIES };
+    }
+    const documents = caseId ? await listDocumentsDirect(caseId) : await listDocumentsDirect();
+    const capabilities = await getDocumentCapabilitiesFromPermissions();
+    return { documents, capabilities };
   }
+}
+
+async function getDocumentCapabilitiesFromPermissions(): Promise<DocumentCapabilities> {
+  const [canView, canUpload, canEdit, canMove, canDelete, canManageFolders] = await Promise.all([
+    hasPermission("documents.view"),
+    hasPermission("documents.upload"),
+    hasPermission("documents.edit"),
+    hasPermission("documents.move"),
+    hasPermission("documents.delete"),
+    hasPermission("folders.manage"),
+  ]);
+  return { canView, canUpload, canEdit, canMove, canDelete, canManageFolders };
+}
+
+export async function getAllDocuments(_user?: unknown) {
+  const library = await listDocumentsLibrary();
+  return library.documents;
 }
 
 export async function getDocumentCapabilities() {
   try {
-    const data = await invokeDocumentFunction<{ capabilities?: DocumentCapabilities }>("list_documents", { limit: 1 });
-    return data.capabilities || { canView: false, canUpload: false, canEdit: false, canMove: false, canDelete: false, canManageFolders: false };
+    const library = await listDocumentsLibrary();
+    return library.capabilities;
   } catch (error) {
     console.warn("Falling back to document permissions", error);
-    const [canView, canUpload, canEdit, canMove, canDelete, canManageFolders] = await Promise.all([
-      hasPermission("documents.view"),
-      hasPermission("documents.upload"),
-      hasPermission("documents.edit"),
-      hasPermission("documents.move"),
-      hasPermission("documents.delete"),
-      hasPermission("folders.manage"),
-    ]);
-    return { canView, canUpload, canEdit, canMove, canDelete, canManageFolders };
+    return getDocumentCapabilitiesFromPermissions();
   }
 }
 

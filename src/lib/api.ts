@@ -122,9 +122,14 @@ export function clearCachedGhlReferenceData() {
   inFlightGhlReferenceData.clear();
 }
 
+const cachedGhlContactById = new Map<string, { data: unknown; expiresAt: number }>();
+const inFlightGhlContactById = new Map<string, Promise<unknown>>();
+
 export function clearCachedGhlListData() {
   cachedGhlListData.clear();
   inFlightGhlListData.clear();
+  cachedGhlContactById.clear();
+  inFlightGhlContactById.clear();
 }
 
 function getGhlReferenceCacheKey(kind: string, locationId: string) {
@@ -363,8 +368,103 @@ export async function getContactsByBusinessId(locationId: string, businessId: st
   );
 }
 
-export async function getContact(contactId: string) {
-  return apiClient<{ contact?: unknown; data?: unknown }>(`/contacts/${encodeURIComponent(contactId)}`);
+function getGhlContactRecordId(contact: unknown) {
+  if (!contact || typeof contact !== "object") return "";
+  const record = contact as Record<string, unknown>;
+  return String(record.id || record._id || record.contactId || "").trim();
+}
+
+function getContactsFromListResponse(response: unknown) {
+  if (!response || typeof response !== "object") return [] as unknown[];
+  const record = response as Record<string, unknown>;
+  if (Array.isArray(record.contacts)) return record.contacts;
+  if (record.data && typeof record.data === "object") {
+    const data = record.data as Record<string, unknown>;
+    if (Array.isArray(data.contacts)) return data.contacts;
+    if (Array.isArray(data)) return data;
+  }
+  if (Array.isArray(response)) return response as unknown[];
+  return [] as unknown[];
+}
+
+function unwrapGhlContactResponse(response: unknown) {
+  if (!response || typeof response !== "object") return response;
+  const record = response as Record<string, unknown>;
+  return record.contact || (record.data as Record<string, unknown> | undefined)?.contact || record.data || response;
+}
+
+export async function getContact(contactId: string, options: { forceRefresh?: boolean } = {}) {
+  const normalizedId = String(contactId || "").trim();
+  if (!normalizedId) throw new Error("Contact ID is required.");
+
+  const now = Date.now();
+  if (!options.forceRefresh) {
+    const cached = cachedGhlContactById.get(normalizedId);
+    if (cached && cached.expiresAt > now) return cached.data as { contact?: unknown; data?: unknown };
+    const inFlight = inFlightGhlContactById.get(normalizedId);
+    if (inFlight) return inFlight as Promise<{ contact?: unknown; data?: unknown }>;
+  } else {
+    cachedGhlContactById.delete(normalizedId);
+    inFlightGhlContactById.delete(normalizedId);
+  }
+
+  const request = apiClient<{ contact?: unknown; data?: unknown }>(`/contacts/${encodeURIComponent(normalizedId)}`)
+    .then((data) => {
+      cachedGhlContactById.set(normalizedId, { data, expiresAt: Date.now() + GHL_LIST_CACHE_TTL_MS });
+      return data;
+    })
+    .finally(() => {
+      inFlightGhlContactById.delete(normalizedId);
+    });
+
+  inFlightGhlContactById.set(normalizedId, request);
+  return request;
+}
+
+export async function resolveContactsByIds(locationId: string, contactIds: string[]) {
+  const result = new Map<string, unknown>();
+  const normalizedIds = Array.from(new Set(contactIds.map((id) => String(id || "").trim()).filter(Boolean)));
+  if (normalizedIds.length === 0) return result;
+
+  const resolveFromCachedList = () => {
+    const cached = getCachedContactsIfAvailable(locationId);
+    if (!cached) return;
+    const contacts = getContactsFromListResponse(cached);
+    for (const id of normalizedIds) {
+      if (result.has(id)) continue;
+      const match = contacts.find((contact) => getGhlContactRecordId(contact) === id);
+      if (match) result.set(id, match);
+    }
+  };
+
+  resolveFromCachedList();
+
+  if (normalizedIds.some((id) => !result.has(id))) {
+    await getContacts(locationId);
+    resolveFromCachedList();
+  }
+
+  const stillMissing = normalizedIds.filter((id) => !result.has(id));
+  for (const id of stillMissing) {
+    try {
+      const response = await getContact(id);
+      const contact = unwrapGhlContactResponse(response);
+      if (contact) result.set(id, contact);
+    } catch (error) {
+      console.error("Failed to load contact details", id, error);
+    }
+  }
+
+  return result;
+}
+
+export async function getGhlUsers(locationId: string, options: { forceRefresh?: boolean } = {}) {
+  return getCachedGhlListData(
+    "users",
+    locationId,
+    () => apiClient<{ users?: unknown[]; data?: unknown[] }>(`/users/?locationId=${encodeURIComponent(locationId)}`),
+    options,
+  );
 }
 
 export async function createContact(payload: Record<string, unknown>) {

@@ -31,6 +31,36 @@ function getGoogleDriveFileId(document: { external_file_id?: string | null; file
   return null;
 }
 
+function inferPreviewMimeTypeFromSuffix(suffix: string) {
+  if (suffix === "pdf") return "application/pdf";
+  if (suffix === "png") return "image/png";
+  if (suffix === "jpg" || suffix === "jpeg") return "image/jpeg";
+  if (suffix === "webp") return "image/webp";
+  if (suffix === "txt") return "text/plain";
+  return "application/octet-stream";
+}
+
+async function getCachedGdrivePreview(
+  context: Awaited<ReturnType<typeof getRequestContext>>,
+  documentId: string,
+  fileId: string,
+) {
+  const suffixes = ["pdf", "png", "jpg", "jpeg", "webp", "txt", "bin"];
+  for (const suffix of suffixes) {
+    const previewPath = `preview-cache/gdrive/${documentId}/${fileId}.${suffix}`;
+    const { data: signed, error } = await context.supabase.storage
+      .from("documents")
+      .createSignedUrl(previewPath, 60 * 10);
+    if (!error && signed?.signedUrl) {
+      return {
+        previewUrl: signed.signedUrl,
+        previewMimeType: inferPreviewMimeTypeFromSuffix(suffix),
+      };
+    }
+  }
+  return null;
+}
+
 function getPreviewStorageSuffix(mimeType: string) {
   if (mimeType === "application/pdf") return "pdf";
   if (mimeType.startsWith("image/")) return mimeType.split("/")[1] || "img";
@@ -89,10 +119,22 @@ serve(async (req) => {
       const { accessToken } = await getValidGoogleDriveAccessToken(context, integration);
       await assertCanAccessDriveFolder(context, accessToken, fileId, integration);
 
+      const cachedPreview = await getCachedGdrivePreview(context, document.id, fileId);
+      if (cachedPreview) {
+        return jsonResponse({
+          ok: true,
+          url: document.file_url,
+          previewUrl: cachedPreview.previewUrl,
+          previewMimeType: cachedPreview.previewMimeType,
+          storageType: document.storage_type,
+          document,
+        });
+      }
+
       try {
         const preview = await getDriveFilePreviewContent(accessToken, fileId);
-        const previewPath = `preview-cache/gdrive/${document.id}/${fileId}.${getPreviewStorageSuffix(preview.mimeType)}`;
-        const upload = await context.supabase.storage.from("documents").upload(previewPath, preview.bytes, {
+        const resolvedPreviewPath = `preview-cache/gdrive/${document.id}/${fileId}.${getPreviewStorageSuffix(preview.mimeType)}`;
+        const upload = await context.supabase.storage.from("documents").upload(resolvedPreviewPath, preview.bytes, {
           contentType: preview.mimeType,
           upsert: true,
         });
@@ -100,7 +142,7 @@ serve(async (req) => {
 
         const { data: signed, error: signedError } = await context.supabase.storage
           .from("documents")
-          .createSignedUrl(previewPath, 60 * 10);
+          .createSignedUrl(resolvedPreviewPath, 60 * 10);
         if (signedError) throw new Error(signedError.message);
 
         return jsonResponse({

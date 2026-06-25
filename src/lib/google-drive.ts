@@ -98,13 +98,38 @@ async function invokeGoogleDriveFunction<T>(name: string, body: Record<string, u
   return data as T;
 }
 
+let cachedGoogleDriveStatus: { data: GoogleDriveIntegrationStatus; expiresAt: number } | null = null;
+let inFlightGoogleDriveStatus: Promise<GoogleDriveIntegrationStatus> | null = null;
+const GOOGLE_DRIVE_STATUS_TTL_MS = 3 * 60 * 1000;
+
+export function clearCachedGoogleDriveStatus() {
+  cachedGoogleDriveStatus = null;
+  inFlightGoogleDriveStatus = null;
+}
+
 export function getGoogleDriveStatus(returnUrl?: string) {
-  return invokeGoogleDriveFunction<GoogleDriveIntegrationStatus>("google_drive_status", {
+  const now = Date.now();
+  if (cachedGoogleDriveStatus && cachedGoogleDriveStatus.expiresAt > now) {
+    return Promise.resolve(cachedGoogleDriveStatus.data);
+  }
+  if (inFlightGoogleDriveStatus) return inFlightGoogleDriveStatus;
+
+  inFlightGoogleDriveStatus = invokeGoogleDriveFunction<GoogleDriveIntegrationStatus>("google_drive_status", {
     ...(returnUrl ? { returnUrl } : {}),
-  });
+  })
+    .then((data) => {
+      cachedGoogleDriveStatus = { data, expiresAt: Date.now() + GOOGLE_DRIVE_STATUS_TTL_MS };
+      return data;
+    })
+    .finally(() => {
+      inFlightGoogleDriveStatus = null;
+    });
+
+  return inFlightGoogleDriveStatus;
 }
 
 export function disconnectGoogleDrive() {
+  clearCachedGoogleDriveStatus();
   return invokeGoogleDriveFunction<{ ok: boolean }>("google_drive_disconnect");
 }
 

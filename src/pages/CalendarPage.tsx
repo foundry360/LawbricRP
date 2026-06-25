@@ -47,7 +47,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, createCalendar, getActiveGhlLocationId } from "@/lib/api";
+import { apiClient, createCalendar, getActiveGhlLocationId, getContacts, getGhlUsers } from "@/lib/api";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
@@ -587,13 +587,8 @@ export function CalendarPage() {
 
     const res: any = await apiClient(`/calendars/?locationId=${locId}`);
     if (res?.calendars?.length > 0) {
-      const calendars: CalendarOption[] = await Promise.all(
-        res.calendars.map(async (calendar: any, index: number) => {
-          const normalizedCalendar = normalizeCalendar(calendar, index);
-          const scheduleDays = await fetchCalendarScheduleDays(normalizedCalendar.id);
-
-          return scheduleDays ? { ...normalizedCalendar, scheduleDays } : normalizedCalendar;
-        }),
+      const calendars: CalendarOption[] = res.calendars.map((calendar: any, index: number) =>
+        normalizeCalendar(calendar, index),
       );
       setAvailableCalendars(calendars);
       setSelectedCalendars((current) => {
@@ -666,36 +661,20 @@ export function CalendarPage() {
           );
           if (res?.events) {
             const calendar = availableCalendars.find((item) => item.id === calendarId);
-            const hydratedEvents = await Promise.all(
-              res.events.map(async (event: any) => {
-                let eventDetails = event;
+            const hydratedEvents = res.events.map((event: any) => {
+              const startTime = getFirstDateValue(event, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
+              const endTime = getFirstDateValue(event, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
 
-                try {
-                  if (event.id) {
-                    const detailResponse: any = await apiClient(
-                      `/calendars/events/appointments/${encodeURIComponent(event.id)}`,
-                      { ghlVersion: "2021-04-15" },
-                    );
-                    eventDetails = { ...event, ...getAppointmentPayload(detailResponse) };
-                  }
-                } catch (error) {
-                  console.error("Failed to fetch appointment details", event.id, error);
-                }
-
-                const startTime = getFirstDateValue(eventDetails, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
-                const endTime = getFirstDateValue(eventDetails, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
-
-                return {
-                  id: eventDetails.id || event.id,
-                  name: eventDetails.title || eventDetails.contactName || event.title || event.contactName || "Booked Appointment",
-                  date: startTime,
-                  color: eventDetails.color || event.color || calendar?.color,
-                  calendarName: calendar?.name,
-                  calendarId,
-                  rawEvent: { ...eventDetails, startTime, ...(endTime ? { endTime } : {}) },
-                };
-              }),
-            );
+              return {
+                id: event.id,
+                name: event.title || event.contactName || "Booked Appointment",
+                date: startTime,
+                color: event.color || calendar?.color,
+                calendarName: calendar?.name,
+                calendarId,
+                rawEvent: { ...event, startTime, ...(endTime ? { endTime } : {}) },
+              };
+            });
             allEvents.push(...hydratedEvents);
           }
         } catch (error) {
@@ -769,12 +748,12 @@ export function CalendarPage() {
       }
 
       if (locationId && contacts.length === 0) {
-        apiClient<any>(`/contacts/?locationId=${locationId}&limit=100`)
-          .then((res) => setContacts(res?.contacts || []))
+        getContacts(locationId)
+          .then((res: any) => setContacts(res?.contacts || (Array.isArray(res?.data) ? res.data : res?.data?.contacts) || []))
           .catch(console.error);
       }
       if (locationId && users.length === 0) {
-        apiClient<any>(`/users/?locationId=${locationId}`)
+        getGhlUsers(locationId)
           .then((res) => setUsers(res?.users || res?.data || (Array.isArray(res) ? res : [])))
           .catch(console.error);
       }
@@ -783,7 +762,7 @@ export function CalendarPage() {
 
   useEffect(() => {
     if (!locationId) return;
-    apiClient<any>(`/users/?locationId=${locationId}`)
+    getGhlUsers(locationId)
       .then((res) => {
         const fetchedUsers = res?.users || res?.data || (Array.isArray(res) ? res : []);
         if (fetchedUsers.length > 0) setUsers(fetchedUsers);
@@ -904,8 +883,15 @@ export function CalendarPage() {
     setIsCreateCalendarOpen(true);
   };
 
-  const openEditCalendarSheet = (calendar: CalendarOption) => {
+  const openEditCalendarSheet = async (calendar: CalendarOption) => {
     setEditingCalendarId(calendar.id);
+    let scheduleDays = calendar.scheduleDays || createDefaultScheduleDays();
+    try {
+      const fetchedSchedule = await fetchCalendarScheduleDays(calendar.id);
+      if (fetchedSchedule) scheduleDays = fetchedSchedule;
+    } catch (error) {
+      console.error("Failed to load calendar schedule", calendar.id, error);
+    }
     setCreateCalendarForm({
       name: calendar.name,
       description: calendar.description || "",

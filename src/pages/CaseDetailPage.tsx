@@ -45,6 +45,7 @@ import { Button } from "@/components/ui/button";
 import { DatePicker, DateTimePicker } from "@/components/DatePicker";
 import { DeleteConfirmationDialog } from "@/components/DeleteConfirmationDialog";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { MatterTimelineGantt } from "@/components/MatterTimelineGantt";
 import { NoteRichTextBody, NoteRichTextEditor } from "@/components/NoteRichText";
 import { SearchableSelect } from "@/components/SearchableSelect";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,7 +68,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { UserLink } from "@/components/UserLink";
 import { useColumnOrder, type ReorderableColumn } from "@/hooks/use-column-order";
 import { useToast } from "@/hooks/use-toast";
-import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getPipelines, type GhlPipeline } from "@/lib/api";
+import { apiClient, createContact, getActiveGhlLocationId, getAppLocationContext, getContacts, getGhlUsers, getPipelines, resolveContactsByIds, type GhlPipeline } from "@/lib/api";
 import {
   addCaseParty,
   createCaseEvent,
@@ -88,11 +89,10 @@ import {
 import {
   createExternalDocument,
   deleteDocument,
-  getAllDocuments,
-  getDocumentCapabilities,
   getDocumentFolderName,
   getDocumentName,
   getStorageTypeLabel,
+  listDocumentsLibrary,
   moveDocument,
   renameDocument,
   renameDocumentFolder,
@@ -652,20 +652,12 @@ export function CaseDetailPage() {
         .filter(Boolean)
         .map((value) => String(value));
       const uniqueContactIds = Array.from(new Set(contactIds));
-      const liveContactEntries = await Promise.all(
-        uniqueContactIds.map(async (contactId) => {
-          try {
-            const data = await apiClient(`/contacts/${encodeURIComponent(contactId)}`);
-            return [contactId, getRawGhlContact(data)] as const;
-          } catch (error) {
-            console.error("Failed to load live contact details", error);
-            return [contactId, null] as const;
-          }
-        }),
-      );
-      const liveContactsById = new Map(liveContactEntries);
+      const ghlLocationId = await getActiveGhlLocationId();
+      const liveContactsById = ghlLocationId && uniqueContactIds.length > 0
+        ? await resolveContactsByIds(ghlLocationId, uniqueContactIds)
+        : new Map<string, unknown>();
       const primaryContact = caseDetail.case.ghl_contact_id
-        ? liveContactsById.get(caseDetail.case.ghl_contact_id)
+        ? liveContactsById.get(String(caseDetail.case.ghl_contact_id))
         : null;
 
       setDetail({
@@ -1168,7 +1160,7 @@ export function CaseDetailPage() {
                 />
               </TabsContent>
               <TabsContent value="timeline" className="m-0">
-                <TimelineTab detail={detail} onChanged={loadCase} />
+                <TimelineTab detail={detail} onTaskClick={openTaskSheet} />
               </TabsContent>
               <TabsContent value="events" className="m-0">
                 <EventsTab detail={detail} onChanged={loadCase} />
@@ -5056,70 +5048,27 @@ function CommunicationsTab({
   );
 }
 
-function TimelineTab({ detail, onChanged }: { detail: CaseDetail; onChanged: () => void }) {
-  const { toast } = useToast();
-  const [note, setNote] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  const handleAddNote = async () => {
-    if (!note.trim()) return;
-    setSubmitting(true);
-    try {
-      await createCaseNote({ caseId: detail.case.id, body: note });
-      setNote("");
-      onChanged();
-    } catch (error) {
-      toast({ title: "Note Not Added", description: getUserFriendlyErrorMessage(error), variant: "destructive" });
-    } finally {
-      setSubmitting(false);
+function TimelineTab({
+  detail,
+  onTaskClick,
+}: {
+  detail: CaseDetail;
+  onTaskClick: (task: any) => void;
+}) {
+  const handleItemClick = (item: { sourceType: string; sourceId: string }) => {
+    if (item.sourceType === "task") {
+      const task = detail.tasks.find((entry) => entry.id === item.sourceId);
+      if (task) onTaskClick(task);
     }
   };
 
   return (
-    <div className="space-y-4">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <NotebookPen className="h-4 w-4" />
-            Add Note
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <NoteRichTextEditor value={note} onChange={setNote} placeholder="Add a matter note" />
-          <Button className="w-full" disabled={submitting || !note.trim()} onClick={handleAddNote}>
-            {submitting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
-            Add Note
-          </Button>
-        </CardContent>
-      </Card>
-      <Card>
-        <CardHeader>
-          <CardTitle>Unified Timeline</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {detail.timeline.length === 0 ? (
-            <EmptyState icon={NotebookPen} text="No timeline activity yet." />
-          ) : (
-            detail.timeline.map((item) => (
-              <div key={`${item.type}-${item.id}`} className="rounded-lg border p-3">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="font-medium">{item.title}</div>
-                  <Badge variant="outline" className="capitalize">{item.type}</Badge>
-                </div>
-                {item.body ? (
-                  item.type === "note" ? (
-                    <NoteRichTextBody value={item.body} className="mt-1 text-sm text-muted-foreground" />
-                  ) : (
-                    <p className="mt-1 text-sm text-muted-foreground">{item.body}</p>
-                  )
-                ) : null}
-                <p className="mt-2 text-xs text-muted-foreground">{formatDateTime(item.occurred_at)}</p>
-              </div>
-            ))
-          )}
-        </CardContent>
-      </Card>
-    </div>
+    <MatterTimelineGantt
+      caseRecord={detail.case}
+      tasks={detail.tasks}
+      events={detail.events}
+      onItemClick={handleItemClick}
+    />
   );
 }
 
@@ -6182,20 +6131,21 @@ function DocumentsTab({
   };
 
   useEffect(() => {
-    getDocumentCapabilities()
-      .then(setCapabilities)
+    listDocumentsLibrary()
+      .then((library) => setCapabilities(library.capabilities))
       .catch((error) => console.error("Failed to load document permissions", error))
       .finally(() => setCapabilitiesLoaded(true));
   }, []);
 
   useEffect(() => {
-    Promise.all([listCases({ limit: 500 }), getAllDocuments()])
-      .then(([caseRows, documentRows]) => {
+    Promise.all([listCases({ limit: 500 }), listDocumentsLibrary()])
+      .then(([caseRows, library]) => {
         const map = new Map<string, string>();
         map.set(detail.case.id, getCaseDisplayName(detail.case));
         caseRows.forEach((caseRecord) => map.set(caseRecord.id, getCaseDisplayName(caseRecord)));
         setMatterOptions([...map.entries()].sort((a, b) => a[1].localeCompare(b[1])));
-        setAccessibleDocuments(documentRows);
+        setAccessibleDocuments(library.documents);
+        setCapabilities(library.capabilities);
       })
       .catch((error) => {
         console.error("Failed to load document move options", error);
@@ -6231,7 +6181,7 @@ function DocumentsTab({
   };
 
   useEffect(() => {
-    void loadDriveFolder(true, { showErrorToast: false });
+    void loadDriveFolder(false, { showErrorToast: false });
   }, [detail.case.id]);
 
   const handleViewDocument = async (document: DocumentRecord) => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link as RouterLink, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowUpDown, ExternalLink, FileArchive, FileImage, FileSpreadsheet, FileText, Filter, Folder, FolderOpen, LayoutGrid, List, Loader2, MoreVertical, Pencil, Pin, Plus, Search, Trash2, Upload } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -27,8 +27,7 @@ import { useToast } from "@/hooks/use-toast";
 import { listCases, type CaseRecord } from "@/lib/cases";
 import {
   deleteDocument,
-  getAllDocuments,
-  getDocumentCapabilities,
+  listDocumentsLibrary,
   getDocumentFolderName,
   getDocumentName,
   getStorageTypeLabel,
@@ -259,6 +258,12 @@ export function DocumentsPage() {
       name: searchParams.get("driveFolderName") || "Folder",
     };
   }, [searchParams]);
+  const handleInitialDriveFolderConsumed = useCallback(() => {
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("driveFolder");
+    nextParams.delete("driveFolderName");
+    setSearchParams(nextParams, { replace: true });
+  }, [searchParams, setSearchParams]);
   const [isSearchExpanded, setIsSearchExpanded] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [matterFilter, setMatterFilter] = useState(ALL_MATTERS);
@@ -282,13 +287,12 @@ export function DocumentsPage() {
   const loadDocuments = async () => {
     setLoading(true);
     try {
-      const [documentRows, documentCapabilities, caseRows] = await Promise.all([
-        getAllDocuments(),
-        getDocumentCapabilities(),
+      const [library, caseRows] = await Promise.all([
+        listDocumentsLibrary(),
         listCases({ limit: 500 }),
       ]);
-      setDocuments(documentRows);
-      setCapabilities(documentCapabilities);
+      setDocuments(library.documents);
+      setCapabilities(library.capabilities);
       setCases(caseRows);
     } catch (error) {
       toast({
@@ -939,12 +943,7 @@ export function DocumentsPage() {
           viewMode={viewMode}
           displayMode={displayMode}
           initialFolder={initialDriveFolder}
-          onInitialFolderConsumed={() => {
-            const nextParams = new URLSearchParams(searchParams);
-            nextParams.delete("driveFolder");
-            nextParams.delete("driveFolderName");
-            setSearchParams(nextParams, { replace: true });
-          }}
+          onInitialFolderConsumed={handleInitialDriveFolderConsumed}
         />
       ) : documents.length === 0 ? (
         <div className="flex flex-col items-center justify-center rounded-xl border-2 border-dashed border-muted-foreground/40 bg-muted/5 px-4 py-20 text-center">
