@@ -507,6 +507,16 @@ function getFirstDateValue(source: any, keys: string[]) {
   return "";
 }
 
+function coerceCalendarEventDate(value: string | number | Date): string | number {
+  if (value instanceof Date) return value.getTime();
+  return value;
+}
+
+function coerceSlotValue(value?: string | number): string | undefined {
+  if (value == null || value === "") return undefined;
+  return typeof value === "string" ? value : String(value);
+}
+
 function buildCalendarEventFromGhl(eventDetails: any, calendarId: string, calendar?: CalendarOption): CalendarEvent {
   const startTime = getFirstDateValue(eventDetails, START_DATE_FIELD_KEYS);
   const endTime = getFirstDateValue(eventDetails, END_DATE_FIELD_KEYS);
@@ -527,7 +537,7 @@ function buildCalendarEventFromGhl(eventDetails: any, calendarId: string, calend
   return {
     id: eventDetails.id,
     name: eventDetails.title || eventDetails.contactName || "Booked Appointment",
-    date: startTime,
+    date: coerceCalendarEventDate(startTime === "" ? 0 : startTime),
     color: eventDetails.color || calendar?.color,
     calendarName: calendar?.name,
     calendarId,
@@ -933,7 +943,7 @@ export function CalendarPage() {
 
   useEffect(() => {
     if (isEventDetailsOpen && isEditingEvent && editFormData.calendarId && editFormData.date) {
-      fetchDaySlots(editFormData.calendarId, editFormData.date, selectedEvent?.date).then(setEditSlots).catch(console.error);
+      fetchDaySlots(editFormData.calendarId, editFormData.date, coerceSlotValue(selectedEvent?.date)).then(setEditSlots).catch(console.error);
     }
   }, [isEventDetailsOpen, isEditingEvent, editFormData.calendarId, editFormData.date, selectedEvent?.date]);
 

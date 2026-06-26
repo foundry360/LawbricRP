@@ -365,7 +365,11 @@ export async function syncGhlLeadPipelineOpportunities(
 
   for (const pipeline of pipelines) {
     const opportunities = await getOpportunities(ghlLocationId, { pipelineId: pipeline.id, limit: 100 });
-    const activeOpportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
+    const activeOpportunityIds = new Set<string>(
+      opportunities
+        .map((opportunity: GhlOpportunity) => opportunity.id)
+        .filter((id: string): id is string => Boolean(id)),
+    );
 
     for (const opportunity of opportunities) {
       syncedLeads.push(await upsertLeadFromOpportunity(locationId, opportunity, pipeline, contactMap));
