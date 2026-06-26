@@ -253,6 +253,52 @@ export async function getActiveGhlLocationId(): Promise<string> {
   return context.location?.ghlLocationId ?? "";
 }
 
+export async function getActiveLocationId(): Promise<string> {
+  const context = await getAppLocationContext();
+  return context.location?.id ?? "";
+}
+
+export type LawbricCalendarEvent = {
+  id: string;
+  name: string;
+  date: string | number;
+  color?: string;
+  calendarName?: string;
+  calendarId: string;
+  rawEvent: Record<string, unknown>;
+};
+
+export async function listCalendarEvents(params: {
+  locationId: string;
+  calendarIds: string[];
+  startTime: number;
+  endTime: number;
+  calendars?: Array<{ id: string; name?: string; color?: string }>;
+}): Promise<LawbricCalendarEvent[]> {
+  const { data, error } = await supabase.functions.invoke("list_calendar_events", {
+    body: params,
+  });
+
+  if (error) {
+    const errorContext = (error as { context?: unknown }).context;
+    if (errorContext instanceof Response) {
+      const errorBody = await errorContext.clone().json().catch(async () => {
+        const text = await errorContext.clone().text().catch(() => "");
+        return text ? { error: text } : null;
+      });
+      const message = errorBody?.error || errorBody?.message || error.message || "Could not load calendar events.";
+      throw new Error(message);
+    }
+    throw new Error(error.message || "Could not load calendar events.");
+  }
+
+  if (data?.error) {
+    throw new Error(data.error);
+  }
+
+  return Array.isArray(data?.events) ? data.events : [];
+}
+
 export async function hasPermission(permissionKey: string) {
   const { data, error } = await supabase.rpc("has_permission", {
     permission_key: permissionKey,

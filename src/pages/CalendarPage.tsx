@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import {
   endOfMonth,
+  endOfWeek,
   format,
   isBefore,
   startOfDay,
@@ -98,14 +99,12 @@ type CalendarOption = {
 type CalendarEvent = {
   id: string;
   name: string;
-  date: string;
+  date: string | number;
   color?: string;
   calendarName?: string;
   calendarId?: string;
   rawEvent?: any;
 };
-
-type SlotMap = Record<string, { slots: string[] }>;
 
 type CreateCalendarForm = {
   name: string;
@@ -119,11 +118,43 @@ type CreateCalendarForm = {
 };
 
 function getDisplayName(entity: any) {
+  if (!entity) return "Unknown";
+
+  const id = entity?.id || entity?.userId;
   const name =
     entity?.name ||
-    `${entity?.firstName || ""} ${entity?.lastName || ""}`.trim();
+    `${entity?.firstName || entity?.first_name || ""} ${entity?.lastName || entity?.last_name || ""}`.trim();
 
-  return name ? formatPersonName(name) : entity?.email || (entity?.id ? `User (${String(entity.id).slice(0, 4)})` : "Unknown");
+  return name ? formatPersonName(name) : entity?.email || (id ? `User (${String(id).slice(0, 4)})` : "Unknown");
+}
+
+function normalizeGhlUser(record: any) {
+  const id = String(record?.id || record?.userId || "").trim();
+  if (!id) return null;
+
+  const firstName = record?.firstName || record?.first_name || "";
+  const lastName = record?.lastName || record?.last_name || "";
+  const name = String(record?.name || `${firstName} ${lastName}`.trim()).trim();
+
+  return {
+    ...record,
+    id,
+    firstName,
+    lastName,
+    name,
+    email: record?.email || "",
+  };
+}
+
+function getGhlUsersFromResponse(response: any) {
+  const rawUsers = response?.users || response?.data || (Array.isArray(response) ? response : []);
+  return (Array.isArray(rawUsers) ? rawUsers : [])
+    .map(normalizeGhlUser)
+    .filter((user): user is NonNullable<typeof user> => Boolean(user));
+}
+
+function getUserSearchValue(user: any) {
+  return [user?.name, user?.firstName, user?.lastName, user?.email, user?.id].filter(Boolean).join(" ");
 }
 
 function formatContactName(contact: any) {
@@ -362,6 +393,39 @@ function isCalendarTeamMember(calendar: CalendarOption | undefined, userId: stri
   return calendar.teamMembers?.some((member: any) => member.userId === userId || member.id === userId) ?? false;
 }
 
+function getCalendarTeamMemberIds(calendar: CalendarOption | undefined) {
+  return (calendar?.teamMembers || [])
+    .map((member: any) => member.userId || member.id)
+    .filter((userId): userId is string => typeof userId === "string" && userId.length > 0);
+}
+
+function calendarRequiresAssignedUser(calendar: CalendarOption | undefined) {
+  return getCalendarTeamMemberIds(calendar).length > 0;
+}
+
+function resolveAssignedUserId(calendar: CalendarOption | undefined, preferredUserId: string) {
+  const teamMemberIds = getCalendarTeamMemberIds(calendar);
+  if (teamMemberIds.length === 0) return preferredUserId || "";
+
+  if (preferredUserId && teamMemberIds.includes(preferredUserId)) {
+    return preferredUserId;
+  }
+
+  if (calendar?.assignedUserId && teamMemberIds.includes(calendar.assignedUserId)) {
+    return calendar.assignedUserId;
+  }
+
+  return teamMemberIds[0] || "";
+}
+
+function getBookableUsersForCalendar(calendar: CalendarOption | undefined, users: any[]) {
+  const teamMemberIds = new Set(getCalendarTeamMemberIds(calendar));
+  if (teamMemberIds.size === 0) return users;
+
+  const teamUsers = users.filter((user) => teamMemberIds.has(user.id));
+  return teamUsers.length > 0 ? teamUsers : users.filter((user) => teamMemberIds.has(user.id));
+}
+
 function getUserDefaultCalendar(calendars: CalendarOption[], userId: string) {
   if (!userId) return undefined;
 
@@ -393,16 +457,94 @@ function formatSlotRange(slot: string, durationMinutes = 30) {
   return `${format(start, "h:mm a")} to ${format(end, "h:mm a")}`;
 }
 
+const START_DATE_FIELD_KEYS = ["startTime", "start_time", "start", "startDate", "startDateTime"];
+const END_DATE_FIELD_KEYS = ["endTime", "end_time", "end", "endDate", "endDateTime"];
+
+function normalizeDateValue(value: unknown): string | number | Date | null {
+  if (value == null || value === "") return null;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") return value;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["iso", "dateTime", "date", "value", "timestamp", "startTime", "time"]) {
+      const nested = normalizeDateValue(record[key]);
+      if (nested != null) return nested;
+    }
+
+    if (typeof record.seconds === "number") {
+      const millis = record.seconds * 1000;
+      const nanos = typeof record.nanoseconds === "number" ? record.nanoseconds / 1_000_000 : 0;
+      return millis + nanos;
+    }
+
+    if (typeof record._seconds === "number") {
+      return record._seconds * 1000;
+    }
+  }
+
+  return null;
+}
+
+function isValidEventDate(value: unknown) {
+  const normalized = normalizeDateValue(value);
+  if (normalized == null) return false;
+
+  return !Number.isNaN(new Date(normalized).getTime());
+}
+
 function getFirstDateValue(source: any, keys: string[]) {
-  for (const key of keys) {
-    if (source?.[key]) return source[key];
+  const sources = [source, source?.appointment, source?.event].filter(Boolean);
+
+  for (const candidate of sources) {
+    for (const key of keys) {
+      const normalized = normalizeDateValue(candidate?.[key]);
+      if (normalized != null) return normalized;
+    }
   }
 
   return "";
 }
 
+function buildCalendarEventFromGhl(eventDetails: any, calendarId: string, calendar?: CalendarOption): CalendarEvent {
+  const startTime = getFirstDateValue(eventDetails, START_DATE_FIELD_KEYS);
+  const endTime = getFirstDateValue(eventDetails, END_DATE_FIELD_KEYS);
+  const {
+    startTime: _startTime,
+    endTime: _endTime,
+    start_time: _startSnake,
+    end_time: _endSnake,
+    start: _start,
+    end: _end,
+    startDate: _startDate,
+    endDate: _endDate,
+    startDateTime: _startDateTime,
+    endDateTime: _endDateTime,
+    ...rest
+  } = eventDetails ?? {};
+
+  return {
+    id: eventDetails.id,
+    name: eventDetails.title || eventDetails.contactName || "Booked Appointment",
+    date: startTime,
+    color: eventDetails.color || calendar?.color,
+    calendarName: calendar?.name,
+    calendarId,
+    rawEvent: {
+      ...rest,
+      ...(startTime !== "" ? { startTime } : {}),
+      ...(endTime !== "" ? { endTime } : {}),
+    },
+  };
+}
+
+function mapListEventToCalendarEvent(event: any, calendarId: string, calendar?: CalendarOption): CalendarEvent {
+  return buildCalendarEventFromGhl(event, calendarId, calendar);
+}
+
 function getEventStartTime(event: CalendarEvent) {
-  const rawStart = getFirstDateValue(event.rawEvent, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
+  const rawStart = getFirstDateValue(event.rawEvent, START_DATE_FIELD_KEYS);
   const start = new Date(rawStart || event.date);
 
   return Number.isNaN(start.getTime()) ? new Date(event.date) : start;
@@ -410,7 +552,7 @@ function getEventStartTime(event: CalendarEvent) {
 
 function getEventEndTime(event: CalendarEvent) {
   const start = getEventStartTime(event);
-  const rawEnd = getFirstDateValue(event.rawEvent, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
+  const rawEnd = getFirstDateValue(event.rawEvent, END_DATE_FIELD_KEYS);
   const end = rawEnd ? new Date(rawEnd) : null;
 
   return end && end.getTime() > start.getTime() ? end : new Date(start.getTime() + 30 * 60 * 1000);
@@ -425,6 +567,27 @@ function getEventDurationMinutes(event: CalendarEvent) {
 
 function getAppointmentPayload(response: any) {
   return response?.appointment || response?.event || response?.data?.appointment || response?.data?.event || response?.data || response;
+}
+
+function getVisibleEventRange(anchor: Date, viewMode: "month" | "week" | "day") {
+  if (viewMode === "week") {
+    return {
+      start: startOfWeek(anchor).getTime(),
+      end: endOfWeek(anchor).getTime(),
+    };
+  }
+
+  if (viewMode === "day") {
+    const dayStart = startOfDay(anchor);
+    const dayEnd = new Date(dayStart);
+    dayEnd.setHours(23, 59, 59, 999);
+    return { start: dayStart.getTime(), end: dayEnd.getTime() };
+  }
+
+  return {
+    start: startOfMonth(anchor).getTime(),
+    end: endOfMonth(anchor).getTime(),
+  };
 }
 
 function getPositionedEvents(events: CalendarEvent[]) {
@@ -497,8 +660,6 @@ export function CalendarPage() {
   const [locationId, setLocationId] = useState("");
   const [date, setDate] = useState<Date | undefined>(new Date());
   const [month, setMonth] = useState(new Date());
-  const [slots, setSlots] = useState<SlotMap>({});
-  const [loading, setLoading] = useState(false);
   const [isSheetOpen, setIsSheetOpen] = useState(false);
   const [isEditingEvent, setIsEditingEvent] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState("");
@@ -507,7 +668,7 @@ export function CalendarPage() {
   const [bookingDate, setBookingDate] = useState<Date | undefined>(new Date());
   const [bookingSlots, setBookingSlots] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
-  const [view, setView] = useState<"month" | "week" | "day">("week");
+  const [view, setView] = useState<"month" | "week" | "day">("month");
   const { toast } = useToast();
   const [bookedEvents, setBookedEvents] = useState<CalendarEvent[]>([]);
   const [selectedEvent, setSelectedEvent] = useState<CalendarEvent | null>(null);
@@ -527,6 +688,10 @@ export function CalendarPage() {
   const [isDeletingEvent, setIsDeletingEvent] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
   const scrollRef = useRef<HTMLDivElement>(null);
+  const availableCalendarsRef = useRef<CalendarOption[]>([]);
+  const eventsFetchIdRef = useRef(0);
+  const [calendarsReady, setCalendarsReady] = useState(false);
+  const [eventsRefreshToken, setEventsRefreshToken] = useState(0);
 
   const [contacts, setContacts] = useState<any[]>([]);
   const [selectedContactId, setSelectedContactId] = useState("");
@@ -538,10 +703,9 @@ export function CalendarPage() {
   const [isUserPopoverOpen, setIsUserPopoverOpen] = useState(false);
   const [isEditUserPopoverOpen, setIsEditUserPopoverOpen] = useState(false);
 
-  const [selectedCalendars, setSelectedCalendars] = useState<string[]>([CALENDAR_ID]);
-  const [availableCalendars, setAvailableCalendars] = useState<CalendarOption[]>([
-    { id: CALENDAR_ID, name: "Main Calendar", color: "#2384CA", slotDuration: 30, slotInterval: 30 },
-  ]);
+  const [selectedCalendars, setSelectedCalendars] = useState<string[]>([]);
+  const [availableCalendars, setAvailableCalendars] = useState<CalendarOption[]>([]);
+  availableCalendarsRef.current = availableCalendars;
   const [isCreateCalendarOpen, setIsCreateCalendarOpen] = useState(false);
   const [isCreatingCalendar, setIsCreatingCalendar] = useState(false);
   const [isUpdatingCalendar, setIsUpdatingCalendar] = useState(false);
@@ -583,158 +747,153 @@ export function CalendarPage() {
     locId: string,
     options: { preserveSelection?: boolean; selectedCalendarId?: string } = {},
   ) => {
-    if (!locId) return;
+    if (!locId) {
+      setCalendarsReady(true);
+      return;
+    }
 
-    const res: any = await apiClient(`/calendars/?locationId=${locId}`);
-    if (res?.calendars?.length > 0) {
-      const calendars: CalendarOption[] = res.calendars.map((calendar: any, index: number) =>
-        normalizeCalendar(calendar, index),
-      );
-      setAvailableCalendars(calendars);
-      setSelectedCalendars((current) => {
-        if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
-          return [options.selectedCalendarId];
-        }
-        const validSelected = current.filter((calendarId) => calendars.some((calendar) => calendar.id === calendarId));
-        if (options.preserveSelection && validSelected.length > 0) return validSelected;
-        const storedSelected = getStoredSelectedCalendarIds(locId).filter((calendarId) =>
-          calendars.some((calendar) => calendar.id === calendarId),
+    try {
+      const res: any = await apiClient(`/calendars/?locationId=${locId}`);
+      if (res?.calendars?.length > 0) {
+        const calendars: CalendarOption[] = res.calendars.map((calendar: any, index: number) =>
+          normalizeCalendar(calendar, index),
         );
+        setAvailableCalendars(calendars);
+        setSelectedCalendars((current) => {
+          if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
+            return [options.selectedCalendarId];
+          }
+          const validSelected = current.filter((calendarId) => calendars.some((calendar) => calendar.id === calendarId));
+          if (options.preserveSelection && validSelected.length > 0) return validSelected;
+          const storedSelected = getStoredSelectedCalendarIds(locId).filter((calendarId) =>
+            calendars.some((calendar) => calendar.id === calendarId),
+          );
         if (storedSelected.length > 0) return storedSelected;
-        return [calendars[0].id];
-      });
-      setBookingCalendarId((current) => {
-        if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
-          return options.selectedCalendarId;
-        }
-
-        return current && calendars.some((calendar) => calendar.id === current) ? current : calendars[0].id;
-      });
-
-      const extractedUsers = new Map<string, any>();
-      calendars.forEach((calendar: CalendarOption) => {
-        calendar.teamMembers?.forEach((member: any) => {
-          const userId = member.userId || member.id;
-          if (userId) extractedUsers.set(userId, { ...member, id: userId, name: getDisplayName({ ...member, id: userId }) });
+        return calendars.map((calendar) => calendar.id);
         });
-      });
-      if (extractedUsers.size > 0) {
-        setUsers((previous) => {
-          const usersById = new Map(previous.map((user) => [user.id, user]));
-          extractedUsers.forEach((user, userId) => {
-            if (!usersById.has(userId)) usersById.set(userId, user);
-          });
-          return Array.from(usersById.values());
+        setBookingCalendarId((current) => {
+          if (options.selectedCalendarId && calendars.some((calendar) => calendar.id === options.selectedCalendarId)) {
+            return options.selectedCalendarId;
+          }
+
+          return current && calendars.some((calendar) => calendar.id === current) ? current : calendars[0].id;
         });
       }
+    } finally {
+      setCalendarsReady(true);
     }
   };
 
   useEffect(() => {
     const loadLocation = async () => {
-      const locId = await getActiveGhlLocationId();
-      setLocationId(locId);
-
       try {
+        const locId = await getActiveGhlLocationId();
+        setLocationId(locId);
         await loadCalendars(locId);
       } catch (error) {
-        console.error("Failed to fetch available calendars", error);
+        console.error("Failed to load calendar location", error);
+        setCalendarsReady(true);
       }
     };
 
     loadLocation();
   }, []);
 
-  const fetchEvents = async () => {
-    if (!locationId) return;
+  const loadUsers = async (locId: string) => {
+    if (!locId) return;
 
     try {
-      const start = startOfMonth(month).getTime();
-      const end = endOfMonth(month).getTime();
+      const fetchedUsers = getGhlUsersFromResponse(await getGhlUsers(locId));
+      if (fetchedUsers.length > 0) {
+        setUsers(fetchedUsers);
+      }
+    } catch (error) {
+      console.error("Failed to fetch users", error);
+    }
+  };
+
+  useEffect(() => {
+    if (!locationId) return;
+    void loadUsers(locationId);
+  }, [locationId]);
+
+  const refreshEvents = () => setEventsRefreshToken((token) => token + 1);
+
+  useEffect(() => {
+    if (!locationId || !calendarsReady || selectedCalendars.length === 0) return;
+
+    const fetchId = ++eventsFetchIdRef.current;
+    const calendarIds = [...selectedCalendars];
+    const monthSnapshot = month;
+    const viewSnapshot = view;
+    const { start, end } = getVisibleEventRange(monthSnapshot, viewSnapshot);
+
+    void (async () => {
       const allEvents: CalendarEvent[] = [];
 
-      for (const calendarId of selectedCalendars) {
+      for (const calendarId of calendarIds) {
+        if (fetchId !== eventsFetchIdRef.current) return;
+
         try {
           const res: any = await apiClient(
             `/calendars/events?locationId=${locationId}&calendarId=${calendarId}&startTime=${start}&endTime=${end}`,
             { ghlVersion: "2021-04-15" },
           );
-          if (res?.events) {
-            const calendar = availableCalendars.find((item) => item.id === calendarId);
-            const hydratedEvents = res.events.map((event: any) => {
-              const startTime = getFirstDateValue(event, ["startTime", "start_time", "start", "startDate", "startDateTime"]);
-              const endTime = getFirstDateValue(event, ["endTime", "end_time", "end", "endDate", "endDateTime"]);
 
-              return {
-                id: event.id,
-                name: event.title || event.contactName || "Booked Appointment",
-                date: startTime,
-                color: event.color || calendar?.color,
-                calendarName: calendar?.name,
-                calendarId,
-                rawEvent: { ...event, startTime, ...(endTime ? { endTime } : {}) },
-              };
-            });
-            allEvents.push(...hydratedEvents);
+          if (res?.events) {
+            const calendar = availableCalendarsRef.current.find((item) => item.id === calendarId);
+            for (const event of res.events.filter((item: any) => !item.deleted)) {
+              allEvents.push(mapListEventToCalendarEvent(event, calendarId, calendar));
+            }
           }
         } catch (error) {
           console.error("Failed to fetch events for calendar", calendarId, error);
         }
       }
 
+      if (fetchId !== eventsFetchIdRef.current) return;
       setBookedEvents(allEvents);
-    } catch (error) {
-      const message = getUserFriendlyErrorMessage(error, "Could not load calendar events. Please refresh and try again.");
-      toast({ title: "Sync Error", description: message, variant: "destructive" });
-    }
-  };
+    })();
+
+    return () => {
+      eventsFetchIdRef.current += 1;
+    };
+  }, [month, locationId, selectedCalendars.join(","), calendarsReady, eventsRefreshToken, view]);
 
   useEffect(() => {
-    fetchEvents();
-  }, [month, locationId, selectedCalendars.join(",")]);
+    if (!isEventDetailsOpen || !selectedEvent?.id) return;
 
-  const fetchSlots = async () => {
-    setLoading(true);
-    try {
-      let start = startOfMonth(month);
-      const end = endOfMonth(month);
-      const today = startOfDay(new Date());
+    let cancelled = false;
+    const eventId = selectedEvent.id;
+    const calendarId = selectedEvent.calendarId || "";
+    const listSnapshot = selectedEvent.rawEvent;
 
-      if (isBefore(start, today)) start = today;
-      if (isBefore(end, today)) {
-        setSlots({});
-        return;
-      }
-
-      const endLimit = new Date(start.getTime() + 30 * 24 * 60 * 60 * 1000);
-      const finalEnd = isBefore(endLimit, end) ? endLimit : end;
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const allSlots: SlotMap = {};
-
-      for (const calendarId of selectedCalendars) {
-        const data = await apiClient<any>(
-          `/calendars/${encodeURIComponent(calendarId)}/free-slots?startDate=${start.getTime()}&endDate=${finalEnd.getTime()}&timezone=${encodeURIComponent(timezone)}`,
+    void (async () => {
+      try {
+        const detailResponse: any = await apiClient(
+          `/calendars/events/appointments/${encodeURIComponent(eventId)}`,
           { ghlVersion: "2021-04-15" },
         );
-        Object.keys(data).forEach((dateStr) => {
-          if (!allSlots[dateStr]) allSlots[dateStr] = { slots: [] };
-          if (Array.isArray(data[dateStr]?.slots)) {
-            allSlots[dateStr].slots = [...new Set([...allSlots[dateStr].slots, ...data[dateStr].slots])].sort();
-          }
-        });
+        if (cancelled) return;
+
+        const calendar = availableCalendarsRef.current.find((item) => item.id === calendarId);
+        const hydrated = buildCalendarEventFromGhl(
+          { ...listSnapshot, ...getAppointmentPayload(detailResponse) },
+          calendarId,
+          calendar,
+        );
+
+        setSelectedEvent(hydrated);
+        setBookedEvents((previous) => previous.map((event) => (event.id === hydrated.id ? hydrated : event)));
+      } catch (error) {
+        console.error("Failed to fetch appointment details", eventId, error);
       }
+    })();
 
-      setSlots(allSlots);
-    } catch (error) {
-      console.error("Failed to fetch slots", error);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchSlots();
-  }, [month, selectedCalendars.join(",")]);
+    return () => {
+      cancelled = true;
+    };
+  }, [isEventDetailsOpen, selectedEvent?.id]);
 
   useEffect(() => {
     if (isSheetOpen || isEventDetailsOpen || isCreateCalendarOpen) {
@@ -745,6 +904,14 @@ export function CalendarPage() {
           setBookingCalendarId(defaultCalendar.id);
           setBookingDuration(String(getCalendarSlotDuration(availableCalendars, defaultCalendar.id)));
         }
+
+        const activeCalendar = availableCalendars.find(
+          (calendar) => calendar.id === (bookingCalendarId || availableCalendars[0]?.id),
+        );
+        const assignedUserId = resolveAssignedUserId(activeCalendar, selectedUserId);
+        if (assignedUserId && assignedUserId !== selectedUserId) {
+          setSelectedUserId(assignedUserId);
+        }
       }
 
       if (locationId && contacts.length === 0) {
@@ -752,37 +919,11 @@ export function CalendarPage() {
           .then((res: any) => setContacts(res?.contacts || (Array.isArray(res?.data) ? res.data : res?.data?.contacts) || []))
           .catch(console.error);
       }
-      if (locationId && users.length === 0) {
-        getGhlUsers(locationId)
-          .then((res) => setUsers(res?.users || res?.data || (Array.isArray(res) ? res : [])))
-          .catch(console.error);
+      if (locationId && isSheetOpen) {
+        void loadUsers(locationId);
       }
     }
-  }, [isSheetOpen, isEventDetailsOpen, isCreateCalendarOpen, date, availableCalendars, locationId, contacts.length, users.length, bookingCalendarId, selectedUserId]);
-
-  useEffect(() => {
-    if (!locationId) return;
-    getGhlUsers(locationId)
-      .then((res) => {
-        const fetchedUsers = res?.users || res?.data || (Array.isArray(res) ? res : []);
-        if (fetchedUsers.length > 0) setUsers(fetchedUsers);
-      })
-      .catch((error) => {
-        console.error("Failed to fetch users", error);
-      });
-  }, [locationId]);
-
-  useEffect(() => {
-    if (users.length === 0 && bookedEvents.length > 0) {
-      const extractedUsers = new Map<string, any>();
-      bookedEvents.forEach((event) => {
-        event.rawEvent?.users?.forEach((user: any) => {
-          if (user.id) extractedUsers.set(user.id, user);
-        });
-      });
-      if (extractedUsers.size > 0) setUsers(Array.from(extractedUsers.values()));
-    }
-  }, [bookedEvents, users.length]);
+  }, [isSheetOpen, isEventDetailsOpen, isCreateCalendarOpen, date, availableCalendars, locationId, contacts.length, bookingCalendarId, selectedUserId]);
 
   useEffect(() => {
     if (isSheetOpen && bookingCalendarId && bookingDate) {
@@ -819,6 +960,10 @@ export function CalendarPage() {
     setBookingCalendarId(calendarId);
     setBookingDuration(String(getCalendarSlotDuration(availableCalendars, calendarId)));
     setSelectedSlot("");
+
+    const calendar = availableCalendars.find((item) => item.id === calendarId);
+    const assignedUserId = resolveAssignedUserId(calendar, selectedUserId);
+    if (assignedUserId) setSelectedUserId(assignedUserId);
   };
 
   const handleBookingDurationChange = (duration: string) => {
@@ -850,6 +995,7 @@ export function CalendarPage() {
     if (view === "week") next.setDate(next.getDate() - 7);
     if (view === "day") next.setDate(next.getDate() - 1);
     setMonth(next);
+    if (view === "week" || view === "day") setDate(next);
   };
 
   const handleNext = () => {
@@ -858,6 +1004,7 @@ export function CalendarPage() {
     if (view === "week") next.setDate(next.getDate() + 7);
     if (view === "day") next.setDate(next.getDate() + 1);
     setMonth(next);
+    if (view === "week" || view === "day") setDate(next);
   };
 
   const handleToday = () => {
@@ -1130,7 +1277,17 @@ export function CalendarPage() {
     const calendar = availableCalendars.find((item) => item.id === calendarId);
     const durationMinutes = Number.parseInt(bookingDuration, 10) || getCalendarSlotDuration(availableCalendars, calendarId);
     const endTime = new Date(new Date(selectedSlot).getTime() + durationMinutes * 60 * 1000).toISOString();
-    const bookableAssignedUserId = isCalendarTeamMember(calendar, selectedUserId) ? selectedUserId : "";
+    const assignedUserId = resolveAssignedUserId(calendar, selectedUserId);
+
+    if (calendarRequiresAssignedUser(calendar) && !assignedUserId) {
+      toast({
+        title: "Appointment Owner Required",
+        description: "Select a team member who belongs to this calendar.",
+        variant: "destructive",
+      });
+      return;
+    }
+
     setSubmitting(true);
 
     try {
@@ -1143,12 +1300,12 @@ export function CalendarPage() {
           startTime: selectedSlot,
           endTime,
           title: contact ? formatContactName(contact) : "New Appointment",
-          description: formData.notes || undefined,
+          notes: formData.notes || undefined,
           appointmentStatus: "confirmed",
           ignoreDateRange: true,
           ignoreFreeSlotValidation: true,
           toNotify: false,
-          ...(bookableAssignedUserId ? { assignedUserId: bookableAssignedUserId } : {}),
+          ...(assignedUserId ? { assignedUserId } : {}),
         }),
         ghlVersion: "2021-04-15",
       });
@@ -1166,7 +1323,7 @@ export function CalendarPage() {
             contactId: data?.contactId || selectedContactId,
             contactEmail: contact?.email,
             contactPhone: formatPhoneNumber(contact?.phone, ""),
-            assignedUserId: bookableAssignedUserId || undefined,
+            assignedUserId: assignedUserId || undefined,
             notes: formData.notes,
             startTime: selectedSlot,
             endTime,
@@ -1179,7 +1336,7 @@ export function CalendarPage() {
       setSelectedContactId("");
       setSelectedSlot("");
       setSelectedUserId("");
-      window.setTimeout(fetchSlots, 2000);
+      refreshEvents();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(error, "Could not book the appointment. Please try again.");
       toast({ title: "Appointment Not Booked", description: message, variant: "destructive" });
@@ -1198,7 +1355,7 @@ export function CalendarPage() {
       toast({ title: "Success", description: "Appointment deleted successfully." });
       setIsEventDetailsOpen(false);
       setBookedEvents((previous) => previous.filter((event) => event.id !== selectedEvent.id));
-      window.setTimeout(fetchSlots, 3000);
+      refreshEvents();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(error, "Could not delete the appointment. Please try again.");
       toast({ title: "Appointment Not Deleted", description: message, variant: "destructive" });
@@ -1261,10 +1418,7 @@ export function CalendarPage() {
             : event,
         ),
       );
-      window.setTimeout(() => {
-        fetchSlots();
-        fetchEvents();
-      }, 3000);
+      refreshEvents();
     } catch (error) {
       const message = getUserFriendlyErrorMessage(error, "Could not update the appointment. Please try again.");
       toast({ title: "Appointment Not Updated", description: message, variant: "destructive" });
@@ -1446,7 +1600,10 @@ export function CalendarPage() {
                       key={item}
                       variant={view === item ? "default" : "ghost"}
                       size="sm"
-                      onClick={() => setView(item)}
+                      onClick={() => {
+                        setView(item);
+                        if (item === "week" || item === "day") setDate(month);
+                      }}
                       className="h-7 px-3 text-xs shadow-none"
                     >
                       {item[0].toUpperCase() + item.slice(1)}
@@ -1469,12 +1626,6 @@ export function CalendarPage() {
 
           <div className="min-h-0 flex-1 overflow-hidden p-2 sm:p-3">
             <div className="flex h-full flex-col overflow-hidden rounded-md border bg-background shadow-sm">
-              {loading && (
-                <div className="absolute right-8 top-24 z-10 flex items-center gap-2 rounded-md border bg-background px-3 py-2 text-sm shadow">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading slots
-                </div>
-              )}
               {view === "month" && <MonthView month={month} date={date} setDate={setDate} setMonth={setMonth} events={bookedEvents} openEvent={(event: CalendarEvent) => { setSelectedEvent(event); setIsEventDetailsOpen(true); }} />}
               {view === "week" && <WeekView month={month} date={date} setDate={setDate} events={bookedEvents} currentTime={currentTime} scrollRef={scrollRef} openEvent={(event: CalendarEvent) => { setSelectedEvent(event); setIsEventDetailsOpen(true); }} />}
               {view === "day" && <DayView month={month} events={bookedEvents} currentTime={currentTime} scrollRef={scrollRef} openEvent={(event: CalendarEvent) => { setSelectedEvent(event); setIsEventDetailsOpen(true); }} />}
@@ -1818,7 +1969,10 @@ function BookingSheet(props: BookingSheetProps) {
             setSelectedContactId={props.setSelectedContactId}
             isContactPopoverOpen={props.isContactPopoverOpen}
             setIsContactPopoverOpen={props.setIsContactPopoverOpen}
-            users={props.users}
+            users={getBookableUsersForCalendar(
+              props.availableCalendars.find((calendar) => calendar.id === props.bookingCalendarId),
+              props.users,
+            )}
             selectedUserId={props.selectedUserId}
             setSelectedUserId={props.setSelectedUserId}
             isUserPopoverOpen={props.isUserPopoverOpen}
@@ -1866,8 +2020,8 @@ function ContactAndOwnerFields({
   return (
     <div className="space-y-4 pt-2">
       <h4 className="text-sm font-medium text-muted-foreground">Contact Details</h4>
-      <div className="space-y-2">
-        <Label>Select Contact</Label>
+      <div className="flex flex-col gap-2">
+        <Label className="text-muted-foreground">Select Contact</Label>
         <Popover open={isContactPopoverOpen} onOpenChange={setIsContactPopoverOpen}>
           <PopoverTrigger asChild>
             <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
@@ -1900,8 +2054,8 @@ function ContactAndOwnerFields({
           </PopoverContent>
         </Popover>
       </div>
-      <div className="space-y-2">
-        <Label>Appointment Owner</Label>
+      <div className="flex flex-col gap-2">
+        <Label className="text-muted-foreground">Appointment Owner</Label>
         <Popover open={isUserPopoverOpen} onOpenChange={setIsUserPopoverOpen}>
           <PopoverTrigger asChild>
             <Button type="button" variant="outline" role="combobox" className="w-full justify-between font-normal">
@@ -1918,7 +2072,7 @@ function ContactAndOwnerFields({
                   {users.map((user) => (
                     <CommandItem
                       key={user.id}
-                      value={`${getDisplayName(user)} ${user.id}`}
+                      value={getUserSearchValue(user)}
                       onSelect={() => {
                         setSelectedUserId(user.id);
                         setIsUserPopoverOpen(false);

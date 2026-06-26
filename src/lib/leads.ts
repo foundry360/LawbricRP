@@ -3,16 +3,43 @@ import {
   getAppLocationContext,
   getCustomFields,
   getOpportunities,
+  hasPermission,
   requirePermission,
   updateContact,
   type GhlOpportunity,
   type GhlPipeline,
 } from "@/lib/api";
 import { createCase, type CaseRecord } from "@/lib/cases";
+import { type PipelineConfig } from "@/lib/pipeline-configs";
 import { supabase } from "@/lib/supabase";
 
 export const LEAD_ACCOUNT_TYPE = "Lead";
 export const CLIENT_ACCOUNT_TYPE = "Client (Active)";
+
+function pipelineConfigMatchesLeadAccountType(config?: PipelineConfig | null) {
+  const accountTypeRule = String(config?.account_type_rule || "").trim().toLowerCase();
+  return accountTypeRule === LEAD_ACCOUNT_TYPE.toLowerCase();
+}
+
+export function filterLeadPipelines(pipelines: GhlPipeline[], pipelineConfigs: PipelineConfig[]) {
+  const configMap = new Map(pipelineConfigs.map((config) => [config.ghl_pipeline_id, config]));
+  const configuredLeadPipelines = pipelines.filter((pipeline) => {
+    const config = configMap.get(pipeline.id);
+    return (
+      config?.is_active !== false &&
+      (config?.classification === "prospecting" || pipelineConfigMatchesLeadAccountType(config))
+    );
+  });
+
+  if (configuredLeadPipelines.length > 0) return configuredLeadPipelines;
+
+  // Locations that haven't classified pipelines yet still sync the obvious GHL "Leads" pipeline.
+  return pipelines.filter((pipeline) => {
+    const config = configMap.get(pipeline.id);
+    if (config?.classification === "matter" || config?.is_active === false) return false;
+    return /^leads?$/i.test(pipeline.name.trim());
+  });
+}
 
 export type LeadRecord = {
   id: string;
@@ -206,27 +233,59 @@ function normalizeLeadStatusFromOpportunity(status?: string | null) {
   return "open";
 }
 
+async function findOpenLeadForContact(
+  locationId: string,
+  contactId: string,
+  pipelineId?: string | null,
+) {
+  if (!locationId || !contactId) return null;
+
+  const baseQuery = () =>
+    supabase
+      .from("lead_opportunities")
+      .select("*")
+      .eq("location_id", locationId)
+      .eq("ghl_contact_id", contactId)
+      .is("deleted_at", null)
+      .is("converted_case_id", null)
+      .neq("status", "converted");
+
+  if (pipelineId) {
+    const { data, error } = await baseQuery()
+      .eq("ghl_pipeline_id", pipelineId)
+      .order("updated_at", { ascending: false })
+      .limit(1);
+    if (error) throw new Error(error.message);
+    if (data?.[0]) return data[0] as LeadRecord;
+
+    const { data: withoutPipeline, error: fallbackError } = await baseQuery()
+      .is("ghl_pipeline_id", null)
+      .order("updated_at", { ascending: false })
+      .limit(1);
+    if (fallbackError) throw new Error(fallbackError.message);
+    if (withoutPipeline?.[0]) return withoutPipeline[0] as LeadRecord;
+  }
+
+  const { data, error } = await baseQuery().order("updated_at", { ascending: false }).limit(1);
+  if (error) throw new Error(error.message);
+  return (data?.[0] || null) as LeadRecord | null;
+}
+
 async function findExistingLead(locationId: string, opportunity: GhlOpportunity) {
-  const { data: byOpportunityId, error: byOpportunityError } = await supabase
-    .from("lead_opportunities")
-    .select("*")
-    .eq("location_id", locationId)
-    .eq("ghl_opportunity_id", opportunity.id)
-    .limit(1);
+  if (opportunity.id) {
+    const { data: byOpportunityId, error: byOpportunityError } = await supabase
+      .from("lead_opportunities")
+      .select("*")
+      .eq("location_id", locationId)
+      .eq("ghl_opportunity_id", opportunity.id)
+      .is("deleted_at", null)
+      .limit(1);
 
-  if (byOpportunityError) throw new Error(byOpportunityError.message);
-  if (byOpportunityId?.[0]) return byOpportunityId[0] as LeadRecord;
+    if (byOpportunityError) throw new Error(byOpportunityError.message);
+    if (byOpportunityId?.[0]) return byOpportunityId[0] as LeadRecord;
+  }
 
-  const { data: byContact, error: byContactError } = await supabase
-    .from("lead_opportunities")
-    .select("*")
-    .eq("location_id", locationId)
-    .eq("ghl_contact_id", opportunity.contactId)
-    .eq("ghl_pipeline_id", opportunity.pipelineId)
-    .limit(1);
-
-  if (byContactError) throw new Error(byContactError.message);
-  return (byContact?.[0] || null) as LeadRecord | null;
+  return findOpenLeadForContact(locationId, opportunity.contactId, opportunity.pipelineId);
 }
 
 async function upsertLeadFromOpportunity(
@@ -306,12 +365,34 @@ export async function syncGhlLeadPipelineOpportunities(
 
   for (const pipeline of pipelines) {
     const opportunities = await getOpportunities(ghlLocationId, { pipelineId: pipeline.id, limit: 100 });
+    const activeOpportunityIds = new Set(opportunities.map((opportunity) => opportunity.id).filter(Boolean));
+
     for (const opportunity of opportunities) {
       syncedLeads.push(await upsertLeadFromOpportunity(locationId, opportunity, pipeline, contactMap));
     }
+
+    await pruneStaleLeadOpportunitiesForPipeline(locationId, pipeline.id, activeOpportunityIds);
+    await dedupeDuplicateLeadOpportunitiesForPipeline(locationId, pipeline.id);
   }
 
   return syncedLeads;
+}
+
+export async function refreshLeadsFromGhl(
+  locationId: string,
+  ghlLocationId: string,
+  pipelines: GhlPipeline[],
+  pipelineConfigs: PipelineConfig[],
+  contacts: any[] = [],
+) {
+  const leadPipelines = filterLeadPipelines(pipelines, pipelineConfigs);
+  if (!locationId || !ghlLocationId || leadPipelines.length === 0) return false;
+
+  const canSync = (await hasPermission("leads.create")) || (await hasPermission("leads.edit"));
+  if (!canSync) return false;
+
+  await syncGhlLeadPipelineOpportunities(locationId, ghlLocationId, leadPipelines, contacts);
+  return true;
 }
 
 export async function ensureLeadContactsHaveOpportunities(
@@ -361,6 +442,12 @@ export async function ensureLeadContactsHaveOpportunities(
 
 export async function createLead(input: LeadInput) {
   await requirePermission("leads.create", "You do not have permission to create leads.");
+
+  const existingLead = await findOpenLeadForContact(input.locationId, input.contactId, input.ghlPipelineId);
+  if (existingLead) {
+    return updateLead(existingLead.id, input);
+  }
+
   const { data: { user } } = await supabase.auth.getUser();
   const leadName = getLeadDisplayName(input);
   await updateContactAccountType(input.contactId, LEAD_ACCOUNT_TYPE);
@@ -453,6 +540,115 @@ export async function updateLead(leadId: string, input: Partial<LeadInput>) {
 
   if (error) throw new Error(error.message);
   return data as LeadRecord;
+}
+
+async function softDeleteLeadRecords(
+  leadIds: string[],
+  deleteReason: string,
+) {
+  if (leadIds.length === 0) return;
+
+  const { data: { user } } = await supabase.auth.getUser();
+  const { error } = await supabase
+    .from("lead_opportunities")
+    .update({
+      deleted_at: new Date().toISOString(),
+      deleted_by: user?.id || null,
+      delete_reason: deleteReason,
+    })
+    .in("id", leadIds)
+    .is("deleted_at", null);
+
+  if (error) throw new Error(error.message);
+}
+
+async function pruneStaleLeadOpportunitiesForPipeline(
+  locationId: string,
+  pipelineId: string,
+  activeOpportunityIds: Set<string>,
+) {
+  const { data: existingLeads, error } = await supabase
+    .from("lead_opportunities")
+    .select("id, ghl_opportunity_id, converted_case_id")
+    .eq("location_id", locationId)
+    .eq("ghl_pipeline_id", pipelineId)
+    .is("deleted_at", null);
+
+  if (error) throw new Error(error.message);
+
+  const staleLeadIds = (existingLeads || [])
+    .filter((lead) => {
+      if (lead.converted_case_id) return false;
+      if (!lead.ghl_opportunity_id) return false;
+      return !activeOpportunityIds.has(lead.ghl_opportunity_id);
+    })
+    .map((lead) => lead.id);
+
+  await softDeleteLeadRecords(staleLeadIds, "Removed from GHL");
+}
+
+async function dedupeDuplicateLeadOpportunitiesForPipeline(locationId: string, pipelineId: string) {
+  const { data: existingLeads, error } = await supabase
+    .from("lead_opportunities")
+    .select("id, ghl_opportunity_id, ghl_contact_id, updated_at, converted_case_id")
+    .eq("location_id", locationId)
+    .eq("ghl_pipeline_id", pipelineId)
+    .is("deleted_at", null);
+
+  if (error) throw new Error(error.message);
+
+  const duplicateLeadIds: string[] = [];
+  const seenOpportunityIds = new Map<string, string>();
+  const seenContacts = new Map<string, string>();
+
+  for (const lead of (existingLeads || []).sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+  )) {
+    if (lead.converted_case_id) continue;
+
+    if (lead.ghl_opportunity_id) {
+      const seenId = seenOpportunityIds.get(lead.ghl_opportunity_id);
+      if (seenId) {
+        duplicateLeadIds.push(lead.id);
+        continue;
+      }
+      seenOpportunityIds.set(lead.ghl_opportunity_id, lead.id);
+    }
+
+    if (lead.ghl_contact_id) {
+      const seenContactId = seenContacts.get(lead.ghl_contact_id);
+      if (seenContactId) {
+        duplicateLeadIds.push(lead.id);
+        continue;
+      }
+      seenContacts.set(lead.ghl_contact_id, lead.id);
+    }
+  }
+
+  await softDeleteLeadRecords(duplicateLeadIds, "Duplicate lead record");
+}
+
+export async function softDeleteLeadsForContact(
+  locationId: string,
+  contactId: string,
+  deleteReason = "Contact deleted",
+) {
+  if (!locationId || !contactId) return;
+
+  const { data: existingLeads, error } = await supabase
+    .from("lead_opportunities")
+    .select("id")
+    .eq("location_id", locationId)
+    .eq("ghl_contact_id", contactId)
+    .is("deleted_at", null)
+    .is("converted_case_id", null);
+
+  if (error) throw new Error(error.message);
+
+  await softDeleteLeadRecords(
+    (existingLeads || []).map((lead) => lead.id),
+    deleteReason,
+  );
 }
 
 export async function deleteLead(leadId: string) {

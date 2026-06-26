@@ -47,8 +47,9 @@ import {
   convertLeadToMatter,
   createLead,
   deleteLead,
+  filterLeadPipelines,
   listLeads,
-  LEAD_ACCOUNT_TYPE,
+  refreshLeadsFromGhl,
   updateLead,
   type LeadRecord,
 } from "@/lib/leads";
@@ -128,11 +129,6 @@ function getContactRecordKind(contact: any) {
   const hasPersonName = Boolean(String(`${contact?.firstName || ""} ${contact?.lastName || ""}`).trim());
   if (contact?.recordKind === "company" || hasCompanyTag || (!hasPersonName && contact?.companyName)) return "company";
   return "person";
-}
-
-function pipelineConfigMatchesLeadAccountType(config?: PipelineConfig | null) {
-  const accountTypeRule = String(config?.account_type_rule || "").trim().toLowerCase();
-  return accountTypeRule === LEAD_ACCOUNT_TYPE.toLowerCase();
 }
 
 function isLeadViewMode(value: unknown): value is LeadViewMode {
@@ -421,7 +417,20 @@ export function LeadsPage() {
           : Promise.resolve([] as PipelineConfig[]),
       ]);
 
-      setLeads(leadRows);
+      let nextLeadRows = leadRows;
+      if (nextGhlLocationId && pipelineRows.length > 0) {
+        const didSync = await refreshLeadsFromGhl(
+          appLocationId,
+          nextGhlLocationId,
+          pipelineRows,
+          pipelineConfigRows,
+        );
+        if (didSync) {
+          nextLeadRows = await listLeads(appLocationId);
+        }
+      }
+
+      setLeads(nextLeadRows);
       setUsers(assignableUsers);
       setPipelines(pipelineRows);
       setPipelineConfigs(pipelineConfigRows);
@@ -471,17 +480,8 @@ export function LeadsPage() {
   );
   const leadPipelines = useMemo(
     () =>
-      sortPipelinesByDisplayOrder(
-        pipelines.filter((pipeline) => {
-          const config = pipelineConfigMap.get(pipeline.id);
-          return (
-            config?.is_active !== false &&
-            (config?.classification === "prospecting" || pipelineConfigMatchesLeadAccountType(config))
-          );
-        }),
-        pipelineConfigMap,
-      ),
-    [pipelineConfigMap, pipelines],
+      sortPipelinesByDisplayOrder(filterLeadPipelines(pipelines, pipelineConfigs), pipelineConfigMap),
+    [pipelineConfigMap, pipelineConfigs, pipelines],
   );
 
   const allLeadsListView = useMemo<LeadListView>(() => ({ id: "all", name: "All Leads", system: true, filters: {} }), []);
@@ -593,7 +593,6 @@ export function LeadsPage() {
     });
     setIsCreateOpen(false);
     setLeadToEdit(null);
-    void loadLeadData();
   };
 
   const handleDeleteLead = async () => {

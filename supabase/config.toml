@@ -89,6 +89,9 @@ verify_jwt = true
 [functions.create_event]
 verify_jwt = true
 
+[functions.list_calendar_events]
+verify_jwt = true
+
 [functions.upload_document]
 verify_jwt = true
 

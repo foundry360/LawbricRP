@@ -86,6 +86,7 @@ import {
 } from "@/lib/business-custom-fields";
 import { saveContactRelationships } from "@/lib/contact-relationships";
 import { getUserFriendlyErrorMessage } from "@/lib/errors";
+import { softDeleteLeadsForContact } from "@/lib/leads";
 import { formatPersonName } from "@/lib/names";
 import { formatPhoneNumber } from "@/lib/phone";
 import { PRACTICE_AREAS } from "@/lib/practice-areas";
@@ -1175,6 +1176,13 @@ export function ContactDirectory() {
         await deleteContact(record.id);
       }
       await saveContactAssignment(record.id, "");
+      try {
+        if (locationId) {
+          await softDeleteLeadsForContact(locationId, record.id, record.recordKind === "company" ? "Company deleted" : "Contact deleted");
+        }
+      } catch (leadCleanupError) {
+        console.error("Failed to remove linked leads for deleted record", leadCleanupError);
+      }
       setContacts((current) => current.filter((contact) => contact.id !== record.id));
       toast({
         title: record.recordKind === "company" ? "Company Deleted" : "Contact Deleted",
